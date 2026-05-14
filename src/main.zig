@@ -10,6 +10,11 @@ pub fn main(init: std.process.Init) !void {
 
         const command = try stdin.interface.takeDelimiter('\n');
         const command_text = std.mem.trimEnd(u8, command orelse break, "\r");
+
+        if (std.mem.eql(u8, command_text, "exit")) {
+            break;
+        }
+
         try stdout.interface.print("{s}: command not found\n", .{command_text});
     }
 }
