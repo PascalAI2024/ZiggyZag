@@ -93,21 +93,23 @@ const Shell = struct {
         }
 
         const prefix = line.items;
-        var match: ?[]const u8 = null;
-        var count: usize = 0;
-        for (shell_builtin_names) |name| {
-            if (std.mem.startsWith(u8, name, prefix)) {
-                match = name;
-                count += 1;
-            }
+        var matches: std.ArrayList([]u8) = .empty;
+        defer {
+            for (matches.items) |item| self.allocator.free(item);
+            matches.deinit(self.allocator);
         }
 
-        if (count != 1) {
+        for (shell_builtin_names) |name| {
+            try self.addCompletionMatch(&matches, prefix, name);
+        }
+        try self.addExecutableCompletions(&matches, prefix);
+
+        if (matches.items.len != 1) {
             try stdout.writeByte(0x07);
             return;
         }
 
-        const completion = match.?;
+        const completion = matches.items[0];
         if (completion.len > prefix.len) {
             const suffix = completion[prefix.len..];
             try line.appendSlice(self.allocator, suffix);
@@ -116,6 +118,41 @@ const Shell = struct {
 
         try line.append(self.allocator, ' ');
         try stdout.writeByte(' ');
+    }
+
+    fn addExecutableCompletions(self: *Shell, matches: *std.ArrayList([]u8), prefix: []const u8) !void {
+        const path_value = self.env.get("PATH") orelse "";
+        const separator: u8 = if (builtin.os.tag == .windows) ';' else ':';
+        var dirs = std.mem.splitScalar(u8, path_value, separator);
+        while (dirs.next()) |dir_path| {
+            if (dir_path.len == 0) continue;
+
+            var dir = if (std.fs.path.isAbsolute(dir_path))
+                std.Io.Dir.openDirAbsolute(self.io, dir_path, .{ .iterate = true }) catch continue
+            else
+                std.Io.Dir.cwd().openDir(self.io, dir_path, .{ .iterate = true }) catch continue;
+            defer dir.close(self.io);
+
+            var iterator = dir.iterate();
+            while (try iterator.next(self.io)) |entry| {
+                if (entry.kind != .file and entry.kind != .sym_link) continue;
+                if (!std.mem.startsWith(u8, entry.name, prefix)) continue;
+
+                const full_path = try std.fs.path.join(self.allocator, &.{ dir_path, entry.name });
+                defer self.allocator.free(full_path);
+                if (try self.pathIsExecutable(full_path)) {
+                    try self.addCompletionMatch(matches, prefix, entry.name);
+                }
+            }
+        }
+    }
+
+    fn addCompletionMatch(self: *Shell, matches: *std.ArrayList([]u8), prefix: []const u8, name: []const u8) !void {
+        if (!std.mem.startsWith(u8, name, prefix)) return;
+        for (matches.items) |existing| {
+            if (std.mem.eql(u8, existing, name)) return;
+        }
+        try matches.append(self.allocator, try self.allocator.dupe(u8, name));
     }
 
     fn execute(self: *Shell, line: []const u8) !bool {
