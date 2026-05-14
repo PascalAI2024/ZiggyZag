@@ -8,6 +8,7 @@ const Shell = struct {
     io: std.Io,
     env: *std.process.Environ.Map,
     history: std.ArrayList([]u8),
+    manual_echo: bool,
 
     fn init(allocator: Allocator, io: std.Io, env: *std.process.Environ.Map) Shell {
         return .{
@@ -15,6 +16,7 @@ const Shell = struct {
             .io = io,
             .env = env,
             .history = .empty,
+            .manual_echo = false,
         };
     }
 
@@ -27,6 +29,10 @@ const Shell = struct {
         var stdin_buffer: [4096]u8 = undefined;
         var stdin = std.Io.File.stdin().readerStreaming(self.io, &stdin_buffer);
         var stdout = std.Io.File.stdout().writer(self.io, &.{});
+        const terminal_mode = try TerminalMode.enable();
+        defer if (terminal_mode) |mode| mode.restore();
+        self.manual_echo = terminal_mode != null;
+        defer self.manual_echo = false;
 
         while (true) {
             try stdout.interface.print("$ ", .{});
@@ -58,16 +64,22 @@ const Shell = struct {
             };
 
             switch (byte) {
-                '\n' => return try line.toOwnedSlice(self.allocator),
+                '\n' => {
+                    if (self.manual_echo) try stdout.writeByte('\n');
+                    return try line.toOwnedSlice(self.allocator);
+                },
                 '\r' => {},
                 '\t' => try self.completeCommand(&line, stdout),
                 0x08, 0x7f => {
                     if (line.items.len > 0) {
                         _ = line.pop();
-                        try stdout.writeAll("\x08 \x08");
+                        if (self.manual_echo) try stdout.writeAll("\x08 \x08");
                     }
                 },
-                else => try line.append(self.allocator, byte),
+                else => {
+                    try line.append(self.allocator, byte);
+                    if (self.manual_echo) try stdout.writeByte(byte);
+                },
             }
         }
     }
@@ -381,6 +393,45 @@ const Shell = struct {
         if (stat.kind != .file) return false;
         if (!std.Io.File.Permissions.has_executable_bit) return true;
         return stat.permissions.toMode() & 0o111 != 0;
+    }
+};
+
+const TerminalMode = if (builtin.os.tag == .windows) struct {
+    const Self = @This();
+
+    fn enable() !?Self {
+        return null;
+    }
+
+    fn restore(self: Self) void {
+        _ = self;
+    }
+} else struct {
+    const Self = @This();
+
+    fd: std.posix.fd_t,
+    original: std.posix.termios,
+
+    fn enable() !?Self {
+        const fd = std.posix.STDIN_FILENO;
+        const original = std.posix.tcgetattr(fd) catch |err| switch (err) {
+            error.NotATerminal => return null,
+            else => |e| return e,
+        };
+
+        var raw = original;
+        raw.lflag.ECHO = false;
+        raw.lflag.ICANON = false;
+        raw.lflag.IEXTEN = false;
+        raw.cc[@intFromEnum(std.posix.V.MIN)] = 1;
+        raw.cc[@intFromEnum(std.posix.V.TIME)] = 0;
+        try std.posix.tcsetattr(fd, .NOW, raw);
+
+        return .{ .fd = fd, .original = original };
+    }
+
+    fn restore(self: Self) void {
+        std.posix.tcsetattr(self.fd, .NOW, self.original) catch {};
     }
 };
 
