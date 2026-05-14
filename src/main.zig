@@ -524,7 +524,7 @@ const Shell = struct {
             return true;
         }
 
-        var parsed = try parseCommand(self.allocator, line);
+        var parsed = try parseCommandExpanded(self.allocator, line, self);
         defer parsed.deinit();
 
         if (parsed.argv.items.len == 0) return true;
@@ -1242,13 +1242,20 @@ const ParsedCommand = struct {
 };
 
 fn parseCommand(allocator: Allocator, line: []const u8) !ParsedCommand {
-    var parsed = try parseTokens(allocator, line);
+    var parsed = try parseTokens(allocator, line, null);
     errdefer parsed.deinit();
     try parsed.extractRedirections();
     return parsed;
 }
 
-fn parseTokens(allocator: Allocator, line: []const u8) !ParsedCommand {
+fn parseCommandExpanded(allocator: Allocator, line: []const u8, shell: *Shell) !ParsedCommand {
+    var parsed = try parseTokens(allocator, line, shell);
+    errdefer parsed.deinit();
+    try parsed.extractRedirections();
+    return parsed;
+}
+
+fn parseTokens(allocator: Allocator, line: []const u8, shell: ?*Shell) !ParsedCommand {
     var argv: std.ArrayList([]u8) = .empty;
     errdefer {
         for (argv.items) |arg| allocator.free(arg);
@@ -1302,6 +1309,12 @@ fn parseTokens(allocator: Allocator, line: []const u8) !ParsedCommand {
             '"' => {
                 i += 1;
                 while (i < line.len and line[i] != '"') : (i += 1) {
+                    if (line[i] == '$') {
+                        if (try appendParameterExpansion(allocator, &argv, &current, line, &i, shell, false)) {
+                            i -= 1;
+                            continue;
+                        }
+                    }
                     if (line[i] == '\\' and i + 1 < line.len) {
                         const next = line[i + 1];
                         if (next == '$' or next == '`' or next == '"' or next == '\\' or next == '\n') {
@@ -1313,6 +1326,12 @@ fn parseTokens(allocator: Allocator, line: []const u8) !ParsedCommand {
                     try current.append(allocator, line[i]);
                 }
                 if (i < line.len) i += 1;
+            },
+            '$' => {
+                if (!try appendParameterExpansion(allocator, &argv, &current, line, &i, shell, true)) {
+                    try current.append(allocator, c);
+                    i += 1;
+                }
             },
             '\\' => {
                 if (i + 1 < line.len) {
@@ -1332,6 +1351,58 @@ fn parseTokens(allocator: Allocator, line: []const u8) !ParsedCommand {
 
     try flushToken(allocator, &argv, &current);
     return .{ .allocator = allocator, .argv = argv };
+}
+
+fn appendParameterExpansion(
+    allocator: Allocator,
+    argv: *std.ArrayList([]u8),
+    current: *std.ArrayList(u8),
+    line: []const u8,
+    index: *usize,
+    shell: ?*Shell,
+    split_words: bool,
+) !bool {
+    const dollar = index.*;
+    if (dollar + 1 >= line.len) return false;
+
+    var name_start = dollar + 1;
+    var name_end = name_start;
+    if (line[name_start] == '{') {
+        name_start += 1;
+        name_end = name_start;
+        while (name_end < line.len and isNameChar(line[name_end])) : (name_end += 1) {}
+        if (name_end == name_start or name_end >= line.len or line[name_end] != '}') return false;
+        index.* = name_end + 1;
+    } else {
+        if (!isNameStart(line[name_start])) return false;
+        name_end = name_start + 1;
+        while (name_end < line.len and isNameChar(line[name_end])) : (name_end += 1) {}
+        index.* = name_end;
+    }
+
+    const name = line[name_start..name_end];
+    const value = if (shell) |sh| sh.env.get(name) orelse "" else "";
+    if (split_words) {
+        try appendExpansionWithWordSplitting(allocator, argv, current, value);
+    } else {
+        try current.appendSlice(allocator, value);
+    }
+    return true;
+}
+
+fn appendExpansionWithWordSplitting(
+    allocator: Allocator,
+    argv: *std.ArrayList([]u8),
+    current: *std.ArrayList(u8),
+    value: []const u8,
+) !void {
+    for (value) |c| {
+        if (isShellWhitespace(c)) {
+            try flushToken(allocator, argv, current);
+        } else {
+            try current.append(allocator, c);
+        }
+    }
 }
 
 fn appendToken(allocator: Allocator, argv: *std.ArrayList([]u8), token: []const u8) !void {
@@ -1590,11 +1661,19 @@ fn isShellBuiltin(name: []const u8) bool {
     return false;
 }
 
+fn isNameStart(c: u8) bool {
+    return std.ascii.isAlphabetic(c) or c == '_';
+}
+
+fn isNameChar(c: u8) bool {
+    return std.ascii.isAlphanumeric(c) or c == '_';
+}
+
 fn isValidName(name: []const u8) bool {
     if (name.len == 0) return false;
-    if (!std.ascii.isAlphabetic(name[0]) and name[0] != '_') return false;
+    if (!isNameStart(name[0])) return false;
     for (name[1..]) |c| {
-        if (!std.ascii.isAlphanumeric(c) and c != '_') return false;
+        if (!isNameChar(c)) return false;
     }
     return true;
 }
