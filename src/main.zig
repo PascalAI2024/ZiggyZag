@@ -200,7 +200,9 @@ const Shell = struct {
     }
 
     fn findExecutable(self: *Shell, command: []const u8) !?[]u8 {
-        if (std.mem.indexOfScalar(u8, command, '/') != null or std.mem.indexOfScalar(u8, command, '\\') != null) {
+        const contains_path_separator = std.mem.indexOfScalar(u8, command, '/') != null or
+            (builtin.os.tag == .windows and std.mem.indexOfScalar(u8, command, '\\') != null);
+        if (contains_path_separator) {
             if (try self.pathIsExecutable(command)) return try self.allocator.dupe(u8, command);
             return null;
         }
