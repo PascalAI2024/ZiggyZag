@@ -9,6 +9,7 @@ const Shell = struct {
     env: *std.process.Environ.Map,
     history: std.ArrayList([]u8),
     manual_echo: bool,
+    last_completion_prefix: ?[]u8,
 
     fn init(allocator: Allocator, io: std.Io, env: *std.process.Environ.Map) Shell {
         return .{
@@ -17,12 +18,14 @@ const Shell = struct {
             .env = env,
             .history = .empty,
             .manual_echo = false,
+            .last_completion_prefix = null,
         };
     }
 
     fn deinit(self: *Shell) void {
         for (self.history.items) |entry| self.allocator.free(entry);
         self.history.deinit(self.allocator);
+        self.clearCompletionState();
     }
 
     fn run(self: *Shell) !void {
@@ -65,18 +68,21 @@ const Shell = struct {
 
             switch (byte) {
                 '\n' => {
+                    self.clearCompletionState();
                     if (self.manual_echo) try stdout.writeByte('\n');
                     return try line.toOwnedSlice(self.allocator);
                 },
                 '\r' => {},
                 '\t' => try self.completeCommand(&line, stdout),
                 0x08, 0x7f => {
+                    self.clearCompletionState();
                     if (line.items.len > 0) {
                         _ = line.pop();
                         if (self.manual_echo) try stdout.writeAll("\x08 \x08");
                     }
                 },
                 else => {
+                    self.clearCompletionState();
                     try line.append(self.allocator, byte);
                     if (self.manual_echo) try stdout.writeByte(byte);
                 },
@@ -104,11 +110,34 @@ const Shell = struct {
         }
         try self.addExecutableCompletions(&matches, prefix);
 
-        if (matches.items.len != 1) {
+        if (matches.items.len == 0) {
+            self.clearCompletionState();
             try stdout.writeByte(0x07);
             return;
         }
 
+        if (matches.items.len > 1) {
+            sortCompletionMatches(matches.items);
+            if (self.last_completion_prefix) |last_prefix| {
+                if (std.mem.eql(u8, last_prefix, prefix)) {
+                    try stdout.writeByte('\n');
+                    for (matches.items, 0..) |item, index| {
+                        if (index != 0) try stdout.writeAll("  ");
+                        try stdout.writeAll(item);
+                    }
+                    try stdout.writeAll("\n$ ");
+                    try stdout.writeAll(line.items);
+                    self.clearCompletionState();
+                    return;
+                }
+            }
+
+            try self.rememberCompletionPrefix(prefix);
+            try stdout.writeByte(0x07);
+            return;
+        }
+
+        self.clearCompletionState();
         const completion = matches.items[0];
         if (completion.len > prefix.len) {
             const suffix = completion[prefix.len..];
@@ -118,6 +147,18 @@ const Shell = struct {
 
         try line.append(self.allocator, ' ');
         try stdout.writeByte(' ');
+    }
+
+    fn rememberCompletionPrefix(self: *Shell, prefix: []const u8) !void {
+        self.clearCompletionState();
+        self.last_completion_prefix = try self.allocator.dupe(u8, prefix);
+    }
+
+    fn clearCompletionState(self: *Shell) void {
+        if (self.last_completion_prefix) |prefix| {
+            self.allocator.free(prefix);
+            self.last_completion_prefix = null;
+        }
     }
 
     fn addExecutableCompletions(self: *Shell, matches: *std.ArrayList([]u8), prefix: []const u8) !void {
@@ -700,6 +741,16 @@ fn appendFmt(allocator: Allocator, buffer: *std.ArrayList(u8), comptime fmt: []c
     const text = try std.fmt.allocPrint(allocator, fmt, args);
     defer allocator.free(text);
     try buffer.appendSlice(allocator, text);
+}
+
+fn sortCompletionMatches(items: [][]u8) void {
+    var i: usize = 1;
+    while (i < items.len) : (i += 1) {
+        var j = i;
+        while (j > 0 and std.mem.lessThan(u8, items[j], items[j - 1])) : (j -= 1) {
+            std.mem.swap([]u8, &items[j], &items[j - 1]);
+        }
+    }
 }
 
 const shell_builtin_names = [_][]const u8{
