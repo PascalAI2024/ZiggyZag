@@ -10,6 +10,7 @@
 
 <p align="center">
   <a href="https://github.com/PascalAI2024/ZiggyZag"><img alt="GitHub repo" src="https://img.shields.io/badge/repo-public-2ea44f"></a>
+  <a href="https://github.com/PascalAI2024/ZiggyZag/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/PascalAI2024/ZiggyZag/actions/workflows/ci.yml/badge.svg"></a>
   <img alt="Zig" src="https://img.shields.io/badge/Zig-0.16.0-f7a41d">
   <img alt="License" src="https://img.shields.io/badge/license-MIT-blue">
   <a href="https://app.codecrafters.io/courses/shell/overview"><img alt="CodeCrafters Shell" src="https://img.shields.io/badge/CodeCrafters-shell_complete-6f42c1"></a>
@@ -71,6 +72,8 @@ complete -c zig -a 'build fmt test' -d 'common Zig command'
 export EDITOR=vim
 echo $EDITOR
 
+inspect echo hello | grep hello
+doctor
 history --search zig
 ```
 
@@ -91,7 +94,7 @@ export ZIGGYZAG_HISTORY_DB=~/.ziggyzag-history.tsv
 | Area | Status | Notes |
 | --- | --- | --- |
 | REPL prompt | Done | Interactive command loop with manual terminal echo support. |
-| Builtins | Done | `cd`, `pwd`, `echo`, `type`, `history`, `jobs`, `complete`, `declare`, `help`, `alias`, `abbr`, `unabbr`, `unalias`, `export`, `prompt`, `unset`, `exit`. |
+| Builtins | Done | `cd`, `pwd`, `echo`, `type`, `history`, `jobs`, `complete`, `declare`, `help`, `alias`, `abbr`, `unabbr`, `unalias`, `config`, `doctor`, `export`, `inspect`, `prompt`, `unset`, `exit`. |
 | External programs | Done | PATH lookup and process spawning. |
 | Quoting | Done | Single quotes, double quotes, and backslash behavior. |
 | Redirection | Done | stdout/stderr redirect and append forms. |
@@ -101,6 +104,7 @@ export ZIGGYZAG_HISTORY_DB=~/.ziggyzag-history.tsv
 | Job control | Done | Background jobs, `jobs`, reaping, and job number reuse. |
 | Parameter expansion | Done | `$VAR`, `${VAR}`, missing variables, and shell variable storage. |
 | Modern UX | Done | Autosuggestion hooks, Ctrl-F accept, Ctrl-R fuzzy recall, syntax highlighting in smart prompt mode, abbreviations, and startup config. |
+| Introspection | Done | `doctor`, `inspect`, slash shortcuts, JSON output for jobs/history/prompt/doctor, and config validation/reload. |
 | Developer polish | Done | Repo docs, diagrams, refactors, smoke script, and user-facing enhancements. |
 
 ## Architecture
@@ -157,6 +161,7 @@ pie title ZiggyZag capability mix
 |   |-- FEATURES.md
 |   `-- ROADMAP.md
 |-- scripts/
+|   |-- smoke.sh
 |   `-- smoke.ps1
 |-- src/
 |   `-- main.zig
@@ -193,13 +198,25 @@ Format:
 zig fmt src/main.zig
 ```
 
+Unit tests:
+
+```sh
+zig build test
+```
+
 Smoke test:
 
 ```sh
 printf "help\nalias hi='echo hello'\nhi world\nexit\n" | ./zig-out/bin/ziggyzag
 ```
 
-Windows feature smoke:
+Feature smoke:
+
+```sh
+./scripts/smoke.sh
+```
+
+On Windows:
 
 ```powershell
 .\scripts\smoke.ps1
@@ -214,7 +231,7 @@ The first modern shell sprint is in the codebase now. The next wave is about dee
 - More completion spec shapes for options, files, and dynamic values.
 - Real SQLite backend behind the current metadata history format.
 - Native pipelines with streaming process pipes and redirection support.
-- More tests outside the CodeCrafters harness.
+- More parser and execution tests outside the CodeCrafters harness.
 
 See [docs/ROADMAP.md](docs/ROADMAP.md) for feature ideas inspired by fish, zsh, Nushell, PowerShell, Atuin, Starship, and other modern shell tools.
 

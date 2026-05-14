@@ -29,6 +29,7 @@ Run:
 ```sh
 zig fmt src/main.zig
 zig build
+zig build test
 ```
 
 Try a tiny smoke test:
@@ -41,6 +42,12 @@ On Windows, run the feature smoke:
 
 ```powershell
 .\scripts\smoke.ps1
+```
+
+On Linux or macOS:
+
+```sh
+./scripts/smoke.sh
 ```
 
 ## Code Style
