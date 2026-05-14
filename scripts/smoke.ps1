@@ -9,8 +9,14 @@ $meta = Join-Path $tmp "history.tsv"
 $out = Join-Path $tmp "out.txt"
 $sourceFile = Join-Path $tmp "source.zz"
 $sourceShellPath = $sourceFile.Replace("\", "/")
+$navDir = Join-Path $tmp "ziggyzag-smoke-nav"
+$navShellPath = $navDir.Replace("\", "/")
+$missingSourcePath = (Join-Path $tmp "missing-source.zz").Replace("\", "/")
+$failFile = Join-Path $tmp "failed.txt"
+$failShellPath = $failFile.Replace("\", "/")
 
-Remove-Item -Force $meta, $out, $sourceFile -ErrorAction SilentlyContinue
+Remove-Item -Force $meta, $out, $sourceFile, $failFile -ErrorAction SilentlyContinue
+Remove-Item -Recurse -Force $navDir -ErrorAction SilentlyContinue
 
 @'
 alias hi='echo hello'
@@ -55,9 +61,26 @@ repeat 2 echo repeated
 source SOURCE_FILE_PLACEHOLDER
 sourced
 echo $SOURCED_VALUE
+project
+project --json
+run --list
+dirs
+dirs --json
+mkcd NAV_DIR_PLACEHOLDER
+pwd
+back
+pwd
+jump ziggyzag-smoke-nav
+pwd
+back
+source MISSING_SOURCE_PLACEHOLDER 2> FAIL_FILE_PLACEHOLDER
+history --failed
+history --slow 0
+history --cwd
+history --stats
 echo hello | findstr hello
 exit
-'@.Replace("SOURCE_FILE_PLACEHOLDER", $sourceShellPath) | & (Join-Path $root "zig-out\bin\ziggyzag.exe") > $out
+'@.Replace("SOURCE_FILE_PLACEHOLDER", $sourceShellPath).Replace("NAV_DIR_PLACEHOLDER", $navShellPath).Replace("MISSING_SOURCE_PLACEHOLDER", $missingSourcePath).Replace("FAIL_FILE_PLACEHOLDER", $failShellPath) | & (Join-Path $root "zig-out\bin\ziggyzag.exe") *> $out
 
 $output = Get-Content $out -Raw
 if ($output -notmatch "hello world") { throw "alias smoke failed" }
@@ -81,7 +104,15 @@ if ($output -notmatch "timeit: ") { throw "timeit smoke failed" }
 if (($output | Select-String "repeated" -AllMatches).Matches.Count -lt 2) { throw "repeat smoke failed" }
 if ($output -notmatch "sourced ok") { throw "source smoke failed" }
 if ($output -notmatch "from-source") { throw "source export smoke failed" }
+if ($output -notmatch "project: zig") { throw "project smoke failed" }
+if ($output -notmatch '"kind":"zig"') { throw "project json smoke failed" }
+if ($output -notmatch "tasks: build test run fmt") { throw "run list smoke failed" }
+if ($output -notmatch '"current":true') { throw "dirs json smoke failed" }
+if ($output -notmatch "ziggyzag-smoke-nav") { throw "directory navigation smoke failed" }
+if ($output -notmatch "status=1") { throw "history failed smoke failed" }
+if ($output -notmatch "history stats") { throw "history stats smoke failed" }
 if ($output -notmatch "hello") { throw "native pipeline smoke failed" }
 if (!(Test-Path $meta)) { throw "history metadata file was not written" }
+if (!(Test-Path $failFile)) { throw "failed stderr redirect file was not written" }
 
 Write-Host "ZiggyZag smoke passed"

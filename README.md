@@ -20,7 +20,7 @@
 
 ZiggyZag started as a completed CodeCrafters "Build Your Own Shell" project and is now being shaped into a small, readable, hackable shell for people who want to learn how shells work without getting buried in decades of compatibility code.
 
-It is intentionally compact, but it already covers the fundamentals: a REPL, token parsing, quotes, redirection, native simple pipelines, completion, history persistence, metadata history, background jobs, shell variables, parameter expansion, and a few quality-of-life commands for real use.
+It is intentionally compact, but it already covers the fundamentals: a REPL, token parsing, quotes, redirection, native simple pipelines, completion, history persistence, metadata history, background jobs, shell variables, parameter expansion, project-aware tasks, directory navigation, and a few quality-of-life commands for real use.
 
 ## Why It Exists
 
@@ -76,6 +76,10 @@ which zig
 path --json
 timeit echo quick
 repeat 2 echo again
+project
+run --list
+dirs
+history --stats
 
 inspect echo hello | grep hello
 doctor
@@ -98,19 +102,19 @@ export ZIGGYZAG_HISTORY_DB=~/.ziggyzag-history.tsv
 
 | Area | Status | Notes |
 | --- | --- | --- |
-| REPL prompt | Done | Interactive command loop with manual terminal echo support. |
-| Builtins | Done | `about`, `abbr`, `alias`, `cd`, `complete`, `config`, `declare`, `doctor`, `echo`, `env`, `exit`, `export`, `help`, `history`, `inspect`, `jobs`, `mkcd`, `path`, `prompt`, `pwd`, `repeat`, `source`, `timeit`, `type`, `unalias`, `unabbr`, `unset`, `up`, `vars`, `which`. |
+| REPL prompt | Done | Interactive command loop, smart prompt, Ghostty-friendly title/CWD hints, and manual terminal echo support where raw mode is available. |
+| Builtins | Done | `about`, `abbr`, `alias`, `back`, `cd`, `complete`, `config`, `declare`, `dirs`, `doctor`, `echo`, `env`, `exit`, `export`, `forward`, `help`, `history`, `inspect`, `jobs`, `jump`, `mkcd`, `path`, `project`, `prompt`, `pwd`, `repeat`, `run`, `source`, `timeit`, `type`, `unalias`, `unabbr`, `unset`, `up`, `vars`, `which`. |
 | External programs | Done | PATH lookup and process spawning. |
 | Quoting | Done | Single quotes, double quotes, and backslash behavior. |
 | Redirection | Done | stdout/stderr redirect and append forms. |
 | Pipelines | Done | Native simple pipelines with fallback to the system shell for complex syntax. |
 | Completion | Done | Builtin, executable, path, programmable, and declarative completion with descriptions. |
-| History | Done | Listing, navigation, command recall, fuzzy search, metadata tracking, read/write/append, and `HISTFILE` persistence. |
+| History | Done | Listing, navigation, command recall, fuzzy search, failed/slow/cwd/stats queries, metadata tracking, read/write/append, and `HISTFILE` persistence. |
 | Job control | Done | Background jobs, `jobs`, reaping, and job number reuse. |
 | Parameter expansion | Done | `$VAR`, `${VAR}`, missing variables, and shell variable storage. |
-| Modern UX | Done | Autosuggestion hooks, Ctrl-F accept, Ctrl-R fuzzy recall, syntax highlighting in smart prompt mode, abbreviations, and startup config. |
-| Introspection | Done | `about`, `doctor`, `inspect`, `which`, `path`, slash shortcuts, JSON output for jobs/history/prompt/env/doctor, and config validation/reload. |
-| Convenience commands | Done | `mkcd`, `up`, `repeat`, `timeit`, `source`, `env`, and `vars`. |
+| Modern UX | Done | Cursor-aware line editing, autosuggestion hooks, Ctrl-F accept, Ctrl-R fuzzy recall, syntax highlighting in smart prompt mode, abbreviations, and startup config. |
+| Introspection | Done | `about`, `doctor`, `inspect`, `which`, `path`, `project`, slash shortcuts, JSON output for jobs/history/prompt/env/doctor/project/dirs, and config validation/reload. |
+| Convenience commands | Done | `mkcd`, `up`, `back`, `forward`, `jump`, `repeat`, `timeit`, `source`, `env`, `vars`, and project-aware `run`. |
 | Developer polish | Done | Repo docs, diagrams, refactors, smoke script, and user-facing enhancements. |
 
 ## Architecture

@@ -8,9 +8,13 @@ META="$TMPDIR/history.tsv"
 OUT="$TMPDIR/out.txt"
 SOURCE_FILE="$TMPDIR/source.zz"
 COMMANDS="$TMPDIR/commands.txt"
+NAV_DIR="$TMPDIR/ziggyzag-smoke-nav"
+MISSING_SOURCE="$TMPDIR/missing-source.zz"
+FAIL_FILE="$TMPDIR/failed.txt"
 
 mkdir -p "$TMPDIR"
-rm -f "$META" "$OUT" "$SOURCE_FILE" "$COMMANDS"
+rm -f "$META" "$OUT" "$SOURCE_FILE" "$COMMANDS" "$FAIL_FILE"
+rm -rf "$NAV_DIR"
 
 cat > "$CONFIG" <<'EOF'
 alias hi='echo hello'
@@ -50,10 +54,27 @@ repeat 2 echo repeated
 source SOURCE_FILE_PLACEHOLDER
 sourced
 echo $SOURCED_VALUE
+project
+project --json
+run --list
+dirs
+dirs --json
+mkcd NAV_DIR_PLACEHOLDER
+pwd
+back
+pwd
+jump ziggyzag-smoke-nav
+pwd
+back
+source MISSING_SOURCE_PLACEHOLDER 2> FAIL_FILE_PLACEHOLDER
+history --failed
+history --slow 0
+history --cwd
+history --stats
 echo hello | grep hello
 exit
 EOF
-sed "s|SOURCE_FILE_PLACEHOLDER|$SOURCE_FILE|g" "$COMMANDS" | "$ROOT/zig-out/bin/ziggyzag" > "$OUT"
+sed -e "s|SOURCE_FILE_PLACEHOLDER|$SOURCE_FILE|g" -e "s|NAV_DIR_PLACEHOLDER|$NAV_DIR|g" -e "s|MISSING_SOURCE_PLACEHOLDER|$MISSING_SOURCE|g" -e "s|FAIL_FILE_PLACEHOLDER|$FAIL_FILE|g" "$COMMANDS" | "$ROOT/zig-out/bin/ziggyzag" > "$OUT" 2>&1
 
 grep -q "hello world" "$OUT"
 grep -q "expanded now" "$OUT"
@@ -73,7 +94,15 @@ grep -q "timeit: " "$OUT"
 test "$(grep -c "repeated" "$OUT")" -ge 2
 grep -q "sourced ok" "$OUT"
 grep -q "from-source" "$OUT"
+grep -q "project: zig" "$OUT"
+grep -q '"kind":"zig"' "$OUT"
+grep -q "tasks: build test run fmt" "$OUT"
+grep -q '"current":true' "$OUT"
+grep -q "ziggyzag-smoke-nav" "$OUT"
+grep -q "status=1" "$OUT"
+grep -q "history stats" "$OUT"
 grep -q "hello" "$OUT"
 test -f "$META"
+test -f "$FAIL_FILE"
 
 printf '%s\n' "ZiggyZag smoke passed"

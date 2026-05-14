@@ -44,6 +44,25 @@ const HistoryMeta = struct {
     timestamp: i64,
 };
 
+const ProjectKind = enum {
+    zig,
+    node,
+    rust,
+    python,
+    go,
+    make,
+    git,
+};
+
+const ProjectInfo = struct {
+    root: []u8,
+    kind: ProjectKind,
+
+    fn deinit(self: ProjectInfo, allocator: Allocator) void {
+        allocator.free(self.root);
+    }
+};
+
 const PromptMode = enum {
     classic,
     smart,
@@ -72,6 +91,8 @@ const Shell = struct {
     aliases: std.ArrayList(AliasSpec),
     abbreviations: std.ArrayList(AbbreviationSpec),
     background_jobs: std.ArrayList(BackgroundJob),
+    dir_history: std.ArrayList([]u8),
+    dir_index: usize,
     manual_echo: bool,
     last_completion_prefix: ?[]u8,
     prompt_mode: PromptMode,
@@ -91,6 +112,8 @@ const Shell = struct {
             .aliases = .empty,
             .abbreviations = .empty,
             .background_jobs = .empty,
+            .dir_history = .empty,
+            .dir_index = 0,
             .manual_echo = false,
             .last_completion_prefix = null,
             .prompt_mode = .classic,
@@ -133,6 +156,8 @@ const Shell = struct {
             self.allocator.free(job.command);
         }
         self.background_jobs.deinit(self.allocator);
+        for (self.dir_history.items) |entry| self.allocator.free(entry);
+        self.dir_history.deinit(self.allocator);
         self.clearCompletionState();
     }
 
@@ -142,6 +167,7 @@ const Shell = struct {
         var stdout = std.Io.File.stdout().writer(self.io, &.{});
 
         try self.loadStartupConfig();
+        try self.rememberCurrentDirectory(false);
 
         const terminal_mode = try TerminalMode.enable();
         defer if (terminal_mode) |mode| mode.restore();
@@ -184,6 +210,7 @@ const Shell = struct {
     fn readLine(self: *Shell, reader: *std.Io.Reader, stdout: *std.Io.Writer) !?[]u8 {
         var line: std.ArrayList(u8) = .empty;
         errdefer line.deinit(self.allocator);
+        var cursor: usize = 0;
         var history_index = self.history.items.len;
         var draft_line: ?[]u8 = null;
         defer if (draft_line) |draft| self.allocator.free(draft);
@@ -204,33 +231,84 @@ const Shell = struct {
                 '\n' => {
                     self.clearCompletionState();
                     if (self.manual_echo) {
-                        try self.redrawPromptLine(stdout, line.items);
+                        try self.redrawPromptLine(stdout, line.items, line.items.len);
                         try stdout.writeByte('\n');
                     }
                     return try line.toOwnedSlice(self.allocator);
                 },
                 '\r' => {},
-                '\t' => try self.completeCommand(&line, stdout),
-                0x06 => try self.acceptAutosuggestion(stdout, &line),
-                0x12 => try self.acceptFuzzyHistoryMatch(stdout, &line),
+                '\t' => try self.completeCommand(&line, &cursor, stdout),
+                0x01 => {
+                    self.clearCompletionState();
+                    cursor = 0;
+                    if (self.manual_echo) try self.redrawPromptLineWithSuggestion(stdout, line.items, cursor);
+                },
+                0x02 => {
+                    self.clearCompletionState();
+                    if (cursor > 0) cursor -= 1;
+                    if (self.manual_echo) try self.redrawPromptLineWithSuggestion(stdout, line.items, cursor);
+                },
+                0x04 => {
+                    self.clearCompletionState();
+                    if (line.items.len == 0) {
+                        line.deinit(self.allocator);
+                        return null;
+                    }
+                    if (cursor < line.items.len) {
+                        try line.replaceRange(self.allocator, cursor, 1, &.{});
+                    }
+                    if (self.manual_echo) try self.redrawPromptLineWithSuggestion(stdout, line.items, cursor);
+                },
+                0x05 => {
+                    self.clearCompletionState();
+                    cursor = line.items.len;
+                    if (self.manual_echo) try self.redrawPromptLineWithSuggestion(stdout, line.items, cursor);
+                },
+                0x06 => try self.acceptAutosuggestion(stdout, &line, &cursor),
+                0x0b => {
+                    self.clearCompletionState();
+                    if (cursor < line.items.len) {
+                        try line.replaceRange(self.allocator, cursor, line.items.len - cursor, &.{});
+                    }
+                    if (self.manual_echo) try self.redrawPromptLineWithSuggestion(stdout, line.items, cursor);
+                },
+                0x0c => {
+                    if (self.manual_echo) try stdout.writeAll("\x1b[H\x1b[2J");
+                    try self.redrawPromptLineWithSuggestion(stdout, line.items, cursor);
+                },
+                0x12 => try self.acceptFuzzyHistoryMatch(stdout, &line, &cursor),
                 0x15 => {
                     self.clearCompletionState();
-                    line.clearRetainingCapacity();
-                    if (self.manual_echo) try self.redrawPromptLineWithSuggestion(stdout, line.items);
+                    if (cursor > 0) {
+                        try line.replaceRange(self.allocator, 0, cursor, &.{});
+                        cursor = 0;
+                    }
+                    if (self.manual_echo) try self.redrawPromptLineWithSuggestion(stdout, line.items, cursor);
                 },
-                0x1b => try self.handleEscapeSequence(reader, stdout, &line, &history_index, &draft_line),
+                0x17 => {
+                    self.clearCompletionState();
+                    const start = previousWordStart(line.items, cursor);
+                    if (start < cursor) {
+                        try line.replaceRange(self.allocator, start, cursor - start, &.{});
+                        cursor = start;
+                    }
+                    if (self.manual_echo) try self.redrawPromptLineWithSuggestion(stdout, line.items, cursor);
+                },
+                0x1b => try self.handleEscapeSequence(reader, stdout, &line, &cursor, &history_index, &draft_line),
                 0x08, 0x7f => {
                     self.clearCompletionState();
-                    if (line.items.len > 0) {
-                        _ = line.pop();
-                        if (self.manual_echo) try self.redrawPromptLineWithSuggestion(stdout, line.items);
+                    if (cursor > 0) {
+                        try line.replaceRange(self.allocator, cursor - 1, 1, &.{});
+                        cursor -= 1;
+                        if (self.manual_echo) try self.redrawPromptLineWithSuggestion(stdout, line.items, cursor);
                     }
                 },
                 else => {
                     self.clearCompletionState();
-                    try line.append(self.allocator, byte);
-                    if (byte == ' ') try self.expandAbbreviationInEditor(&line);
-                    if (self.manual_echo) try self.redrawPromptLineWithSuggestion(stdout, line.items);
+                    try line.insert(self.allocator, cursor, byte);
+                    cursor += 1;
+                    if (byte == ' ') try self.expandAbbreviationInEditor(&line, &cursor);
+                    if (self.manual_echo) try self.redrawPromptLineWithSuggestion(stdout, line.items, cursor);
                 },
             }
         }
@@ -241,6 +319,7 @@ const Shell = struct {
         reader: *std.Io.Reader,
         stdout: *std.Io.Writer,
         line: *std.ArrayList(u8),
+        cursor: *usize,
         history_index: *usize,
         draft_line: *?[]u8,
     ) !void {
@@ -249,9 +328,44 @@ const Shell = struct {
 
         const key = reader.takeByte() catch return;
         switch (key) {
-            'A' => try self.navigateHistory(.previous, stdout, line, history_index, draft_line),
-            'B' => try self.navigateHistory(.next, stdout, line, history_index, draft_line),
-            'C' => try self.acceptAutosuggestion(stdout, line),
+            'A' => try self.navigateHistory(.previous, stdout, line, cursor, history_index, draft_line),
+            'B' => try self.navigateHistory(.next, stdout, line, cursor, history_index, draft_line),
+            'C' => {
+                self.clearCompletionState();
+                if (cursor.* < line.items.len) {
+                    cursor.* += 1;
+                    if (self.manual_echo) try self.redrawPromptLineWithSuggestion(stdout, line.items, cursor.*);
+                } else {
+                    try self.acceptAutosuggestion(stdout, line, cursor);
+                }
+            },
+            'D' => {
+                self.clearCompletionState();
+                if (cursor.* > 0) cursor.* -= 1;
+                if (self.manual_echo) try self.redrawPromptLineWithSuggestion(stdout, line.items, cursor.*);
+            },
+            'F' => {
+                self.clearCompletionState();
+                cursor.* = line.items.len;
+                if (self.manual_echo) try self.redrawPromptLineWithSuggestion(stdout, line.items, cursor.*);
+            },
+            'H' => {
+                self.clearCompletionState();
+                cursor.* = 0;
+                if (self.manual_echo) try self.redrawPromptLineWithSuggestion(stdout, line.items, cursor.*);
+            },
+            '1', '3', '4', '7', '8' => {
+                const suffix = reader.takeByte() catch return;
+                if (suffix != '~') return;
+                switch (key) {
+                    '1', '7' => cursor.* = 0,
+                    '4', '8' => cursor.* = line.items.len,
+                    '3' => if (cursor.* < line.items.len) try line.replaceRange(self.allocator, cursor.*, 1, &.{}),
+                    else => {},
+                }
+                self.clearCompletionState();
+                if (self.manual_echo) try self.redrawPromptLineWithSuggestion(stdout, line.items, cursor.*);
+            },
             else => {},
         }
     }
@@ -266,6 +380,7 @@ const Shell = struct {
         direction: HistoryDirection,
         stdout: *std.Io.Writer,
         line: *std.ArrayList(u8),
+        cursor: *usize,
         history_index: *usize,
         draft_line: *?[]u8,
     ) !void {
@@ -280,19 +395,22 @@ const Shell = struct {
             .previous => {
                 if (history_index.* > 0) history_index.* -= 1;
                 try self.replaceCurrentLine(line, self.history.items[history_index.*]);
+                cursor.* = line.items.len;
             },
             .next => {
                 if (history_index.* + 1 < self.history.items.len) {
                     history_index.* += 1;
                     try self.replaceCurrentLine(line, self.history.items[history_index.*]);
+                    cursor.* = line.items.len;
                 } else {
                     history_index.* = self.history.items.len;
                     try self.replaceCurrentLine(line, draft_line.* orelse "");
+                    cursor.* = line.items.len;
                 }
             },
         }
 
-        try self.redrawPromptLineWithSuggestion(stdout, line.items);
+        try self.redrawPromptLineWithSuggestion(stdout, line.items, cursor.*);
     }
 
     fn replaceCurrentLine(self: *Shell, line: *std.ArrayList(u8), contents: []const u8) !void {
@@ -302,26 +420,44 @@ const Shell = struct {
         try line.appendSlice(self.allocator, contents);
     }
 
-    fn redrawPromptLine(self: *Shell, stdout: *std.Io.Writer, line: []const u8) !void {
+    fn redrawPromptLine(self: *Shell, stdout: *std.Io.Writer, line: []const u8, cursor: usize) !void {
         if (!self.manual_echo) return;
         try stdout.writeAll("\r\x1b[2K");
         try self.writePrompt(stdout);
         try self.writeHighlightedLine(stdout, line);
+        try self.moveCursorBack(stdout, line.len - @min(cursor, line.len));
     }
 
-    fn redrawPromptLineWithSuggestion(self: *Shell, stdout: *std.Io.Writer, line: []const u8) !void {
-        try self.redrawPromptLine(stdout, line);
-        if (!self.manual_echo or line.len == 0) return;
-        const suggestion = self.findHistorySuggestion(line) orelse return;
-        if (suggestion.len <= line.len) return;
+    fn redrawPromptLineWithSuggestion(self: *Shell, stdout: *std.Io.Writer, line: []const u8, cursor: usize) !void {
+        if (!self.manual_echo) return;
+        try stdout.writeAll("\r\x1b[2K");
+        try self.writePrompt(stdout);
+        try self.writeHighlightedLine(stdout, line);
+        var suffix_len: usize = 0;
+        if (cursor == line.len and line.len > 0) {
+            suffix_len = try self.writeAutosuggestion(stdout, line);
+        }
+        try self.moveCursorBack(stdout, line.len - @min(cursor, line.len) + suffix_len);
+    }
+
+    fn writeAutosuggestion(self: *Shell, stdout: *std.Io.Writer, line: []const u8) !usize {
+        const suggestion = self.findHistorySuggestion(line) orelse return 0;
+        if (suggestion.len <= line.len) return 0;
         const suffix = suggestion[line.len..];
         try stdout.writeAll("\x1b[2m");
         try stdout.writeAll(suffix);
         try stdout.writeAll("\x1b[0m");
-        for (suffix) |_| try stdout.writeByte(0x08);
+        return suffix.len;
+    }
+
+    fn moveCursorBack(self: *Shell, stdout: *std.Io.Writer, count: usize) !void {
+        _ = self;
+        if (count == 0) return;
+        try stdout.print("\x1b[{d}D", .{count});
     }
 
     fn writePrompt(self: *Shell, stdout: *std.Io.Writer) !void {
+        if (self.manual_echo) try self.writeTerminalIntegration(stdout);
         switch (self.prompt_mode) {
             .classic => try stdout.writeAll("$ "),
             .smart => {
@@ -340,6 +476,32 @@ const Shell = struct {
                 if (self.last_duration_ms > 250) try stdout.print(" {d}ms", .{self.last_duration_ms});
                 try stdout.writeAll(" $ ");
             },
+        }
+    }
+
+    fn writeTerminalIntegration(self: *Shell, stdout: *std.Io.Writer) !void {
+        const cwd = std.process.currentPathAlloc(self.io, self.allocator) catch return;
+        defer self.allocator.free(cwd);
+
+        try stdout.print("\x1b]0;ZiggyZag: {s}\x07", .{baseName(cwd)});
+        const host = self.env.get("HOSTNAME") orelse self.env.get("COMPUTERNAME") orelse "localhost";
+        try stdout.print("\x1b]7;file://{s}", .{host});
+        try self.writeFileUriPath(stdout, cwd);
+        try stdout.writeByte(0x07);
+    }
+
+    fn writeFileUriPath(self: *Shell, stdout: *std.Io.Writer, path: []const u8) !void {
+        _ = self;
+        if (builtin.os.tag == .windows and path.len >= 2 and path[1] == ':') {
+            try stdout.writeByte('/');
+        }
+
+        for (path) |c| {
+            switch (c) {
+                '\\' => try stdout.writeByte('/'),
+                ' ' => try stdout.writeAll("%20"),
+                else => try stdout.writeByte(c),
+            }
         }
     }
 
@@ -455,25 +617,28 @@ const Shell = struct {
         return best;
     }
 
-    fn acceptAutosuggestion(self: *Shell, stdout: *std.Io.Writer, line: *std.ArrayList(u8)) !void {
+    fn acceptAutosuggestion(self: *Shell, stdout: *std.Io.Writer, line: *std.ArrayList(u8), cursor: *usize) !void {
         const suggestion = self.findHistorySuggestion(line.items) orelse {
             if (self.manual_echo) try stdout.writeByte(0x07);
             return;
         };
         try self.replaceCurrentLine(line, suggestion);
-        if (self.manual_echo) try self.redrawPromptLine(stdout, line.items);
+        cursor.* = line.items.len;
+        if (self.manual_echo) try self.redrawPromptLine(stdout, line.items, cursor.*);
     }
 
-    fn acceptFuzzyHistoryMatch(self: *Shell, stdout: *std.Io.Writer, line: *std.ArrayList(u8)) !void {
+    fn acceptFuzzyHistoryMatch(self: *Shell, stdout: *std.Io.Writer, line: *std.ArrayList(u8), cursor: *usize) !void {
         const match = self.bestFuzzyHistoryMatch(line.items) orelse {
             if (self.manual_echo) try stdout.writeByte(0x07);
             return;
         };
         try self.replaceCurrentLine(line, match);
-        if (self.manual_echo) try self.redrawPromptLine(stdout, line.items);
+        cursor.* = line.items.len;
+        if (self.manual_echo) try self.redrawPromptLine(stdout, line.items, cursor.*);
     }
 
-    fn expandAbbreviationInEditor(self: *Shell, line: *std.ArrayList(u8)) !void {
+    fn expandAbbreviationInEditor(self: *Shell, line: *std.ArrayList(u8), cursor: *usize) !void {
+        if (cursor.* != line.items.len) return;
         if (line.items.len == 0 or line.items[line.items.len - 1] != ' ') return;
         const command = std.mem.trim(u8, line.items, " \t");
         if (std.mem.indexOfAny(u8, command, " \t|&<>") != null) return;
@@ -481,13 +646,20 @@ const Shell = struct {
         line.clearRetainingCapacity();
         try line.appendSlice(self.allocator, abbr.value);
         try line.append(self.allocator, ' ');
+        cursor.* = line.items.len;
     }
 
-    fn completeCommand(self: *Shell, line: *std.ArrayList(u8), stdout: *std.Io.Writer) !void {
+    fn completeCommand(self: *Shell, line: *std.ArrayList(u8), cursor: *usize, stdout: *std.Io.Writer) !void {
+        if (cursor.* != line.items.len) {
+            self.clearCompletionState();
+            if (self.manual_echo) try stdout.writeByte(0x07);
+            return;
+        }
+
         const token_start = completionTokenStart(line.items);
         if (token_start > 0) {
-            if (try self.completeRegisteredCommand(line, stdout, token_start)) return;
-            try self.completePathArgument(line, stdout, token_start);
+            if (try self.completeRegisteredCommand(line, cursor, stdout, token_start)) return;
+            try self.completePathArgument(line, cursor, stdout, token_start);
             return;
         }
 
@@ -515,6 +687,7 @@ const Shell = struct {
             if (common_prefix.len > prefix.len) {
                 const suffix = common_prefix[prefix.len..];
                 try line.appendSlice(self.allocator, suffix);
+                cursor.* = line.items.len;
                 try stdout.writeAll(suffix);
                 self.clearCompletionState();
                 return;
@@ -538,14 +711,16 @@ const Shell = struct {
         if (completion.len > prefix.len) {
             const suffix = completion[prefix.len..];
             try line.appendSlice(self.allocator, suffix);
+            cursor.* = line.items.len;
             try stdout.writeAll(suffix);
         }
 
         try line.append(self.allocator, ' ');
+        cursor.* = line.items.len;
         try stdout.writeByte(' ');
     }
 
-    fn completeRegisteredCommand(self: *Shell, line: *std.ArrayList(u8), stdout: *std.Io.Writer, token_start: usize) !bool {
+    fn completeRegisteredCommand(self: *Shell, line: *std.ArrayList(u8), cursor: *usize, stdout: *std.Io.Writer, token_start: usize) !bool {
         const command = commandNameForCompletion(line.items) orelse return false;
         const spec = self.findCompletionSpec(command);
         if (spec == null and !self.hasDeclarativeCompletions(command)) return false;
@@ -579,6 +754,7 @@ const Shell = struct {
             if (common_prefix.len > prefix.len) {
                 const suffix = common_prefix[prefix.len..];
                 try line.appendSlice(self.allocator, suffix);
+                cursor.* = line.items.len;
                 try stdout.writeAll(suffix);
                 self.clearCompletionState();
                 return true;
@@ -602,15 +778,17 @@ const Shell = struct {
         if (completion.len > prefix.len) {
             const suffix = completion[prefix.len..];
             try line.appendSlice(self.allocator, suffix);
+            cursor.* = line.items.len;
             try stdout.writeAll(suffix);
         }
 
         try line.append(self.allocator, ' ');
+        cursor.* = line.items.len;
         try stdout.writeByte(' ');
         return true;
     }
 
-    fn completePathArgument(self: *Shell, line: *std.ArrayList(u8), stdout: *std.Io.Writer, token_start: usize) !void {
+    fn completePathArgument(self: *Shell, line: *std.ArrayList(u8), cursor: *usize, stdout: *std.Io.Writer, token_start: usize) !void {
         const prefix = line.items[token_start..];
         var matches: std.ArrayList(CompletionEntry) = .empty;
         defer {
@@ -632,6 +810,7 @@ const Shell = struct {
             if (common_prefix.len > prefix.len) {
                 const suffix = common_prefix[prefix.len..];
                 try line.appendSlice(self.allocator, suffix);
+                cursor.* = line.items.len;
                 try stdout.writeAll(suffix);
                 self.clearCompletionState();
                 return;
@@ -655,14 +834,17 @@ const Shell = struct {
         if (completion.text.len > prefix.len) {
             const suffix = completion.text[prefix.len..];
             try line.appendSlice(self.allocator, suffix);
+            cursor.* = line.items.len;
             try stdout.writeAll(suffix);
         }
 
         if (completion.is_directory) {
             try line.append(self.allocator, '/');
+            cursor.* = line.items.len;
             try stdout.writeByte('/');
         } else {
             try line.append(self.allocator, ' ');
+            cursor.* = line.items.len;
             try stdout.writeByte(' ');
         }
     }
@@ -847,7 +1029,7 @@ const Shell = struct {
             defer stdout_buffer.deinit(self.allocator);
             var stderr_buffer: std.ArrayList(u8) = .empty;
             defer stderr_buffer.deinit(self.allocator);
-            try self.changeDirectory(parsed.argv.items, &stderr_buffer);
+            if (try self.changeDirectory(parsed.argv.items, &stderr_buffer)) try self.rememberCurrentDirectory(true);
             try self.emitCommandOutput(&parsed, stdout_buffer.items, stderr_buffer.items);
             return true;
         }
@@ -967,7 +1149,7 @@ const Shell = struct {
             defer stdout_buffer.deinit(self.allocator);
             var stderr_buffer: std.ArrayList(u8) = .empty;
             defer stderr_buffer.deinit(self.allocator);
-            try self.mkcdCommand(parsed.argv.items, &stderr_buffer);
+            if (try self.mkcdCommand(parsed.argv.items, &stderr_buffer)) try self.rememberCurrentDirectory(true);
             try self.emitCommandOutput(&parsed, stdout_buffer.items, stderr_buffer.items);
             return true;
         }
@@ -977,9 +1159,69 @@ const Shell = struct {
             defer stdout_buffer.deinit(self.allocator);
             var stderr_buffer: std.ArrayList(u8) = .empty;
             defer stderr_buffer.deinit(self.allocator);
-            try self.upCommand(parsed.argv.items, &stderr_buffer);
+            if (try self.upCommand(parsed.argv.items, &stderr_buffer)) try self.rememberCurrentDirectory(true);
             try self.emitCommandOutput(&parsed, stdout_buffer.items, stderr_buffer.items);
             return true;
+        }
+
+        if (std.mem.eql(u8, command, "dirs")) {
+            var stdout_buffer: std.ArrayList(u8) = .empty;
+            defer stdout_buffer.deinit(self.allocator);
+            var stderr_buffer: std.ArrayList(u8) = .empty;
+            defer stderr_buffer.deinit(self.allocator);
+            try self.dirsCommand(parsed.argv.items, &stdout_buffer);
+            try self.emitCommandOutput(&parsed, stdout_buffer.items, stderr_buffer.items);
+            return true;
+        }
+
+        if (std.mem.eql(u8, command, "back")) {
+            var stdout_buffer: std.ArrayList(u8) = .empty;
+            defer stdout_buffer.deinit(self.allocator);
+            var stderr_buffer: std.ArrayList(u8) = .empty;
+            defer stderr_buffer.deinit(self.allocator);
+            try self.backCommand(parsed.argv.items, &stdout_buffer, &stderr_buffer);
+            try self.emitCommandOutput(&parsed, stdout_buffer.items, stderr_buffer.items);
+            return true;
+        }
+
+        if (std.mem.eql(u8, command, "forward")) {
+            var stdout_buffer: std.ArrayList(u8) = .empty;
+            defer stdout_buffer.deinit(self.allocator);
+            var stderr_buffer: std.ArrayList(u8) = .empty;
+            defer stderr_buffer.deinit(self.allocator);
+            try self.forwardCommand(parsed.argv.items, &stdout_buffer, &stderr_buffer);
+            try self.emitCommandOutput(&parsed, stdout_buffer.items, stderr_buffer.items);
+            return true;
+        }
+
+        if (std.mem.eql(u8, command, "jump")) {
+            var stdout_buffer: std.ArrayList(u8) = .empty;
+            defer stdout_buffer.deinit(self.allocator);
+            var stderr_buffer: std.ArrayList(u8) = .empty;
+            defer stderr_buffer.deinit(self.allocator);
+            try self.jumpCommand(parsed.argv.items, &stdout_buffer, &stderr_buffer);
+            try self.emitCommandOutput(&parsed, stdout_buffer.items, stderr_buffer.items);
+            return true;
+        }
+
+        if (std.mem.eql(u8, command, "project")) {
+            var stdout_buffer: std.ArrayList(u8) = .empty;
+            defer stdout_buffer.deinit(self.allocator);
+            var stderr_buffer: std.ArrayList(u8) = .empty;
+            defer stderr_buffer.deinit(self.allocator);
+            try self.projectCommand(parsed.argv.items, &stdout_buffer);
+            try self.emitCommandOutput(&parsed, stdout_buffer.items, stderr_buffer.items);
+            return true;
+        }
+
+        if (std.mem.eql(u8, command, "run")) {
+            var stdout_buffer: std.ArrayList(u8) = .empty;
+            defer stdout_buffer.deinit(self.allocator);
+            var stderr_buffer: std.ArrayList(u8) = .empty;
+            defer stderr_buffer.deinit(self.allocator);
+            const keep_running = try self.runTaskCommand(parsed.argv.items, &stdout_buffer, &stderr_buffer);
+            try self.emitCommandOutput(&parsed, stdout_buffer.items, stderr_buffer.items);
+            return keep_running;
         }
 
         if (std.mem.eql(u8, command, "jobs")) {
@@ -1209,16 +1451,19 @@ const Shell = struct {
         return true;
     }
 
-    fn changeDirectory(self: *Shell, argv: []const []const u8, stderr_buffer: *std.ArrayList(u8)) !void {
+    fn changeDirectory(self: *Shell, argv: []const []const u8, stderr_buffer: *std.ArrayList(u8)) !bool {
         const target = if (argv.len < 2 or std.mem.eql(u8, argv[1], "~"))
             self.env.get("HOME") orelse ""
         else
             argv[1];
 
-        if (target.len == 0) return;
+        if (target.len == 0) return true;
         std.process.setCurrentPath(self.io, target) catch {
             try appendFmt(self.allocator, stderr_buffer, "cd: {s}: No such file or directory\n", .{target});
+            self.last_status = 1;
+            return false;
         };
+        return true;
     }
 
     fn typeCommand(self: *Shell, argv: []const []const u8, stdout_buffer: *std.ArrayList(u8)) !void {
@@ -1293,35 +1538,140 @@ const Shell = struct {
         }
     }
 
-    fn mkcdCommand(self: *Shell, argv: []const []const u8, stderr_buffer: *std.ArrayList(u8)) !void {
+    fn mkcdCommand(self: *Shell, argv: []const []const u8, stderr_buffer: *std.ArrayList(u8)) !bool {
         if (argv.len < 2) {
             try stderr_buffer.appendSlice(self.allocator, "mkcd: missing directory\n");
             self.last_status = 2;
-            return;
+            return false;
         }
 
         const target = argv[1];
         std.Io.Dir.cwd().createDirPath(self.io, target) catch |err| {
             try appendFmt(self.allocator, stderr_buffer, "mkcd: {s}: {s}\n", .{ target, @errorName(err) });
             self.last_status = 1;
-            return;
+            return false;
         };
         std.process.setCurrentPath(self.io, target) catch |err| {
             try appendFmt(self.allocator, stderr_buffer, "mkcd: {s}: {s}\n", .{ target, @errorName(err) });
             self.last_status = 1;
+            return false;
         };
+        return true;
     }
 
-    fn upCommand(self: *Shell, argv: []const []const u8, stderr_buffer: *std.ArrayList(u8)) !void {
+    fn upCommand(self: *Shell, argv: []const []const u8, stderr_buffer: *std.ArrayList(u8)) !bool {
         const count = if (argv.len >= 2) std.fmt.parseInt(usize, argv[1], 10) catch 1 else 1;
         var index: usize = 0;
         while (index < count) : (index += 1) {
             std.process.setCurrentPath(self.io, "..") catch |err| {
                 try appendFmt(self.allocator, stderr_buffer, "up: {s}\n", .{@errorName(err)});
                 self.last_status = 1;
-                return;
+                return false;
             };
         }
+        return true;
+    }
+
+    fn rememberCurrentDirectory(self: *Shell, truncate_forward: bool) !void {
+        const raw_cwd = try std.process.currentPathAlloc(self.io, self.allocator);
+        defer self.allocator.free(raw_cwd);
+
+        const cwd = try self.allocator.dupe(u8, raw_cwd);
+        errdefer self.allocator.free(cwd);
+
+        if (self.dir_history.items.len > 0 and self.dir_index < self.dir_history.items.len) {
+            if (std.mem.eql(u8, self.dir_history.items[self.dir_index], cwd)) {
+                self.allocator.free(cwd);
+                return;
+            }
+        }
+
+        if (truncate_forward and self.dir_history.items.len > 0) {
+            while (self.dir_history.items.len > self.dir_index + 1) {
+                const removed = self.dir_history.pop().?;
+                self.allocator.free(removed);
+            }
+        }
+
+        try self.dir_history.append(self.allocator, cwd);
+        self.dir_index = self.dir_history.items.len - 1;
+    }
+
+    fn dirsCommand(self: *Shell, argv: []const []const u8, stdout_buffer: *std.ArrayList(u8)) !void {
+        const json = hasArg(argv, "--json");
+        for (self.dir_history.items, 0..) |entry, index| {
+            if (json) {
+                try appendFmt(self.allocator, stdout_buffer, "{{\"index\":{d},\"current\":{},\"path\":", .{ index, index == self.dir_index });
+                try appendJsonString(self.allocator, stdout_buffer, entry);
+                try stdout_buffer.appendSlice(self.allocator, "}\n");
+            } else {
+                const marker: u8 = if (index == self.dir_index) '*' else ' ';
+                try appendFmt(self.allocator, stdout_buffer, "{c} {d: >3}  {s}\n", .{ marker, index, entry });
+            }
+        }
+    }
+
+    fn backCommand(self: *Shell, argv: []const []const u8, stdout_buffer: *std.ArrayList(u8), stderr_buffer: *std.ArrayList(u8)) !void {
+        if (self.dir_history.items.len == 0 or self.dir_index == 0) {
+            try stderr_buffer.appendSlice(self.allocator, "back: no earlier directory\n");
+            self.last_status = 1;
+            return;
+        }
+
+        const count = if (argv.len >= 2) std.fmt.parseInt(usize, argv[1], 10) catch 1 else 1;
+        self.dir_index = if (count > self.dir_index) 0 else self.dir_index - count;
+        try self.goToDirectoryIndex(stdout_buffer, stderr_buffer);
+    }
+
+    fn forwardCommand(self: *Shell, argv: []const []const u8, stdout_buffer: *std.ArrayList(u8), stderr_buffer: *std.ArrayList(u8)) !void {
+        if (self.dir_history.items.len == 0 or self.dir_index + 1 >= self.dir_history.items.len) {
+            try stderr_buffer.appendSlice(self.allocator, "forward: no later directory\n");
+            self.last_status = 1;
+            return;
+        }
+
+        const count = if (argv.len >= 2) std.fmt.parseInt(usize, argv[1], 10) catch 1 else 1;
+        self.dir_index = @min(self.dir_history.items.len - 1, self.dir_index + count);
+        try self.goToDirectoryIndex(stdout_buffer, stderr_buffer);
+    }
+
+    fn jumpCommand(self: *Shell, argv: []const []const u8, stdout_buffer: *std.ArrayList(u8), stderr_buffer: *std.ArrayList(u8)) !void {
+        if (argv.len < 2) {
+            try stderr_buffer.appendSlice(self.allocator, "jump: usage: jump QUERY\n");
+            self.last_status = 2;
+            return;
+        }
+
+        const query = argv[1];
+        var best_index: ?usize = null;
+        var best_score: usize = std.math.maxInt(usize);
+        for (self.dir_history.items, 0..) |entry, index| {
+            if (fuzzyScore(query, entry)) |score| {
+                if (score < best_score or (score == best_score and index > (best_index orelse 0))) {
+                    best_score = score;
+                    best_index = index;
+                }
+            }
+        }
+
+        const target = best_index orelse {
+            try appendFmt(self.allocator, stderr_buffer, "jump: {s}: no matching directory\n", .{query});
+            self.last_status = 1;
+            return;
+        };
+        self.dir_index = target;
+        try self.goToDirectoryIndex(stdout_buffer, stderr_buffer);
+    }
+
+    fn goToDirectoryIndex(self: *Shell, stdout_buffer: *std.ArrayList(u8), stderr_buffer: *std.ArrayList(u8)) !void {
+        if (self.dir_index >= self.dir_history.items.len) return;
+        const target = self.dir_history.items[self.dir_index];
+        std.process.setCurrentPath(self.io, target) catch |err| {
+            try appendFmt(self.allocator, stderr_buffer, "dirs: {s}: {s}\n", .{ target, @errorName(err) });
+            self.last_status = 1;
+            return;
+        };
+        try appendFmt(self.allocator, stdout_buffer, "{s}\n", .{target});
     }
 
     fn echoCommand(self: *Shell, argv: []const []const u8, stdout_buffer: *std.ArrayList(u8)) !void {
@@ -1342,22 +1692,28 @@ const Shell = struct {
             \\  abbr NAME=VALUE    Expand a shortcut before execution
             \\  unabbr NAME        Remove an abbreviation
             \\  unalias NAME       Remove a shortcut
+            \\  back [N]           Return to an earlier directory
             \\  cd [DIR]           Change directories
             \\  complete ...       Register programmable completions
             \\  config ...         Show, reload, and validate startup config
             \\  declare NAME=VALUE Store a shell variable
+            \\  dirs [--json]      Show directory navigation history
             \\  doctor [--json]    Inspect shell health and runtime state
             \\  echo [ARGS...]     Print text
             \\  env [NAME]         Show environment variables
             \\  export NAME=VALUE  Store an environment variable
+            \\  forward [N]        Move forward in directory history
             \\  history [N]        View command history
             \\  inspect COMMAND    Explain how ZiggyZag would parse a command
+            \\  jump QUERY         Fuzzy-jump to a visited directory
             \\  jobs               List background jobs
             \\  mkcd DIR           Create and enter a directory
             \\  path [--json]      Show PATH entries
+            \\  project [--json]   Detect project kind, root, and tasks
             \\  prompt [MODE]      Show or set prompt mode: classic, smart
             \\  pwd                Print the current directory
             \\  repeat N COMMAND   Run a command multiple times
+            \\  run [TASK]         Run a project-aware task
             \\  source FILE        Run commands from a file
             \\  timeit COMMAND     Run a command and report duration
             \\  type NAME          Explain how a command resolves
@@ -1369,7 +1725,8 @@ const Shell = struct {
             \\
             \\Line editing:
             \\  Tab completion, autosuggestions, Ctrl-F accept suggestion, Ctrl-R fuzzy history,
-            \\  Up/Down history navigation, redirection, native simple pipes, and background jobs.
+            \\  cursor movement, Home/End, Ctrl-A/E, Ctrl-U/K/W, redirection, native simple pipes,
+            \\  and background jobs.
             \\
             \\Slash commands:
             \\  /help, /doctor, /config, /reload, /inspect, /smart, /classic
@@ -1480,6 +1837,28 @@ const Shell = struct {
 
         if (argv.len >= 3 and std.mem.eql(u8, argv[1], "--search")) {
             try self.printHistorySearch(argv[2], stdout_buffer);
+            return;
+        }
+
+        if (argv.len >= 2 and std.mem.eql(u8, argv[1], "--failed")) {
+            try self.printFailedHistory(stdout_buffer);
+            return;
+        }
+
+        if (argv.len >= 2 and std.mem.eql(u8, argv[1], "--slow")) {
+            const threshold = if (argv.len >= 3) std.fmt.parseInt(i64, argv[2], 10) catch 250 else 250;
+            try self.printSlowHistory(threshold, stdout_buffer);
+            return;
+        }
+
+        if (argv.len >= 2 and std.mem.eql(u8, argv[1], "--cwd")) {
+            const cwd = if (argv.len >= 3) argv[2] else "";
+            try self.printHistoryForCwd(cwd, stdout_buffer);
+            return;
+        }
+
+        if (argv.len >= 2 and std.mem.eql(u8, argv[1], "--stats")) {
+            try self.printHistoryStats(stdout_buffer);
             return;
         }
 
@@ -1696,6 +2075,79 @@ const Shell = struct {
                 printed += 1;
             }
         }
+    }
+
+    fn printFailedHistory(self: *Shell, stdout_buffer: *std.ArrayList(u8)) !void {
+        for (self.history_meta.items, 0..) |entry, index| {
+            if (entry.status == 0) continue;
+            try appendFmt(self.allocator, stdout_buffer, "{d: >5}  status={d} cwd={s}  {s}\n", .{
+                index + 1,
+                entry.status,
+                entry.cwd,
+                entry.command,
+            });
+        }
+    }
+
+    fn printSlowHistory(self: *Shell, threshold_ms: i64, stdout_buffer: *std.ArrayList(u8)) !void {
+        for (self.history_meta.items, 0..) |entry, index| {
+            if (entry.duration_ms < threshold_ms) continue;
+            try appendFmt(self.allocator, stdout_buffer, "{d: >5}  duration={d}ms status={d}  {s}\n", .{
+                index + 1,
+                entry.duration_ms,
+                entry.status,
+                entry.command,
+            });
+        }
+    }
+
+    fn printHistoryForCwd(self: *Shell, cwd_filter: []const u8, stdout_buffer: *std.ArrayList(u8)) !void {
+        const raw_cwd = if (cwd_filter.len == 0) try std.process.currentPathAlloc(self.io, self.allocator) else null;
+        defer if (raw_cwd) |cwd| self.allocator.free(cwd);
+        const effective_cwd: []const u8 = if (cwd_filter.len > 0) cwd_filter else raw_cwd.?;
+
+        for (self.history_meta.items, 0..) |entry, index| {
+            if (!std.mem.eql(u8, entry.cwd, effective_cwd)) continue;
+            try appendFmt(self.allocator, stdout_buffer, "{d: >5}  status={d} duration={d}ms  {s}\n", .{
+                index + 1,
+                entry.status,
+                entry.duration_ms,
+                entry.command,
+            });
+        }
+    }
+
+    fn printHistoryStats(self: *Shell, stdout_buffer: *std.ArrayList(u8)) !void {
+        var failed: usize = 0;
+        var slowest_ms: i64 = 0;
+        var total_ms: i64 = 0;
+        var slowest_command: []const u8 = "";
+
+        for (self.history_meta.items) |entry| {
+            if (entry.status != 0) failed += 1;
+            total_ms += entry.duration_ms;
+            if (entry.duration_ms >= slowest_ms) {
+                slowest_ms = entry.duration_ms;
+                slowest_command = entry.command;
+            }
+        }
+
+        const average = if (self.history_meta.items.len == 0) 0 else @divTrunc(total_ms, @as(i64, @intCast(self.history_meta.items.len)));
+        try appendFmt(self.allocator, stdout_buffer,
+            \\history stats
+            \\  commands: {d}
+            \\  failed: {d}
+            \\  average_duration_ms: {d}
+            \\  slowest_duration_ms: {d}
+            \\  slowest_command: {s}
+            \\
+        , .{
+            self.history_meta.items.len,
+            failed,
+            average,
+            slowest_ms,
+            slowest_command,
+        });
     }
 
     fn printHistoryMeta(self: *Shell, stdout_buffer: *std.ArrayList(u8)) !void {
@@ -2051,6 +2503,145 @@ const Shell = struct {
             metadata_path,
             branch orelse "",
         });
+    }
+
+    fn projectCommand(self: *Shell, argv: []const []const u8, stdout_buffer: *std.ArrayList(u8)) !void {
+        const info = try self.detectProject() orelse {
+            if (hasArg(argv, "--json")) {
+                try stdout_buffer.appendSlice(self.allocator, "{\"kind\":\"none\",\"root\":\"\",\"tasks\":[]}\n");
+            } else {
+                try stdout_buffer.appendSlice(self.allocator, "project: none\n");
+            }
+            return;
+        };
+        defer info.deinit(self.allocator);
+
+        const tasks = projectTasks(info.kind);
+        if (hasArg(argv, "--json")) {
+            try stdout_buffer.appendSlice(self.allocator, "{\"kind\":");
+            try appendJsonString(self.allocator, stdout_buffer, @tagName(info.kind));
+            try stdout_buffer.appendSlice(self.allocator, ",\"root\":");
+            try appendJsonString(self.allocator, stdout_buffer, info.root);
+            try stdout_buffer.appendSlice(self.allocator, ",\"tasks\":[");
+            var parts = std.mem.splitScalar(u8, tasks, ' ');
+            var first = true;
+            while (parts.next()) |task| {
+                if (task.len == 0) continue;
+                if (!first) try stdout_buffer.append(self.allocator, ',');
+                first = false;
+                try appendJsonString(self.allocator, stdout_buffer, task);
+            }
+            try stdout_buffer.appendSlice(self.allocator, "]}\n");
+            return;
+        }
+
+        try appendFmt(self.allocator, stdout_buffer,
+            \\project: {s}
+            \\root: {s}
+            \\tasks: {s}
+            \\
+        , .{ @tagName(info.kind), info.root, tasks });
+    }
+
+    fn runTaskCommand(self: *Shell, argv: []const []const u8, stdout_buffer: *std.ArrayList(u8), stderr_buffer: *std.ArrayList(u8)) anyerror!bool {
+        const info = try self.detectProject() orelse {
+            try stderr_buffer.appendSlice(self.allocator, "run: no supported project found\n");
+            self.last_status = 1;
+            return true;
+        };
+        defer info.deinit(self.allocator);
+
+        if (argv.len < 2 or std.mem.eql(u8, argv[1], "--list")) {
+            try appendFmt(self.allocator, stdout_buffer, "tasks: {s}\n", .{projectTasks(info.kind)});
+            return true;
+        }
+
+        const task = argv[1];
+        const command_line = try self.taskCommand(info.kind, task);
+        defer self.allocator.free(command_line);
+
+        const original = try std.process.currentPathAlloc(self.io, self.allocator);
+        defer self.allocator.free(original);
+        defer std.process.setCurrentPath(self.io, original) catch {};
+
+        std.process.setCurrentPath(self.io, info.root) catch |err| {
+            try appendFmt(self.allocator, stderr_buffer, "run: {s}: {s}\n", .{ info.root, @errorName(err) });
+            self.last_status = 1;
+            return true;
+        };
+
+        try appendFmt(self.allocator, stdout_buffer, "run: {s}\n", .{command_line});
+        return try self.execute(command_line);
+    }
+
+    fn detectProject(self: *Shell) !?ProjectInfo {
+        const cwd = try std.process.currentPathAlloc(self.io, self.allocator);
+        defer self.allocator.free(cwd);
+
+        var current = try self.allocator.dupe(u8, cwd);
+        defer self.allocator.free(current);
+
+        while (true) {
+            if (try self.pathExistsAt(current, "build.zig")) return .{ .root = try self.allocator.dupe(u8, current), .kind = .zig };
+            if (try self.pathExistsAt(current, "package.json")) return .{ .root = try self.allocator.dupe(u8, current), .kind = .node };
+            if (try self.pathExistsAt(current, "Cargo.toml")) return .{ .root = try self.allocator.dupe(u8, current), .kind = .rust };
+            if (try self.pathExistsAt(current, "pyproject.toml")) return .{ .root = try self.allocator.dupe(u8, current), .kind = .python };
+            if (try self.pathExistsAt(current, "go.mod")) return .{ .root = try self.allocator.dupe(u8, current), .kind = .go };
+            if (try self.pathExistsAt(current, "Makefile")) return .{ .root = try self.allocator.dupe(u8, current), .kind = .make };
+            if (try self.pathExistsAt(current, ".git")) return .{ .root = try self.allocator.dupe(u8, current), .kind = .git };
+
+            const parent = std.fs.path.dirname(current) orelse return null;
+            if (std.mem.eql(u8, parent, current)) return null;
+            const next = try self.allocator.dupe(u8, parent);
+            self.allocator.free(current);
+            current = next;
+        }
+    }
+
+    fn pathExistsAt(self: *Shell, root: []const u8, name: []const u8) !bool {
+        const path = try std.fs.path.join(self.allocator, &.{ root, name });
+        defer self.allocator.free(path);
+        std.Io.Dir.accessAbsolute(self.io, path, .{}) catch return false;
+        return true;
+    }
+
+    fn taskCommand(self: *Shell, kind: ProjectKind, task: []const u8) ![]u8 {
+        switch (kind) {
+            .zig => {
+                if (std.mem.eql(u8, task, "build")) return try self.allocator.dupe(u8, "zig build");
+                if (std.mem.eql(u8, task, "test")) return try self.allocator.dupe(u8, "zig build test");
+                if (std.mem.eql(u8, task, "run")) return try self.allocator.dupe(u8, "zig build run");
+                if (std.mem.eql(u8, task, "fmt")) return try self.allocator.dupe(u8, "zig fmt src/main.zig build.zig");
+            },
+            .node => {
+                if (std.mem.eql(u8, task, "install")) return try self.allocator.dupe(u8, "npm install");
+                return try std.fmt.allocPrint(self.allocator, "npm run {s}", .{task});
+            },
+            .rust => {
+                if (std.mem.eql(u8, task, "build")) return try self.allocator.dupe(u8, "cargo build");
+                if (std.mem.eql(u8, task, "test")) return try self.allocator.dupe(u8, "cargo test");
+                if (std.mem.eql(u8, task, "run")) return try self.allocator.dupe(u8, "cargo run");
+                if (std.mem.eql(u8, task, "fmt")) return try self.allocator.dupe(u8, "cargo fmt");
+                if (std.mem.eql(u8, task, "check")) return try self.allocator.dupe(u8, "cargo check");
+            },
+            .python => {
+                if (std.mem.eql(u8, task, "test")) return try self.allocator.dupe(u8, "python -m pytest");
+                if (std.mem.eql(u8, task, "run")) return try self.allocator.dupe(u8, "python -m pip --version");
+                if (std.mem.eql(u8, task, "lint")) return try self.allocator.dupe(u8, "python -m ruff check .");
+            },
+            .go => {
+                if (std.mem.eql(u8, task, "build")) return try self.allocator.dupe(u8, "go build ./...");
+                if (std.mem.eql(u8, task, "test")) return try self.allocator.dupe(u8, "go test ./...");
+                if (std.mem.eql(u8, task, "run")) return try self.allocator.dupe(u8, "go run .");
+                if (std.mem.eql(u8, task, "fmt")) return try self.allocator.dupe(u8, "go fmt ./...");
+            },
+            .make => return try std.fmt.allocPrint(self.allocator, "make {s}", .{task}),
+            .git => {
+                if (std.mem.eql(u8, task, "status")) return try self.allocator.dupe(u8, "git status --short");
+                if (std.mem.eql(u8, task, "branch")) return try self.allocator.dupe(u8, "git branch --show-current");
+            },
+        }
+        return try std.fmt.allocPrint(self.allocator, "echo no task named {s}", .{task});
     }
 
     fn repeatCommand(self: *Shell, line: []const u8, argv: []const []const u8, stderr_buffer: *std.ArrayList(u8)) anyerror!bool {
@@ -3348,28 +3939,53 @@ fn commandRemainder(line: []const u8, words_to_skip: usize) ?[]const u8 {
     return line[index..];
 }
 
+fn previousWordStart(line: []const u8, cursor: usize) usize {
+    var index = @min(cursor, line.len);
+    while (index > 0 and isShellWhitespace(line[index - 1])) index -= 1;
+    while (index > 0 and !isShellWhitespace(line[index - 1])) index -= 1;
+    return index;
+}
+
+fn projectTasks(kind: ProjectKind) []const u8 {
+    return switch (kind) {
+        .zig => "build test run fmt",
+        .node => "install build test lint dev start",
+        .rust => "build test run fmt check",
+        .python => "test run lint",
+        .go => "build test run fmt",
+        .make => "build test install clean",
+        .git => "status branch",
+    };
+}
+
 fn builtinDescription(name: []const u8) ?[]const u8 {
     if (std.mem.eql(u8, name, "about")) return "show project summary";
     if (std.mem.eql(u8, name, "abbr")) return "manage visible command abbreviations";
     if (std.mem.eql(u8, name, "alias")) return "manage command aliases";
+    if (std.mem.eql(u8, name, "back")) return "return to an earlier directory";
     if (std.mem.eql(u8, name, "cd")) return "change directory";
     if (std.mem.eql(u8, name, "complete")) return "register completions";
     if (std.mem.eql(u8, name, "config")) return "show, reload, and validate startup config";
     if (std.mem.eql(u8, name, "declare")) return "set shell variables";
+    if (std.mem.eql(u8, name, "dirs")) return "show directory history";
     if (std.mem.eql(u8, name, "doctor")) return "inspect shell runtime state";
     if (std.mem.eql(u8, name, "echo")) return "print arguments";
     if (std.mem.eql(u8, name, "env")) return "show environment variables";
     if (std.mem.eql(u8, name, "exit")) return "leave the shell";
     if (std.mem.eql(u8, name, "export")) return "set environment variables";
+    if (std.mem.eql(u8, name, "forward")) return "move forward in directory history";
     if (std.mem.eql(u8, name, "help")) return "show shell help";
     if (std.mem.eql(u8, name, "history")) return "show and search history";
     if (std.mem.eql(u8, name, "inspect")) return "explain command parsing and execution path";
+    if (std.mem.eql(u8, name, "jump")) return "fuzzy-jump to a visited directory";
     if (std.mem.eql(u8, name, "jobs")) return "list background jobs";
     if (std.mem.eql(u8, name, "mkcd")) return "create and enter a directory";
     if (std.mem.eql(u8, name, "path")) return "show PATH entries";
+    if (std.mem.eql(u8, name, "project")) return "detect project tasks";
     if (std.mem.eql(u8, name, "prompt")) return "configure prompt modules";
     if (std.mem.eql(u8, name, "pwd")) return "print current directory";
     if (std.mem.eql(u8, name, "repeat")) return "run a command multiple times";
+    if (std.mem.eql(u8, name, "run")) return "run a project-aware task";
     if (std.mem.eql(u8, name, "source")) return "run commands from a file";
     if (std.mem.eql(u8, name, "timeit")) return "time a command";
     if (std.mem.eql(u8, name, "type")) return "explain command resolution";
@@ -3584,13 +4200,17 @@ fn sortCompletionEntries(items: []CompletionEntry) void {
 
 const shell_builtin_names = [_][]const u8{
     "about",
+    "back",
+    "dirs",
     "echo",
     "env",
     "exit",
+    "forward",
     "type",
     "pwd",
     "cd",
     "history",
+    "jump",
     "declare",
     "jobs",
     "complete",
@@ -3605,8 +4225,10 @@ const shell_builtin_names = [_][]const u8{
     "inspect",
     "mkcd",
     "path",
+    "project",
     "prompt",
     "repeat",
+    "run",
     "source",
     "timeit",
     "up",
@@ -3671,6 +4293,8 @@ test "fuzzy score and slash command helpers" {
     try std.testing.expect(slashCommandReplacement("/bin/ls") == null);
     try std.testing.expectEqualStrings("echo hello", commandRemainder("repeat 2 echo hello", 2).?);
     try std.testing.expect(commandRemainder("timeit", 1) == null);
+    try std.testing.expectEqual(@as(usize, 4), previousWordStart("one two", 7));
+    try std.testing.expectEqualStrings("build test run fmt", projectTasks(.zig));
 }
 
 test "config directives and names" {

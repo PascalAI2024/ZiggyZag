@@ -6,18 +6,18 @@ This file tracks what ZiggyZag already does and what would make it more useful a
 
 | Capability | Details |
 | --- | --- |
-| Interactive REPL | Prompt loop, command input, terminal mode, manual echo handling. |
-| Builtins | `about`, `abbr`, `alias`, `cd`, `complete`, `config`, `declare`, `doctor`, `echo`, `env`, `exit`, `export`, `help`, `history`, `inspect`, `jobs`, `mkcd`, `path`, `prompt`, `pwd`, `repeat`, `source`, `timeit`, `type`, `unalias`, `unabbr`, `unset`, `up`, `vars`, `which`. |
+| Interactive REPL | Prompt loop, command input, cursor-aware editing, terminal mode, manual echo handling, and Ghostty-friendly title/CWD hints. |
+| Builtins | `about`, `abbr`, `alias`, `back`, `cd`, `complete`, `config`, `declare`, `dirs`, `doctor`, `echo`, `env`, `exit`, `export`, `forward`, `help`, `history`, `inspect`, `jobs`, `jump`, `mkcd`, `path`, `project`, `prompt`, `pwd`, `repeat`, `run`, `source`, `timeit`, `type`, `unalias`, `unabbr`, `unset`, `up`, `vars`, `which`. |
 | Command lookup | PATH search and executable detection. |
 | Quoting | Single quotes, double quotes, and backslash handling. |
 | Redirection | stdout/stderr redirect and append. |
 | Completion | Builtin completion, executable completion, path completion, programmable completion, declarative specs, and pager descriptions. |
-| History | Listing, limits, Up/Down navigation, command recall, fuzzy search, metadata capture, read/write/append, startup and exit persistence. |
+| History | Listing, limits, Up/Down navigation, command recall, fuzzy search, failed/slow/cwd/stats queries, metadata capture, read/write/append, startup and exit persistence. |
 | Jobs | Background execution, `jobs`, job number reuse, and reaping. |
 | Variables | `declare`, validation, `$VAR`, `${VAR}`, and unset expansion behavior. |
-| Modern UX | Startup config, abbreviations, autosuggestion hooks, Ctrl-F accept, Ctrl-R fuzzy recall, syntax highlighting in smart prompt mode, and smart prompt modules. |
-| Introspection | `about`, `doctor`, `inspect`, `which`, `path`, slash shortcuts, JSON output for history/jobs/prompt/env/doctor, and config validation/reload. |
-| Convenience commands | `mkcd`, `up`, `repeat`, `timeit`, `source`, `env`, and `vars` make ZiggyZag more useful as a daily shell lab. |
+| Modern UX | Startup config, abbreviations, cursor editing, autosuggestion hooks, Ctrl-F accept, Ctrl-R fuzzy recall, syntax highlighting in smart prompt mode, and smart prompt modules. |
+| Introspection | `about`, `doctor`, `inspect`, `which`, `path`, `project`, slash shortcuts, JSON output for history/jobs/prompt/env/doctor/project/dirs, and config validation/reload. |
+| Convenience commands | `mkcd`, `up`, `back`, `forward`, `jump`, `repeat`, `timeit`, `source`, `env`, `vars`, and project-aware `run` make ZiggyZag more useful as a daily shell lab. |
 | Pipelines | Native simple pipelines for straightforward stdout chains, with fallback for complex shell syntax. |
 | Tests | Zig unit tests, Windows smoke script, POSIX smoke script, and GitHub Actions CI. |
 | Repo polish | Logo, diagrams, public docs, contribution notes, and a project-named binary. |

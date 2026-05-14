@@ -10,6 +10,7 @@ flowchart LR
     repl --> readline["readLine"]
     repl --> config["startup config"]
     readline --> history["history list + metadata"]
+    readline --> dirs["directory history"]
     readline --> completion["completion engine"]
     readline --> suggest["autosuggestion / fuzzy recall"]
     repl --> execute["execute"]
@@ -33,14 +34,15 @@ flowchart LR
 
 1. The REPL prints a prompt and reads bytes from stdin.
 2. Startup config can register aliases, abbreviations, completions, exports, and prompt mode.
-3. Terminal editing handles tabs, backspace, Up/Down history navigation, Ctrl-F autosuggestion accept, and Ctrl-R fuzzy recall.
+3. Terminal editing handles cursor movement, Home/End, Delete, Ctrl-A/E/U/K/W, tabs, backspace, Up/Down history navigation, Ctrl-F autosuggestion accept, and Ctrl-R fuzzy recall.
 4. Non-empty commands are stored in history, and execution metadata is recorded.
 5. Abbreviations and aliases expand the first command word once.
 6. The parser tokenizes quotes, escapes, redirection operators, and `$VAR` or `${VAR}` expansion.
 7. Builtins execute directly in-process.
 8. Simple pipelines run through the native Zig pipeline path; complex shell syntax falls back to the platform shell.
 9. Background jobs are tracked and reaped before later prompts.
-10. stdout/stderr are emitted or redirected.
+10. Directory history, project detection, and metadata history make later navigation and inspection useful.
+11. stdout/stderr are emitted or redirected.
 
 ## Core State
 
@@ -52,6 +54,8 @@ classDiagram
       env
       history
       history_meta
+      dir_history
+      dir_index
       aliases
       abbreviations
       completion_specs

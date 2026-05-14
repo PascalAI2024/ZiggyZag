@@ -2,7 +2,7 @@
 
 This roadmap is based on a quick survey of modern shells and shell-adjacent tools. The goal is not to clone all of them. The goal is to choose features that make ZiggyZag useful while keeping it readable.
 
-The first sprint implemented MVP versions of the top interactive ideas: autosuggestion hooks, richer completion output, declarative completions, metadata history, fuzzy recall, smart prompt modules, abbreviations, startup config, and native simple pipelines.
+The first sprints implemented MVP versions of the top interactive ideas: autosuggestion hooks, richer completion output, declarative completions, metadata history, fuzzy recall, smart prompt modules, abbreviations, startup config, native simple pipelines, cursor-aware editing, directory history, and project-aware tasks.
 
 ## Ranked Feature Ideas
 
@@ -25,11 +25,11 @@ The first sprint implemented MVP versions of the top interactive ideas: autosugg
 
 ```mermaid
 flowchart LR
-    a["Done: MVP modern UX sprint"] --> b["1. Cursor-aware line editor"]
-    b --> c["2. Full SQLite history backend"]
-    c --> d["3. Streaming native pipelines"]
-    d --> e["4. Completion option schemas"]
-    e --> f["5. Structured output experiments"]
+    a["Done: MVP modern UX sprint"] --> b["Done: Cursor-aware line editor"]
+    b --> c["1. Full SQLite history backend"]
+    c --> d["2. Streaming native pipelines"]
+    d --> e["3. Completion option schemas"]
+    e --> f["4. Structured output experiments"]
 ```
 
 ## Product Direction
@@ -44,6 +44,6 @@ ZiggyZag should first become a delightful learning shell:
 
 That suggests the next three implementation targets should be:
 
-1. Cursor-aware line editing so autosuggestions, syntax coloring, and Ctrl-R work beyond append-only input.
-2. A real SQLite history backend behind the current metadata history log.
-3. Streaming native pipelines with redirection support.
+1. A real SQLite history backend behind the current metadata history log.
+2. Streaming native pipelines with redirection support.
+3. Completion option schemas for flags, file filters, and dynamic descriptions.
