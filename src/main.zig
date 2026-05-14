@@ -3,6 +3,11 @@ const std = @import("std");
 
 const Allocator = std.mem.Allocator;
 
+const CompletionEntry = struct {
+    text: []u8,
+    is_directory: bool,
+};
+
 const Shell = struct {
     allocator: Allocator,
     io: std.Io,
@@ -91,11 +96,10 @@ const Shell = struct {
     }
 
     fn completeCommand(self: *Shell, line: *std.ArrayList(u8), stdout: *std.Io.Writer) !void {
-        for (line.items) |c| {
-            if (c == ' ' or c == '\t') {
-                try stdout.writeByte(0x07);
-                return;
-            }
+        const token_start = completionTokenStart(line.items);
+        if (token_start > 0) {
+            try self.completePathArgument(line, stdout, token_start);
+            return;
         }
 
         const prefix = line.items;
@@ -158,6 +162,70 @@ const Shell = struct {
         try stdout.writeByte(' ');
     }
 
+    fn completePathArgument(self: *Shell, line: *std.ArrayList(u8), stdout: *std.Io.Writer, token_start: usize) !void {
+        const prefix = line.items[token_start..];
+        var matches: std.ArrayList(CompletionEntry) = .empty;
+        defer {
+            for (matches.items) |item| self.allocator.free(item.text);
+            matches.deinit(self.allocator);
+        }
+
+        try self.addPathCompletions(&matches, prefix);
+
+        if (matches.items.len == 0) {
+            self.clearCompletionState();
+            try stdout.writeByte(0x07);
+            return;
+        }
+
+        sortCompletionEntries(matches.items);
+        if (matches.items.len > 1) {
+            const common_prefix = longestCommonPrefixEntries(matches.items);
+            if (common_prefix.len > prefix.len) {
+                const suffix = common_prefix[prefix.len..];
+                try line.appendSlice(self.allocator, suffix);
+                try stdout.writeAll(suffix);
+                self.clearCompletionState();
+                return;
+            }
+
+            if (self.last_completion_prefix) |last_prefix| {
+                if (std.mem.eql(u8, last_prefix, prefix)) {
+                    try stdout.writeByte('\n');
+                    for (matches.items, 0..) |item, index| {
+                        if (index != 0) try stdout.writeAll("  ");
+                        try stdout.writeAll(item.text);
+                        if (item.is_directory) try stdout.writeByte('/');
+                    }
+                    try stdout.writeAll("\n$ ");
+                    try stdout.writeAll(line.items);
+                    self.clearCompletionState();
+                    return;
+                }
+            }
+
+            try self.rememberCompletionPrefix(prefix);
+            try stdout.writeByte(0x07);
+            return;
+        }
+
+        self.clearCompletionState();
+        const completion = matches.items[0];
+        if (completion.text.len > prefix.len) {
+            const suffix = completion.text[prefix.len..];
+            try line.appendSlice(self.allocator, suffix);
+            try stdout.writeAll(suffix);
+        }
+
+        if (completion.is_directory) {
+            try line.append(self.allocator, '/');
+            try stdout.writeByte('/');
+        } else {
+            try line.append(self.allocator, ' ');
+            try stdout.writeByte(' ');
+        }
+    }
+
     fn rememberCompletionPrefix(self: *Shell, prefix: []const u8) !void {
         self.clearCompletionState();
         self.last_completion_prefix = try self.allocator.dupe(u8, prefix);
@@ -167,6 +235,31 @@ const Shell = struct {
         if (self.last_completion_prefix) |prefix| {
             self.allocator.free(prefix);
             self.last_completion_prefix = null;
+        }
+    }
+
+    fn addPathCompletions(self: *Shell, matches: *std.ArrayList(CompletionEntry), prefix: []const u8) !void {
+        const split_index = lastPathSeparator(prefix);
+        const dir_prefix = if (split_index) |index| prefix[0 .. index + 1] else "";
+        const entry_prefix = if (split_index) |index| prefix[index + 1 ..] else prefix;
+        const search_dir = if (dir_prefix.len == 0) "." else dir_prefix;
+
+        var dir = if (std.fs.path.isAbsolute(search_dir))
+            std.Io.Dir.openDirAbsolute(self.io, search_dir, .{ .iterate = true }) catch return
+        else
+            std.Io.Dir.cwd().openDir(self.io, search_dir, .{ .iterate = true }) catch return;
+        defer dir.close(self.io);
+
+        var iterator = dir.iterate();
+        while (try iterator.next(self.io)) |entry| {
+            if (entry.kind != .file and entry.kind != .directory and entry.kind != .sym_link) continue;
+            if (!std.mem.startsWith(u8, entry.name, entry_prefix)) continue;
+
+            const text = try std.fmt.allocPrint(self.allocator, "{s}{s}", .{ dir_prefix, entry.name });
+            try matches.append(self.allocator, .{
+                .text = text,
+                .is_directory = entry.kind == .directory,
+            });
         }
     }
 
@@ -752,6 +845,22 @@ fn appendFmt(allocator: Allocator, buffer: *std.ArrayList(u8), comptime fmt: []c
     try buffer.appendSlice(allocator, text);
 }
 
+fn completionTokenStart(line: []const u8) usize {
+    var start: usize = 0;
+    for (line, 0..) |c, index| {
+        if (c == ' ' or c == '\t') start = index + 1;
+    }
+    return start;
+}
+
+fn lastPathSeparator(path: []const u8) ?usize {
+    var result: ?usize = null;
+    for (path, 0..) |c, index| {
+        if (c == '/') result = index;
+    }
+    return result;
+}
+
 fn longestCommonPrefix(items: []const []u8) []const u8 {
     if (items.len == 0) return "";
 
@@ -766,12 +875,36 @@ fn longestCommonPrefix(items: []const []u8) []const u8 {
     return items[0][0..prefix_len];
 }
 
+fn longestCommonPrefixEntries(items: []const CompletionEntry) []const u8 {
+    if (items.len == 0) return "";
+
+    var prefix_len = items[0].text.len;
+    for (items[1..]) |item| {
+        var i: usize = 0;
+        const limit = if (prefix_len < item.text.len) prefix_len else item.text.len;
+        while (i < limit and items[0].text[i] == item.text[i]) : (i += 1) {}
+        prefix_len = i;
+    }
+
+    return items[0].text[0..prefix_len];
+}
+
 fn sortCompletionMatches(items: [][]u8) void {
     var i: usize = 1;
     while (i < items.len) : (i += 1) {
         var j = i;
         while (j > 0 and std.mem.lessThan(u8, items[j], items[j - 1])) : (j -= 1) {
             std.mem.swap([]u8, &items[j], &items[j - 1]);
+        }
+    }
+}
+
+fn sortCompletionEntries(items: []CompletionEntry) void {
+    var i: usize = 1;
+    while (i < items.len) : (i += 1) {
+        var j = i;
+        while (j > 0 and std.mem.lessThan(u8, items[j].text, items[j - 1].text)) : (j -= 1) {
+            std.mem.swap(CompletionEntry, &items[j], &items[j - 1]);
         }
     }
 }
