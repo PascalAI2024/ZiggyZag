@@ -2,6 +2,8 @@
 
 This roadmap is based on a quick survey of modern shells and shell-adjacent tools. The goal is not to clone all of them. The goal is to choose features that make ZiggyZag useful while keeping it readable.
 
+The first sprint implemented MVP versions of the top interactive ideas: autosuggestion hooks, richer completion output, declarative completions, metadata history, fuzzy recall, smart prompt modules, abbreviations, startup config, and native simple pipelines.
+
 ## Ranked Feature Ideas
 
 | Rank | Feature | Inspiration | Why users care | Size | Fit |
@@ -23,13 +25,11 @@ This roadmap is based on a quick survey of modern shells and shell-adjacent tool
 
 ```mermaid
 flowchart LR
-    a["1. Autosuggestions"] --> b["2. Rich completion pager"]
-    b --> c["3. Abbreviations"]
-    c --> d["4. Config file"]
-    d --> e["5. SQLite history"]
-    e --> f["6. Prompt modules"]
-    f --> g["7. Native pipelines"]
-    g --> h["8. Structured output experiments"]
+    a["Done: MVP modern UX sprint"] --> b["1. Cursor-aware line editor"]
+    b --> c["2. Full SQLite history backend"]
+    c --> d["3. Streaming native pipelines"]
+    d --> e["4. Completion option schemas"]
+    e --> f["5. Structured output experiments"]
 ```
 
 ## Product Direction
@@ -44,6 +44,6 @@ ZiggyZag should first become a delightful learning shell:
 
 That suggests the next three implementation targets should be:
 
-1. Inline autosuggestions from history.
-2. A richer completion candidate model with descriptions.
-3. Abbreviations that expand visibly before a command is accepted.
+1. Cursor-aware line editing so autosuggestions, syntax coloring, and Ctrl-R work beyond append-only input.
+2. A real SQLite history backend behind the current metadata history log.
+3. Streaming native pipelines with redirection support.

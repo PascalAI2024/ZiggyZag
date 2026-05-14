@@ -37,6 +37,12 @@ Try a tiny smoke test:
 printf "help\nalias hi='echo hello'\nhi world\nexit\n" | ./zig-out/bin/ziggyzag
 ```
 
+On Windows, run the feature smoke:
+
+```powershell
+.\scripts\smoke.ps1
+```
+
 ## Code Style
 
 - Prefer straightforward code over abstractions that hide shell behavior.
@@ -48,6 +54,7 @@ printf "help\nalias hi='echo hello'\nhi world\nexit\n" | ./zig-out/bin/ziggyzag
 
 - Add focused tests for builtins and parsing behavior.
 - Improve parser diagnostics.
-- Add prompt customization.
-- Add a config file for startup aliases.
+- Add completion specs for real tools.
+- Deepen prompt modules.
+- Move metadata history to SQLite.
 - Improve docs with examples and diagrams.

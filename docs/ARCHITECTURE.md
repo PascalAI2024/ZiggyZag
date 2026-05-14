@@ -1,6 +1,6 @@
 # Architecture
 
-ZiggyZag is intentionally compact: most behavior lives in `src/main.zig`, with small structs for shell state, parsed commands, completion specs, aliases, and background jobs. That makes the project easy to step through while still showing real shell concerns.
+ZiggyZag is intentionally compact: most behavior lives in `src/main.zig`, with small structs for shell state, parsed commands, completion specs, aliases, abbreviations, history metadata, and background jobs. That makes the project easy to step through while still showing real shell concerns.
 
 ## Runtime Schematic
 
@@ -8,17 +8,22 @@ ZiggyZag is intentionally compact: most behavior lives in `src/main.zig`, with s
 flowchart LR
     terminal["Terminal"] --> repl["Shell.run"]
     repl --> readline["readLine"]
-    readline --> history["history list"]
+    repl --> config["startup config"]
+    readline --> history["history list + metadata"]
     readline --> completion["completion engine"]
+    readline --> suggest["autosuggestion / fuzzy recall"]
     repl --> execute["execute"]
-    execute --> alias["alias expansion"]
+    execute --> abbr["abbreviation expansion"]
+    abbr --> alias["alias expansion"]
     alias --> parser["parseCommandExpanded"]
     parser --> redirects["redirection extraction"]
     parser --> expansion["parameter expansion"]
     execute --> builtins["builtin handlers"]
-    execute --> system["system process runner"]
+    execute --> pipeline["native simple pipeline"]
+    execute --> system["system shell fallback"]
     execute --> jobs["background job table"]
     builtins --> emit["emitCommandOutput"]
+    pipeline --> emit
     system --> emit
     emit --> terminal
     emit --> files["redirected files"]
@@ -27,14 +32,15 @@ flowchart LR
 ## Command Lifecycle
 
 1. The REPL prints a prompt and reads bytes from stdin.
-2. Terminal editing handles tabs, backspace, and Up/Down history navigation.
-3. Non-empty commands are stored in history.
-4. Aliases expand the first command word once.
-5. The parser tokenizes quotes, escapes, redirection operators, and `$VAR` or `${VAR}` expansion.
-6. Builtins execute directly in-process.
-7. Pipelines and general external command forms delegate to the system shell.
-8. Background jobs are tracked and reaped before later prompts.
-9. stdout/stderr are emitted or redirected.
+2. Startup config can register aliases, abbreviations, completions, exports, and prompt mode.
+3. Terminal editing handles tabs, backspace, Up/Down history navigation, Ctrl-F autosuggestion accept, and Ctrl-R fuzzy recall.
+4. Non-empty commands are stored in history, and execution metadata is recorded.
+5. Abbreviations and aliases expand the first command word once.
+6. The parser tokenizes quotes, escapes, redirection operators, and `$VAR` or `${VAR}` expansion.
+7. Builtins execute directly in-process.
+8. Simple pipelines run through the native Zig pipeline path; complex shell syntax falls back to the platform shell.
+9. Background jobs are tracked and reaped before later prompts.
+10. stdout/stderr are emitted or redirected.
 
 ## Core State
 
@@ -45,10 +51,15 @@ classDiagram
       io
       env
       history
+      history_meta
       aliases
+      abbreviations
       completion_specs
+      completion_candidates
       background_jobs
       manual_echo
+      prompt_mode
+      last_status
     }
     class ParsedCommand {
       argv
@@ -65,6 +76,22 @@ classDiagram
       name
       value
     }
+    class AbbreviationSpec {
+      name
+      value
+    }
+    class CompletionCandidateSpec {
+      command
+      candidate
+      description
+    }
+    class HistoryMeta {
+      command
+      cwd
+      status
+      duration_ms
+      timestamp
+    }
     class BackgroundJob {
       number
       child
@@ -73,13 +100,16 @@ classDiagram
     }
     Shell --> ParsedCommand
     Shell --> CompletionSpec
+    Shell --> CompletionCandidateSpec
     Shell --> AliasSpec
+    Shell --> AbbreviationSpec
+    Shell --> HistoryMeta
     Shell --> BackgroundJob
 ```
 
 ## Why Some Work Is Delegated
 
-Pipelines currently use `/bin/sh -c` on POSIX and `cmd /C` on Windows. That keeps the project small and lets the shell focus on interactive behavior, builtins, parsing, history, and expansion. A future native pipeline engine would be a strong next refactor.
+Simple pipelines now have a native Zig path. Complex syntax still uses `/bin/sh -c` on POSIX and `cmd /C` on Windows. That keeps the project small while leaving room for a deeper streaming pipeline engine later.
 
 ## Design Rules
 

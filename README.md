@@ -5,7 +5,7 @@
 <h1 align="center">ZiggyZag</h1>
 
 <p align="center">
-  A Zig-powered shell playground with real parsing, history, completions, jobs, aliases, and parameter expansion.
+  A Zig-powered shell playground with real parsing, history, completions, jobs, aliases, abbreviations, smart prompts, and modern shell UX experiments.
 </p>
 
 <p align="center">
@@ -19,7 +19,7 @@
 
 ZiggyZag started as a completed CodeCrafters "Build Your Own Shell" project and is now being shaped into a small, readable, hackable shell for people who want to learn how shells work without getting buried in decades of compatibility code.
 
-It is intentionally compact, but it already covers the fundamentals: a REPL, token parsing, quotes, redirection, pipelines, completion, history persistence, background jobs, shell variables, parameter expansion, and a few quality-of-life commands for real use.
+It is intentionally compact, but it already covers the fundamentals: a REPL, token parsing, quotes, redirection, native simple pipelines, completion, history persistence, metadata history, background jobs, shell variables, parameter expansion, and a few quality-of-life commands for real use.
 
 ## Why It Exists
 
@@ -63,10 +63,27 @@ echo hello_${project}
 alias gs='git status --short'
 gs
 
+abbr gco='git checkout'
+gco main
+
+complete -c zig -a 'build fmt test' -d 'common Zig command'
+
 export EDITOR=vim
 echo $EDITOR
 
-history 5
+history --search zig
+```
+
+## Configuration
+
+ZiggyZag loads startup commands from `$ZIGGYZAG_CONFIG` or `~/.ziggyzagrc`.
+
+```sh
+alias gs='git status --short'
+abbr gco='git checkout'
+complete -c zig -a 'build fmt test' -d 'common Zig command'
+prompt smart
+export ZIGGYZAG_HISTORY_DB=~/.ziggyzag-history.tsv
 ```
 
 ## Feature Map
@@ -74,32 +91,36 @@ history 5
 | Area | Status | Notes |
 | --- | --- | --- |
 | REPL prompt | Done | Interactive command loop with manual terminal echo support. |
-| Builtins | Done | `cd`, `pwd`, `echo`, `type`, `history`, `jobs`, `complete`, `declare`, `help`, `alias`, `unalias`, `export`, `unset`, `exit`. |
+| Builtins | Done | `cd`, `pwd`, `echo`, `type`, `history`, `jobs`, `complete`, `declare`, `help`, `alias`, `abbr`, `unabbr`, `unalias`, `export`, `prompt`, `unset`, `exit`. |
 | External programs | Done | PATH lookup and process spawning. |
 | Quoting | Done | Single quotes, double quotes, and backslash behavior. |
 | Redirection | Done | stdout/stderr redirect and append forms. |
-| Pipelines | Done | Delegates pipeline execution to the system shell. |
-| Completion | Done | Builtin, executable, path, and programmable completion. |
-| History | Done | Listing, navigation, command recall, read/write/append, and `HISTFILE` persistence. |
+| Pipelines | Done | Native simple pipelines with fallback to the system shell for complex syntax. |
+| Completion | Done | Builtin, executable, path, programmable, and declarative completion with descriptions. |
+| History | Done | Listing, navigation, command recall, fuzzy search, metadata tracking, read/write/append, and `HISTFILE` persistence. |
 | Job control | Done | Background jobs, `jobs`, reaping, and job number reuse. |
 | Parameter expansion | Done | `$VAR`, `${VAR}`, missing variables, and shell variable storage. |
-| Developer polish | In progress | Repo docs, diagrams, refactors, and user-facing enhancements. |
+| Modern UX | Done | Autosuggestion hooks, Ctrl-F accept, Ctrl-R fuzzy recall, syntax highlighting in smart prompt mode, abbreviations, and startup config. |
+| Developer polish | Done | Repo docs, diagrams, refactors, smoke script, and user-facing enhancements. |
 
 ## Architecture
 
 ```mermaid
 flowchart LR
     input["Terminal input"] --> line["readLine()"]
-    line --> history["History store"]
-    line --> alias["Alias expansion"]
+    line --> history["History + metadata store"]
+    line --> abbr["Abbreviation expansion"]
+    abbr --> alias["Alias expansion"]
     alias --> parse["Tokenizer + redirection parser"]
     parse --> builtins{"Builtin?"}
     builtins -->|yes| builtin["Builtin handlers"]
     builtins -->|no| external["PATH lookup / system shell"]
     parse --> pipes{"Pipeline?"}
-    pipes -->|yes| sh["/bin/sh -c or cmd /C"]
+    pipes -->|simple| native["Native Zig pipeline"]
+    pipes -->|complex| sh["/bin/sh -c or cmd /C"]
     external --> output["stdout / stderr / files"]
     builtin --> output
+    native --> output
     sh --> output
 ```
 
@@ -135,6 +156,8 @@ pie title ZiggyZag capability mix
 |   |-- ARCHITECTURE.md
 |   |-- FEATURES.md
 |   `-- ROADMAP.md
+|-- scripts/
+|   `-- smoke.ps1
 |-- src/
 |   `-- main.zig
 |-- build.zig
@@ -176,17 +199,21 @@ Smoke test:
 printf "help\nalias hi='echo hello'\nhi world\nexit\n" | ./zig-out/bin/ziggyzag
 ```
 
+Windows feature smoke:
+
+```powershell
+.\scripts\smoke.ps1
+```
+
 ## Roadmap
 
-The next wave is about making ZiggyZag feel delightful while keeping the codebase approachable:
+The first modern shell sprint is in the codebase now. The next wave is about deepening those features while keeping the code readable:
 
-- Autosuggestions from history.
-- Rich completions with descriptions and fuzzy filtering.
-- Abbreviations that expand visibly before execution.
-- Optional config file for aliases and startup commands.
-- Context-aware prompt modules with git/status segments.
-- Native pipeline implementation instead of system-shell delegation.
-- SQLite-backed history and fuzzy Ctrl-R search.
+- Cursor-aware autosuggestion UI on every platform.
+- Full-screen fuzzy Ctrl-R picker.
+- More completion spec shapes for options, files, and dynamic values.
+- Real SQLite backend behind the current metadata history format.
+- Native pipelines with streaming process pipes and redirection support.
 - More tests outside the CodeCrafters harness.
 
 See [docs/ROADMAP.md](docs/ROADMAP.md) for feature ideas inspired by fish, zsh, Nushell, PowerShell, Atuin, Starship, and other modern shell tools.
