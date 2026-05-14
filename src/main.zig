@@ -629,7 +629,7 @@ const Shell = struct {
         const owned_command = try self.allocator.dupe(u8, command_line);
         errdefer self.allocator.free(owned_command);
 
-        var child = try self.spawnSystemShell(command_line);
+        var child = try self.spawnBackgroundProcess(command_line);
         var stored = false;
         errdefer if (!stored) child.kill(self.io);
 
@@ -643,6 +643,33 @@ const Shell = struct {
 
         var stdout = std.Io.File.stdout().writer(self.io, &.{});
         try stdout.interface.print("[{d}] {d}\n", .{ job_number, childIdForDisplay(&child) });
+    }
+
+    fn spawnBackgroundProcess(self: *Shell, command_line: []const u8) !std.process.Child {
+        if (!hasUnquotedPipe(command_line)) {
+            var parsed = try parseCommand(self.allocator, command_line);
+            defer parsed.deinit();
+
+            if (parsed.argv.items.len > 0 and !parsed.hasRedirection()) {
+                if (try self.findExecutable(parsed.argv.items[0])) |executable| {
+                    defer self.allocator.free(executable);
+
+                    var argv: std.ArrayList([]const u8) = .empty;
+                    defer argv.deinit(self.allocator);
+                    try argv.append(self.allocator, executable);
+                    for (parsed.argv.items[1..]) |arg| {
+                        try argv.append(self.allocator, arg);
+                    }
+
+                    return try std.process.spawn(self.io, .{
+                        .argv = argv.items,
+                        .environ_map = self.env,
+                    });
+                }
+            }
+        }
+
+        return try self.spawnSystemShell(command_line);
     }
 
     fn nextJobNumber(self: *Shell) usize {
