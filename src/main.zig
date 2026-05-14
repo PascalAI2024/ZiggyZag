@@ -815,7 +815,7 @@ const Shell = struct {
 
             const name = assignment[0..eq];
             if (!isValidName(name)) {
-                try appendFmt(self.allocator, stdout_buffer, "declare: `{s}': not a valid identifier\n", .{name});
+                try appendFmt(self.allocator, stdout_buffer, "declare: `{s}': not a valid identifier\n", .{assignment});
                 continue;
             }
 
