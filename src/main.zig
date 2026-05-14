@@ -1055,7 +1055,10 @@ fn previousCompletionWord(line: []const u8, token_start: usize) []const u8 {
 
     var end = token_start;
     while (end > 0 and isCompletionWhitespace(line[end - 1])) : (end -= 1) {}
-    if (end <= command_end) return "";
+    if (end <= command_end) {
+        if (token_start < line.len) return command;
+        return "";
+    }
 
     var start = end;
     while (start > command_end and !isCompletionWhitespace(line[start - 1])) : (start -= 1) {}
