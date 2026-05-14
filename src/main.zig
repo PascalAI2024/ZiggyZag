@@ -31,14 +31,79 @@ const Shell = struct {
         while (true) {
             try stdout.interface.print("$ ", .{});
 
-            const raw_line = try stdin.interface.takeDelimiter('\n') orelse break;
-            const line = std.mem.trimEnd(u8, raw_line, "\r");
-            if (line.len == 0) continue;
+            const owned_line = try self.readLine(&stdin.interface, &stdout.interface) orelse break;
+            defer self.allocator.free(owned_line);
+            if (owned_line.len == 0) continue;
 
-            try self.history.append(self.allocator, try self.allocator.dupe(u8, line));
-            const keep_running = try self.execute(line);
+            try self.history.append(self.allocator, try self.allocator.dupe(u8, owned_line));
+            const keep_running = try self.execute(owned_line);
             if (!keep_running) break;
         }
+    }
+
+    fn readLine(self: *Shell, reader: *std.Io.Reader, stdout: *std.Io.Writer) !?[]u8 {
+        var line: std.ArrayList(u8) = .empty;
+        errdefer line.deinit(self.allocator);
+
+        while (true) {
+            const byte = reader.takeByte() catch |err| switch (err) {
+                error.EndOfStream => {
+                    if (line.items.len == 0) {
+                        line.deinit(self.allocator);
+                        return null;
+                    }
+                    return try line.toOwnedSlice(self.allocator);
+                },
+                else => |e| return e,
+            };
+
+            switch (byte) {
+                '\n' => return try line.toOwnedSlice(self.allocator),
+                '\r' => {},
+                '\t' => try self.completeCommand(&line, stdout),
+                0x08, 0x7f => {
+                    if (line.items.len > 0) {
+                        _ = line.pop();
+                        try stdout.writeAll("\x08 \x08");
+                    }
+                },
+                else => try line.append(self.allocator, byte),
+            }
+        }
+    }
+
+    fn completeCommand(self: *Shell, line: *std.ArrayList(u8), stdout: *std.Io.Writer) !void {
+        for (line.items) |c| {
+            if (c == ' ' or c == '\t') {
+                try stdout.writeByte(0x07);
+                return;
+            }
+        }
+
+        const prefix = line.items;
+        var match: ?[]const u8 = null;
+        var count: usize = 0;
+        for (shell_builtin_names) |name| {
+            if (std.mem.startsWith(u8, name, prefix)) {
+                match = name;
+                count += 1;
+            }
+        }
+
+        if (count != 1) {
+            try stdout.writeByte(0x07);
+            return;
+        }
+
+        const completion = match.?;
+        if (completion.len > prefix.len) {
+            const suffix = completion[prefix.len..];
+            try line.appendSlice(self.allocator, suffix);
+            try stdout.writeAll(suffix);
+        }
+
+        try line.append(self.allocator, ' ');
+        try stdout.writeByte(' ');
     }
 
     fn execute(self: *Shell, line: []const u8) !bool {
@@ -549,16 +614,23 @@ fn appendFmt(allocator: Allocator, buffer: *std.ArrayList(u8), comptime fmt: []c
     try buffer.appendSlice(allocator, text);
 }
 
+const shell_builtin_names = [_][]const u8{
+    "echo",
+    "exit",
+    "type",
+    "pwd",
+    "cd",
+    "history",
+    "declare",
+    "jobs",
+    "complete",
+};
+
 fn isShellBuiltin(name: []const u8) bool {
-    return std.mem.eql(u8, name, "echo") or
-        std.mem.eql(u8, name, "exit") or
-        std.mem.eql(u8, name, "type") or
-        std.mem.eql(u8, name, "pwd") or
-        std.mem.eql(u8, name, "cd") or
-        std.mem.eql(u8, name, "history") or
-        std.mem.eql(u8, name, "declare") or
-        std.mem.eql(u8, name, "jobs") or
-        std.mem.eql(u8, name, "complete");
+    for (shell_builtin_names) |builtin_name| {
+        if (std.mem.eql(u8, name, builtin_name)) return true;
+    }
+    return false;
 }
 
 fn isValidName(name: []const u8) bool {
