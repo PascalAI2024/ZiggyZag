@@ -567,7 +567,7 @@ const Shell = struct {
             defer stdout_buffer.deinit(self.allocator);
             var stderr_buffer: std.ArrayList(u8) = .empty;
             defer stderr_buffer.deinit(self.allocator);
-            try self.printHistory(parsed.argv.items, &stdout_buffer);
+            try self.historyCommand(parsed.argv.items, &stdout_buffer);
             try self.emitCommandOutput(&parsed, stdout_buffer.items, stderr_buffer.items);
             return true;
         }
@@ -662,12 +662,97 @@ const Shell = struct {
         try appendFmt(self.allocator, stdout_buffer, "{s}\n", .{cwd});
     }
 
+    fn historyCommand(self: *Shell, argv: []const []const u8, stdout_buffer: *std.ArrayList(u8)) !void {
+        if (argv.len >= 3 and std.mem.eql(u8, argv[1], "-r")) {
+            try self.readHistoryFile(argv[2]);
+            return;
+        }
+
+        if (argv.len >= 3 and std.mem.eql(u8, argv[1], "-w")) {
+            try self.writeHistoryFile(argv[2], false);
+            return;
+        }
+
+        if (argv.len >= 3 and std.mem.eql(u8, argv[1], "-a")) {
+            try self.writeHistoryFile(argv[2], true);
+            return;
+        }
+
+        if (argv.len >= 2 and std.mem.eql(u8, argv[1], "-c")) {
+            for (self.history.items) |entry| self.allocator.free(entry);
+            self.history.clearRetainingCapacity();
+            return;
+        }
+
+        try self.printHistory(argv, stdout_buffer);
+    }
+
     fn printHistory(self: *Shell, argv: []const []const u8, stdout_buffer: *std.ArrayList(u8)) !void {
         const limit = if (argv.len >= 2) std.fmt.parseInt(usize, argv[1], 10) catch self.history.items.len else self.history.items.len;
         const start = if (limit < self.history.items.len) self.history.items.len - limit else 0;
 
         for (self.history.items[start..], start..) |entry, index| {
             try appendFmt(self.allocator, stdout_buffer, "{d: >5}  {s}\n", .{ index + 1, entry });
+        }
+    }
+
+    fn readHistoryFile(self: *Shell, path: []const u8) !void {
+        const file = if (std.fs.path.isAbsolute(path))
+            try std.Io.Dir.openFileAbsolute(self.io, path, .{})
+        else
+            try std.Io.Dir.cwd().openFile(self.io, path, .{});
+        defer file.close(self.io);
+
+        var read_buffer: [4096]u8 = undefined;
+        var reader = file.readerStreaming(self.io, &read_buffer);
+        const contents = try reader.interface.allocRemaining(self.allocator, .unlimited);
+        defer self.allocator.free(contents);
+
+        var lines = std.mem.splitScalar(u8, contents, '\n');
+        while (lines.next()) |raw_line| {
+            const line = trimTrailingCarriageReturn(raw_line);
+            if (line.len == 0) continue;
+            try self.history.append(self.allocator, try self.allocator.dupe(u8, line));
+        }
+    }
+
+    fn writeHistoryFile(self: *Shell, path: []const u8, append: bool) !void {
+        var output: std.ArrayList(u8) = .empty;
+        defer output.deinit(self.allocator);
+
+        if (append) {
+            const existing_file = if (std.fs.path.isAbsolute(path))
+                std.Io.Dir.openFileAbsolute(self.io, path, .{}) catch |err| switch (err) {
+                    error.FileNotFound => null,
+                    else => |e| return e,
+                }
+            else
+                std.Io.Dir.cwd().openFile(self.io, path, .{}) catch |err| switch (err) {
+                    error.FileNotFound => null,
+                    else => |e| return e,
+                };
+
+            if (existing_file) |file| {
+                defer file.close(self.io);
+                var read_buffer: [4096]u8 = undefined;
+                var reader = file.readerStreaming(self.io, &read_buffer);
+                const existing = try reader.interface.allocRemaining(self.allocator, .unlimited);
+                defer self.allocator.free(existing);
+                try output.appendSlice(self.allocator, existing);
+            }
+        }
+
+        for (self.history.items) |entry| {
+            try output.appendSlice(self.allocator, entry);
+            try output.append(self.allocator, '\n');
+        }
+
+        if (std.fs.path.isAbsolute(path)) {
+            var file = try std.Io.Dir.createFileAbsolute(self.io, path, .{});
+            defer file.close(self.io);
+            try file.writeStreamingAll(self.io, output.items);
+        } else {
+            try std.Io.Dir.cwd().writeFile(self.io, .{ .sub_path = path, .data = output.items });
         }
     }
 
