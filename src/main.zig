@@ -784,6 +784,25 @@ const Shell = struct {
             return;
         }
 
+        if (std.mem.eql(u8, argv[1], "-p")) {
+            if (argv.len == 2) {
+                var it = self.env.iterator();
+                while (it.next()) |entry| {
+                    try appendFmt(self.allocator, stdout_buffer, "declare -- {s}=\"{s}\"\n", .{ entry.key_ptr.*, entry.value_ptr.* });
+                }
+                return;
+            }
+
+            for (argv[2..]) |name| {
+                if (self.env.get(name)) |value| {
+                    try appendFmt(self.allocator, stdout_buffer, "declare -- {s}=\"{s}\"\n", .{ name, value });
+                } else {
+                    try appendFmt(self.allocator, stdout_buffer, "declare: {s}: not found\n", .{name});
+                }
+            }
+            return;
+        }
+
         for (argv[1..]) |assignment| {
             const eq = std.mem.indexOfScalar(u8, assignment, '=') orelse {
                 if (self.env.get(assignment)) |value| {
