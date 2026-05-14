@@ -201,7 +201,7 @@ const Shell = struct {
 
     fn findExecutable(self: *Shell, command: []const u8) !?[]u8 {
         if (std.mem.indexOfScalar(u8, command, '/') != null or std.mem.indexOfScalar(u8, command, '\\') != null) {
-            if (self.pathExists(command)) return try self.allocator.dupe(u8, command);
+            if (try self.pathIsExecutable(command)) return try self.allocator.dupe(u8, command);
             return null;
         }
 
@@ -211,20 +211,24 @@ const Shell = struct {
         while (dirs.next()) |dir| {
             if (dir.len == 0) continue;
             const full_path = try std.fs.path.join(self.allocator, &.{ dir, command });
-            if (self.pathExists(full_path)) return full_path;
+            if (try self.pathIsExecutable(full_path)) return full_path;
             self.allocator.free(full_path);
         }
 
         return null;
     }
 
-    fn pathExists(self: *Shell, path: []const u8) bool {
+    fn pathIsExecutable(self: *Shell, path: []const u8) !bool {
         const file = if (std.fs.path.isAbsolute(path))
             std.Io.Dir.openFileAbsolute(self.io, path, .{}) catch return false
         else
             std.Io.Dir.cwd().openFile(self.io, path, .{}) catch return false;
-        file.close(self.io);
-        return true;
+        defer file.close(self.io);
+
+        const stat = try file.stat(self.io);
+        if (stat.kind != .file) return false;
+        if (!std.Io.File.Permissions.has_executable_bit) return true;
+        return stat.permissions.toMode() & 0o111 != 0;
     }
 };
 
