@@ -70,6 +70,16 @@ const Shell = struct {
         self.manual_echo = terminal_mode != null;
         defer self.manual_echo = false;
 
+        const histfile = self.env.get("HISTFILE");
+        if (histfile) |path| {
+            self.readHistoryFile(path) catch |err| switch (err) {
+                error.FileNotFound => {},
+                else => |e| return e,
+            };
+            self.history_append_index = self.history.items.len;
+        }
+        defer if (histfile) |path| self.writeHistoryFile(path, false, 0) catch {};
+
         while (true) {
             try self.reapAndPrintDoneJobs();
             try stdout.interface.print("$ ", .{});
