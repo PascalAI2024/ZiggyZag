@@ -13,12 +13,20 @@ const CompletionSpec = struct {
     completer: []u8,
 };
 
+const BackgroundJob = struct {
+    number: usize,
+    child: std.process.Child,
+    command: []u8,
+    done: bool = false,
+};
+
 const Shell = struct {
     allocator: Allocator,
     io: std.Io,
     env: *std.process.Environ.Map,
     history: std.ArrayList([]u8),
     completion_specs: std.ArrayList(CompletionSpec),
+    background_jobs: std.ArrayList(BackgroundJob),
     manual_echo: bool,
     last_completion_prefix: ?[]u8,
 
@@ -29,6 +37,7 @@ const Shell = struct {
             .env = env,
             .history = .empty,
             .completion_specs = .empty,
+            .background_jobs = .empty,
             .manual_echo = false,
             .last_completion_prefix = null,
         };
@@ -42,6 +51,11 @@ const Shell = struct {
             self.allocator.free(spec.completer);
         }
         self.completion_specs.deinit(self.allocator);
+        for (self.background_jobs.items) |*job| {
+            job.child.kill(self.io);
+            self.allocator.free(job.command);
+        }
+        self.background_jobs.deinit(self.allocator);
         self.clearCompletionState();
     }
 
@@ -55,6 +69,7 @@ const Shell = struct {
         defer self.manual_echo = false;
 
         while (true) {
+            try self.reapAndPrintDoneJobs();
             try stdout.interface.print("$ ", .{});
 
             const owned_line = try self.readLine(&stdin.interface, &stdout.interface) orelse break;
@@ -412,6 +427,11 @@ const Shell = struct {
     }
 
     fn execute(self: *Shell, line: []const u8) !bool {
+        if (trailingBackgroundCommand(line)) |command_line| {
+            try self.startBackgroundJob(command_line);
+            return true;
+        }
+
         if (hasUnquotedPipe(line)) {
             try self.runViaSystemShell(line);
             return true;
@@ -502,6 +522,7 @@ const Shell = struct {
             defer stdout_buffer.deinit(self.allocator);
             var stderr_buffer: std.ArrayList(u8) = .empty;
             defer stderr_buffer.deinit(self.allocator);
+            try self.printJobs(&stdout_buffer);
             try self.emitCommandOutput(&parsed, stdout_buffer.items, stderr_buffer.items);
             return true;
         }
@@ -602,6 +623,124 @@ const Shell = struct {
 
             try self.env.put(name, assignment[eq + 1 ..]);
         }
+    }
+
+    fn startBackgroundJob(self: *Shell, command_line: []const u8) !void {
+        const owned_command = try self.allocator.dupe(u8, command_line);
+        errdefer self.allocator.free(owned_command);
+
+        var child = try self.spawnSystemShell(command_line);
+        var stored = false;
+        errdefer if (!stored) child.kill(self.io);
+
+        const job_number = self.nextJobNumber();
+        try self.insertBackgroundJob(.{
+            .number = job_number,
+            .child = child,
+            .command = owned_command,
+        });
+        stored = true;
+
+        var stdout = std.Io.File.stdout().writer(self.io, &.{});
+        try stdout.interface.print("[{d}] {d}\n", .{ job_number, childIdForDisplay(&child) });
+    }
+
+    fn nextJobNumber(self: *Shell) usize {
+        var number: usize = 1;
+        for (self.background_jobs.items) |job| {
+            if (job.number == number) {
+                number += 1;
+            } else if (job.number > number) {
+                break;
+            }
+        }
+        return number;
+    }
+
+    fn insertBackgroundJob(self: *Shell, job: BackgroundJob) !void {
+        try self.background_jobs.append(self.allocator, job);
+
+        var index = self.background_jobs.items.len - 1;
+        while (index > 0 and self.background_jobs.items[index].number < self.background_jobs.items[index - 1].number) : (index -= 1) {
+            std.mem.swap(BackgroundJob, &self.background_jobs.items[index], &self.background_jobs.items[index - 1]);
+        }
+    }
+
+    fn printJobs(self: *Shell, stdout_buffer: *std.ArrayList(u8)) !void {
+        self.refreshBackgroundJobs();
+        for (self.background_jobs.items) |*job| {
+            try self.appendJobLine(stdout_buffer, job);
+        }
+        self.removeDoneJobs();
+    }
+
+    fn reapAndPrintDoneJobs(self: *Shell) !void {
+        self.refreshBackgroundJobs();
+
+        var output: std.ArrayList(u8) = .empty;
+        defer output.deinit(self.allocator);
+
+        for (self.background_jobs.items) |*job| {
+            if (job.done) try self.appendJobLine(&output, job);
+        }
+
+        if (output.items.len > 0) {
+            var stdout = std.Io.File.stdout().writer(self.io, &.{});
+            try stdout.interface.writeAll(output.items);
+        }
+
+        self.removeDoneJobs();
+    }
+
+    fn refreshBackgroundJobs(self: *Shell) void {
+        for (self.background_jobs.items) |*job| {
+            if (!job.done and childHasExited(&job.child)) job.done = true;
+        }
+    }
+
+    fn removeDoneJobs(self: *Shell) void {
+        var index: usize = 0;
+        while (index < self.background_jobs.items.len) {
+            if (self.background_jobs.items[index].done) {
+                const removed = self.background_jobs.orderedRemove(index);
+                self.allocator.free(removed.command);
+            } else {
+                index += 1;
+            }
+        }
+    }
+
+    fn appendJobLine(self: *Shell, buffer: *std.ArrayList(u8), job: *const BackgroundJob) !void {
+        const marker = self.jobMarker(job.number);
+        const status = if (job.done) "Done" else "Running";
+        try appendFmt(self.allocator, buffer, "[{d}]{c}  {s}", .{ job.number, marker, status });
+
+        var padding = if (status.len < 24) 24 - status.len else 1;
+        while (padding > 0) : (padding -= 1) {
+            try buffer.append(self.allocator, ' ');
+        }
+
+        try buffer.appendSlice(self.allocator, job.command);
+        if (!job.done) try buffer.appendSlice(self.allocator, " &");
+        try buffer.append(self.allocator, '\n');
+    }
+
+    fn jobMarker(self: *Shell, number: usize) u8 {
+        var newest: ?usize = null;
+        var previous: ?usize = null;
+
+        for (self.background_jobs.items) |job| {
+            if (newest == null or job.number > newest.?) {
+                previous = newest;
+                newest = job.number;
+            } else if (previous == null or job.number > previous.?) {
+                previous = job.number;
+            }
+        }
+
+        if (newest != null and number == newest.?) return '+';
+        if (previous != null and number == previous.?) return '-';
+        return ' ';
     }
 
     fn completeBuiltin(self: *Shell, argv: []const []const u8, stdout_buffer: *std.ArrayList(u8)) !void {
@@ -705,20 +844,23 @@ const Shell = struct {
     }
 
     fn runViaSystemShell(self: *Shell, line: []const u8) !void {
+        var child = try self.spawnSystemShell(line);
+        _ = try child.wait(self.io);
+    }
+
+    fn spawnSystemShell(self: *Shell, line: []const u8) !std.process.Child {
         if (builtin.os.tag == .windows) {
             var argv = [_][]const u8{ "cmd", "/C", line };
-            var child = try std.process.spawn(self.io, .{
+            return try std.process.spawn(self.io, .{
                 .argv = &argv,
                 .environ_map = self.env,
             });
-            _ = try child.wait(self.io);
         } else {
             var argv = [_][]const u8{ "/bin/sh", "-c", line };
-            var child = try std.process.spawn(self.io, .{
+            return try std.process.spawn(self.io, .{
                 .argv = &argv,
                 .environ_map = self.env,
             });
-            _ = try child.wait(self.io);
         }
     }
 
@@ -1018,6 +1160,84 @@ fn hasUnquotedPipe(line: []const u8) bool {
         }
     }
     return false;
+}
+
+fn trailingBackgroundCommand(line: []const u8) ?[]const u8 {
+    var end = line.len;
+    while (end > 0 and isShellWhitespace(line[end - 1])) : (end -= 1) {}
+    if (end == 0 or line[end - 1] != '&') return null;
+    if (!isUnquotedAt(line, end - 1)) return null;
+
+    var command_end = end - 1;
+    while (command_end > 0 and isShellWhitespace(line[command_end - 1])) : (command_end -= 1) {}
+    if (command_end == 0) return null;
+    return line[0..command_end];
+}
+
+fn isUnquotedAt(line: []const u8, target: usize) bool {
+    var quote: ?u8 = null;
+    var i: usize = 0;
+    while (i < line.len) : (i += 1) {
+        if (i == target) return quote == null;
+
+        const c = line[i];
+        if (quote) |q| {
+            if (q == '\'' and c == '\'') {
+                quote = null;
+            } else if (q == '"' and c == '"') {
+                quote = null;
+            } else if (q == '"' and c == '\\' and i + 1 < line.len) {
+                i += 1;
+            }
+            continue;
+        }
+
+        if (c == '\'' or c == '"') {
+            quote = c;
+        } else if (c == '\\' and i + 1 < line.len) {
+            i += 1;
+        }
+    }
+    return false;
+}
+
+fn isShellWhitespace(c: u8) bool {
+    return c == ' ' or c == '\t' or c == '\n' or c == '\r';
+}
+
+fn childHasExited(child: *std.process.Child) bool {
+    if (child.id == null) return true;
+
+    if (builtin.os.tag == .linux) {
+        const linux = std.os.linux;
+        const pid = child.id.?;
+        var status: u32 = 0;
+
+        while (true) {
+            const result = linux.waitpid(pid, &status, linux.W.NOHANG);
+            switch (linux.errno(result)) {
+                .SUCCESS => {
+                    if (result == 0) return false;
+                    child.id = null;
+                    return true;
+                },
+                .INTR => continue,
+                .CHILD => {
+                    child.id = null;
+                    return true;
+                },
+                else => return false,
+            }
+        }
+    }
+
+    return false;
+}
+
+fn childIdForDisplay(child: *const std.process.Child) u64 {
+    const id = child.id orelse return 0;
+    if (builtin.os.tag == .windows) return @intCast(@intFromPtr(id));
+    return @intCast(id);
 }
 
 fn appendFmt(allocator: Allocator, buffer: *std.ArrayList(u8), comptime fmt: []const u8, args: anytype) !void {
