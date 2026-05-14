@@ -13,6 +13,11 @@ const CompletionSpec = struct {
     completer: []u8,
 };
 
+const AliasSpec = struct {
+    name: []u8,
+    value: []u8,
+};
+
 const BackgroundJob = struct {
     number: usize,
     child: std.process.Child,
@@ -27,6 +32,7 @@ const Shell = struct {
     history: std.ArrayList([]u8),
     history_append_index: usize,
     completion_specs: std.ArrayList(CompletionSpec),
+    aliases: std.ArrayList(AliasSpec),
     background_jobs: std.ArrayList(BackgroundJob),
     manual_echo: bool,
     last_completion_prefix: ?[]u8,
@@ -39,6 +45,7 @@ const Shell = struct {
             .history = .empty,
             .history_append_index = 0,
             .completion_specs = .empty,
+            .aliases = .empty,
             .background_jobs = .empty,
             .manual_echo = false,
             .last_completion_prefix = null,
@@ -53,6 +60,11 @@ const Shell = struct {
             self.allocator.free(spec.completer);
         }
         self.completion_specs.deinit(self.allocator);
+        for (self.aliases.items) |alias| {
+            self.allocator.free(alias.name);
+            self.allocator.free(alias.value);
+        }
+        self.aliases.deinit(self.allocator);
         for (self.background_jobs.items) |*job| {
             job.child.kill(self.io);
             self.allocator.free(job.command);
@@ -514,17 +526,21 @@ const Shell = struct {
     }
 
     fn execute(self: *Shell, line: []const u8) !bool {
-        if (trailingBackgroundCommand(line)) |command_line| {
+        const expanded_alias_line = try self.expandAliasLine(line);
+        defer if (expanded_alias_line) |owned| self.allocator.free(owned);
+        const active_line = expanded_alias_line orelse line;
+
+        if (trailingBackgroundCommand(active_line)) |command_line| {
             try self.startBackgroundJob(command_line);
             return true;
         }
 
-        if (hasUnquotedPipe(line)) {
-            try self.runViaSystemShell(line);
+        if (hasUnquotedPipe(active_line)) {
+            try self.runViaSystemShell(active_line);
             return true;
         }
 
-        var parsed = try parseCommandExpanded(self.allocator, line, self);
+        var parsed = try parseCommandExpanded(self.allocator, active_line, self);
         defer parsed.deinit();
 
         if (parsed.argv.items.len == 0) return true;
@@ -614,6 +630,56 @@ const Shell = struct {
             return true;
         }
 
+        if (std.mem.eql(u8, command, "help")) {
+            var stdout_buffer: std.ArrayList(u8) = .empty;
+            defer stdout_buffer.deinit(self.allocator);
+            var stderr_buffer: std.ArrayList(u8) = .empty;
+            defer stderr_buffer.deinit(self.allocator);
+            try self.helpCommand(&stdout_buffer);
+            try self.emitCommandOutput(&parsed, stdout_buffer.items, stderr_buffer.items);
+            return true;
+        }
+
+        if (std.mem.eql(u8, command, "alias")) {
+            var stdout_buffer: std.ArrayList(u8) = .empty;
+            defer stdout_buffer.deinit(self.allocator);
+            var stderr_buffer: std.ArrayList(u8) = .empty;
+            defer stderr_buffer.deinit(self.allocator);
+            try self.aliasCommand(parsed.argv.items, &stdout_buffer);
+            try self.emitCommandOutput(&parsed, stdout_buffer.items, stderr_buffer.items);
+            return true;
+        }
+
+        if (std.mem.eql(u8, command, "unalias")) {
+            var stdout_buffer: std.ArrayList(u8) = .empty;
+            defer stdout_buffer.deinit(self.allocator);
+            var stderr_buffer: std.ArrayList(u8) = .empty;
+            defer stderr_buffer.deinit(self.allocator);
+            try self.unaliasCommand(parsed.argv.items, &stdout_buffer);
+            try self.emitCommandOutput(&parsed, stdout_buffer.items, stderr_buffer.items);
+            return true;
+        }
+
+        if (std.mem.eql(u8, command, "export")) {
+            var stdout_buffer: std.ArrayList(u8) = .empty;
+            defer stdout_buffer.deinit(self.allocator);
+            var stderr_buffer: std.ArrayList(u8) = .empty;
+            defer stderr_buffer.deinit(self.allocator);
+            try self.exportCommand(parsed.argv.items, &stdout_buffer);
+            try self.emitCommandOutput(&parsed, stdout_buffer.items, stderr_buffer.items);
+            return true;
+        }
+
+        if (std.mem.eql(u8, command, "unset")) {
+            var stdout_buffer: std.ArrayList(u8) = .empty;
+            defer stdout_buffer.deinit(self.allocator);
+            var stderr_buffer: std.ArrayList(u8) = .empty;
+            defer stderr_buffer.deinit(self.allocator);
+            try self.unsetCommand(parsed.argv.items, &stdout_buffer);
+            try self.emitCommandOutput(&parsed, stdout_buffer.items, stderr_buffer.items);
+            return true;
+        }
+
         if (!isShellBuiltin(command) and (try self.findExecutable(command)) == null) {
             var stdout_buffer: std.ArrayList(u8) = .empty;
             defer stdout_buffer.deinit(self.allocator);
@@ -625,12 +691,30 @@ const Shell = struct {
         }
 
         if (parsed.hasRedirection()) {
-            try self.runViaSystemShell(line);
+            try self.runViaSystemShell(active_line);
             return true;
         }
 
-        try self.runViaSystemShell(line);
+        try self.runViaSystemShell(active_line);
         return true;
+    }
+
+    fn expandAliasLine(self: *Shell, line: []const u8) !?[]u8 {
+        const start = firstNonWhitespace(line);
+        if (start >= line.len) return null;
+        const end = simpleCommandWordEnd(line, start);
+        if (end <= start) return null;
+
+        const name = line[start..end];
+        const alias = self.findAlias(name) orelse return null;
+        if (std.mem.eql(u8, alias.value, name)) return null;
+
+        var expanded: std.ArrayList(u8) = .empty;
+        errdefer expanded.deinit(self.allocator);
+        try expanded.appendSlice(self.allocator, line[0..start]);
+        try expanded.appendSlice(self.allocator, alias.value);
+        try expanded.appendSlice(self.allocator, line[end..]);
+        return try expanded.toOwnedSlice(self.allocator);
     }
 
     fn changeDirectory(self: *Shell, argv: []const []const u8, stderr_buffer: *std.ArrayList(u8)) !void {
@@ -666,6 +750,31 @@ const Shell = struct {
             try stdout_buffer.appendSlice(self.allocator, arg);
         }
         try stdout_buffer.append(self.allocator, '\n');
+    }
+
+    fn helpCommand(self: *Shell, stdout_buffer: *std.ArrayList(u8)) !void {
+        try stdout_buffer.appendSlice(self.allocator,
+            \\ZiggyZag shell
+            \\
+            \\Builtins:
+            \\  alias NAME=VALUE   Create a shortcut for a command
+            \\  unalias NAME       Remove a shortcut
+            \\  cd [DIR]           Change directories
+            \\  complete ...       Register programmable completions
+            \\  declare NAME=VALUE Store a shell variable
+            \\  echo [ARGS...]     Print text
+            \\  export NAME=VALUE  Store an environment variable
+            \\  history [N]        View command history
+            \\  jobs               List background jobs
+            \\  pwd                Print the current directory
+            \\  type NAME          Explain how a command resolves
+            \\  unset NAME         Remove a variable
+            \\  exit               Leave the shell
+            \\
+            \\Line editing:
+            \\  Tab completion, Up/Down history navigation, redirection, pipes, and background jobs.
+            \\
+        );
     }
 
     fn printWorkingDirectory(self: *Shell, stdout_buffer: *std.ArrayList(u8)) !void {
@@ -821,6 +930,117 @@ const Shell = struct {
 
             try self.env.put(name, assignment[eq + 1 ..]);
         }
+    }
+
+    fn aliasCommand(self: *Shell, argv: []const []const u8, stdout_buffer: *std.ArrayList(u8)) !void {
+        if (argv.len == 1) {
+            for (self.aliases.items) |alias| {
+                try self.printAlias(alias, stdout_buffer);
+            }
+            return;
+        }
+
+        for (argv[1..]) |spec| {
+            const eq = std.mem.indexOfScalar(u8, spec, '=') orelse {
+                if (self.findAlias(spec)) |alias| {
+                    try self.printAlias(alias.*, stdout_buffer);
+                } else {
+                    try appendFmt(self.allocator, stdout_buffer, "alias: {s}: not found\n", .{spec});
+                }
+                continue;
+            };
+
+            const name = spec[0..eq];
+            if (!isValidName(name)) {
+                try appendFmt(self.allocator, stdout_buffer, "alias: `{s}': not a valid identifier\n", .{spec});
+                continue;
+            }
+
+            try self.putAlias(name, spec[eq + 1 ..]);
+        }
+    }
+
+    fn unaliasCommand(self: *Shell, argv: []const []const u8, stdout_buffer: *std.ArrayList(u8)) !void {
+        for (argv[1..]) |name| {
+            if (!self.removeAlias(name)) {
+                try appendFmt(self.allocator, stdout_buffer, "unalias: {s}: not found\n", .{name});
+            }
+        }
+    }
+
+    fn exportCommand(self: *Shell, argv: []const []const u8, stdout_buffer: *std.ArrayList(u8)) !void {
+        if (argv.len == 1) {
+            var it = self.env.iterator();
+            while (it.next()) |entry| {
+                try appendFmt(self.allocator, stdout_buffer, "declare -x {s}=\"{s}\"\n", .{ entry.key_ptr.*, entry.value_ptr.* });
+            }
+            return;
+        }
+
+        for (argv[1..]) |assignment| {
+            const eq = std.mem.indexOfScalar(u8, assignment, '=');
+            const name = if (eq) |index| assignment[0..index] else assignment;
+            if (!isValidName(name)) {
+                try appendFmt(self.allocator, stdout_buffer, "export: `{s}': not a valid identifier\n", .{assignment});
+                continue;
+            }
+
+            const value = if (eq) |index| assignment[index + 1 ..] else self.env.get(name) orelse "";
+            try self.env.put(name, value);
+        }
+    }
+
+    fn unsetCommand(self: *Shell, argv: []const []const u8, stdout_buffer: *std.ArrayList(u8)) !void {
+        for (argv[1..]) |name| {
+            if (!isValidName(name)) {
+                try appendFmt(self.allocator, stdout_buffer, "unset: `{s}': not a valid identifier\n", .{name});
+                continue;
+            }
+            _ = self.env.orderedRemove(name);
+        }
+    }
+
+    fn findAlias(self: *Shell, name: []const u8) ?*AliasSpec {
+        for (self.aliases.items) |*alias| {
+            if (std.mem.eql(u8, alias.name, name)) return alias;
+        }
+        return null;
+    }
+
+    fn putAlias(self: *Shell, name: []const u8, value: []const u8) !void {
+        if (self.findAlias(name)) |alias| {
+            const owned_value = try self.allocator.dupe(u8, value);
+            self.allocator.free(alias.value);
+            alias.value = owned_value;
+            return;
+        }
+
+        const owned_name = try self.allocator.dupe(u8, name);
+        errdefer self.allocator.free(owned_name);
+        const owned_value = try self.allocator.dupe(u8, value);
+        errdefer self.allocator.free(owned_value);
+        try self.aliases.append(self.allocator, .{
+            .name = owned_name,
+            .value = owned_value,
+        });
+    }
+
+    fn removeAlias(self: *Shell, name: []const u8) bool {
+        for (self.aliases.items, 0..) |alias, index| {
+            if (std.mem.eql(u8, alias.name, name)) {
+                const removed = self.aliases.orderedRemove(index);
+                self.allocator.free(removed.name);
+                self.allocator.free(removed.value);
+                return true;
+            }
+        }
+        return false;
+    }
+
+    fn printAlias(self: *Shell, alias: AliasSpec, stdout_buffer: *std.ArrayList(u8)) !void {
+        try appendFmt(self.allocator, stdout_buffer, "alias {s}=", .{alias.name});
+        try appendSingleQuoted(self.allocator, stdout_buffer, alias.value);
+        try stdout_buffer.append(self.allocator, '\n');
     }
 
     fn startBackgroundJob(self: *Shell, command_line: []const u8) !void {
@@ -1542,6 +1762,33 @@ fn appendFmt(allocator: Allocator, buffer: *std.ArrayList(u8), comptime fmt: []c
     try buffer.appendSlice(allocator, text);
 }
 
+fn appendSingleQuoted(allocator: Allocator, buffer: *std.ArrayList(u8), value: []const u8) !void {
+    try buffer.append(allocator, '\'');
+    for (value) |c| {
+        if (c == '\'') {
+            try buffer.appendSlice(allocator, "'\\''");
+        } else {
+            try buffer.append(allocator, c);
+        }
+    }
+    try buffer.append(allocator, '\'');
+}
+
+fn firstNonWhitespace(line: []const u8) usize {
+    var index: usize = 0;
+    while (index < line.len and isShellWhitespace(line[index])) : (index += 1) {}
+    return index;
+}
+
+fn simpleCommandWordEnd(line: []const u8, start: usize) usize {
+    var index = start;
+    while (index < line.len) : (index += 1) {
+        const c = line[index];
+        if (isShellWhitespace(c) or c == '|' or c == '&' or c == '<' or c == '>') break;
+    }
+    return index;
+}
+
 fn isCompletionWhitespace(c: u8) bool {
     return c == ' ' or c == '\t';
 }
@@ -1652,6 +1899,11 @@ const shell_builtin_names = [_][]const u8{
     "declare",
     "jobs",
     "complete",
+    "help",
+    "alias",
+    "unalias",
+    "export",
+    "unset",
 };
 
 fn isShellBuiltin(name: []const u8) bool {

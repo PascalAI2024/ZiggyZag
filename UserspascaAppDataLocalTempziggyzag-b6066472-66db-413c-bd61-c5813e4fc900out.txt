@@ -1,2 +1,0 @@
-hello
-C:\Users\pasca\dev\ZiggyZag\codecrafters-shell-zig

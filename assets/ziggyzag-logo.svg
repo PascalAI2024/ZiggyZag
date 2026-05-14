@@ -1,0 +1,24 @@
+<svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+  <title id="title">ZiggyZag logo</title>
+  <desc id="desc">A stylized terminal badge with an angular double Z mark.</desc>
+  <defs>
+    <linearGradient id="panel" x1="64" y1="40" x2="448" y2="472" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#151A28"/>
+      <stop offset="1" stop-color="#0C1018"/>
+    </linearGradient>
+    <linearGradient id="zig" x1="134" y1="132" x2="384" y2="386" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#F7A41D"/>
+      <stop offset="0.52" stop-color="#35D0BA"/>
+      <stop offset="1" stop-color="#8B5CF6"/>
+    </linearGradient>
+  </defs>
+  <rect x="42" y="54" width="428" height="404" rx="38" fill="url(#panel)" stroke="#2B3447" stroke-width="12"/>
+  <rect x="76" y="92" width="360" height="44" rx="12" fill="#20283A"/>
+  <circle cx="106" cy="114" r="8" fill="#FF6B6B"/>
+  <circle cx="132" cy="114" r="8" fill="#FFD166"/>
+  <circle cx="158" cy="114" r="8" fill="#35D0BA"/>
+  <path d="M138 180H354L228 296H366L366 336H150L276 220H138V180Z" fill="url(#zig)"/>
+  <path d="M156 354H356V386H156V354Z" fill="#E8EDF7"/>
+  <path d="M156 404H278V424H156V404Z" fill="#657089"/>
+  <path d="M104 352L138 386L104 420" stroke="#35D0BA" stroke-width="18" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

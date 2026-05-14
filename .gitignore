@@ -16,3 +16,6 @@ bin/
 **/.DS_Store
 *.swp
 *~
+
+# Local smoke-test scratch files
+UserspascaAppDataLocalTemp*

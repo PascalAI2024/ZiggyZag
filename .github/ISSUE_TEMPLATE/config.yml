@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: CodeCrafters Shell Challenge
+    url: https://app.codecrafters.io/courses/shell/overview
+    about: ZiggyZag started from this learning challenge.
