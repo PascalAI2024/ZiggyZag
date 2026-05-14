@@ -8,11 +8,17 @@ const CompletionEntry = struct {
     is_directory: bool,
 };
 
+const CompletionSpec = struct {
+    command: []u8,
+    completer: []u8,
+};
+
 const Shell = struct {
     allocator: Allocator,
     io: std.Io,
     env: *std.process.Environ.Map,
     history: std.ArrayList([]u8),
+    completion_specs: std.ArrayList(CompletionSpec),
     manual_echo: bool,
     last_completion_prefix: ?[]u8,
 
@@ -22,6 +28,7 @@ const Shell = struct {
             .io = io,
             .env = env,
             .history = .empty,
+            .completion_specs = .empty,
             .manual_echo = false,
             .last_completion_prefix = null,
         };
@@ -30,6 +37,11 @@ const Shell = struct {
     fn deinit(self: *Shell) void {
         for (self.history.items) |entry| self.allocator.free(entry);
         self.history.deinit(self.allocator);
+        for (self.completion_specs.items) |spec| {
+            self.allocator.free(spec.command);
+            self.allocator.free(spec.completer);
+        }
+        self.completion_specs.deinit(self.allocator);
         self.clearCompletionState();
     }
 
@@ -98,6 +110,7 @@ const Shell = struct {
     fn completeCommand(self: *Shell, line: *std.ArrayList(u8), stdout: *std.Io.Writer) !void {
         const token_start = completionTokenStart(line.items);
         if (token_start > 0) {
+            if (try self.completeRegisteredCommand(line, stdout, token_start)) return;
             try self.completePathArgument(line, stdout, token_start);
             return;
         }
@@ -160,6 +173,73 @@ const Shell = struct {
 
         try line.append(self.allocator, ' ');
         try stdout.writeByte(' ');
+    }
+
+    fn completeRegisteredCommand(self: *Shell, line: *std.ArrayList(u8), stdout: *std.Io.Writer, token_start: usize) !bool {
+        const command = commandNameForCompletion(line.items) orelse return false;
+        const spec = self.findCompletionSpec(command) orelse return false;
+        const prefix = line.items[token_start..];
+        const previous_word = previousCompletionWord(line.items, token_start);
+
+        var matches: std.ArrayList([]u8) = .empty;
+        defer {
+            for (matches.items) |item| self.allocator.free(item);
+            matches.deinit(self.allocator);
+        }
+
+        self.addCompleterMatches(&matches, spec.completer, command, prefix, previous_word, line.items) catch {
+            self.clearCompletionState();
+            try stdout.writeByte(0x07);
+            return true;
+        };
+
+        if (matches.items.len == 0) {
+            self.clearCompletionState();
+            try stdout.writeByte(0x07);
+            return true;
+        }
+
+        sortCompletionMatches(matches.items);
+        if (matches.items.len > 1) {
+            const common_prefix = longestCommonPrefix(matches.items);
+            if (common_prefix.len > prefix.len) {
+                const suffix = common_prefix[prefix.len..];
+                try line.appendSlice(self.allocator, suffix);
+                try stdout.writeAll(suffix);
+                self.clearCompletionState();
+                return true;
+            }
+
+            if (self.last_completion_prefix) |last_prefix| {
+                if (std.mem.eql(u8, last_prefix, prefix)) {
+                    try stdout.writeByte('\n');
+                    for (matches.items, 0..) |item, index| {
+                        if (index != 0) try stdout.writeAll("  ");
+                        try stdout.writeAll(item);
+                    }
+                    try stdout.writeAll("\n$ ");
+                    try stdout.writeAll(line.items);
+                    self.clearCompletionState();
+                    return true;
+                }
+            }
+
+            try self.rememberCompletionPrefix(prefix);
+            try stdout.writeByte(0x07);
+            return true;
+        }
+
+        self.clearCompletionState();
+        const completion = matches.items[0];
+        if (completion.len > prefix.len) {
+            const suffix = completion[prefix.len..];
+            try line.appendSlice(self.allocator, suffix);
+            try stdout.writeAll(suffix);
+        }
+
+        try line.append(self.allocator, ' ');
+        try stdout.writeByte(' ');
+        return true;
     }
 
     fn completePathArgument(self: *Shell, line: *std.ArrayList(u8), stdout: *std.Io.Writer, token_start: usize) !void {
@@ -292,10 +372,43 @@ const Shell = struct {
 
     fn addCompletionMatch(self: *Shell, matches: *std.ArrayList([]u8), prefix: []const u8, name: []const u8) !void {
         if (!std.mem.startsWith(u8, name, prefix)) return;
+        if (name.len == 0) return;
         for (matches.items) |existing| {
             if (std.mem.eql(u8, existing, name)) return;
         }
         try matches.append(self.allocator, try self.allocator.dupe(u8, name));
+    }
+
+    fn addCompleterMatches(
+        self: *Shell,
+        matches: *std.ArrayList([]u8),
+        completer: []const u8,
+        command: []const u8,
+        prefix: []const u8,
+        previous_word: []const u8,
+        line: []const u8,
+    ) !void {
+        var env_map = try self.env.clone(self.allocator);
+        defer env_map.deinit();
+
+        const comp_point = try std.fmt.allocPrint(self.allocator, "{d}", .{line.len});
+        defer self.allocator.free(comp_point);
+        try env_map.put("COMP_LINE", line);
+        try env_map.put("COMP_POINT", comp_point);
+
+        var argv = [_][]const u8{ completer, command, prefix, previous_word };
+        const result = try std.process.run(self.allocator, self.io, .{
+            .argv = &argv,
+            .environ_map = &env_map,
+        });
+        defer self.allocator.free(result.stdout);
+        defer self.allocator.free(result.stderr);
+
+        var lines = std.mem.splitScalar(u8, result.stdout, '\n');
+        while (lines.next()) |raw_line| {
+            const candidate = trimTrailingCarriageReturn(raw_line);
+            try self.addCompletionMatch(matches, prefix, candidate);
+        }
     }
 
     fn execute(self: *Shell, line: []const u8) !bool {
@@ -370,6 +483,16 @@ const Shell = struct {
             var stderr_buffer: std.ArrayList(u8) = .empty;
             defer stderr_buffer.deinit(self.allocator);
             try self.declareVariable(parsed.argv.items, &stdout_buffer);
+            try self.emitCommandOutput(&parsed, stdout_buffer.items, stderr_buffer.items);
+            return true;
+        }
+
+        if (std.mem.eql(u8, command, "complete")) {
+            var stdout_buffer: std.ArrayList(u8) = .empty;
+            defer stdout_buffer.deinit(self.allocator);
+            var stderr_buffer: std.ArrayList(u8) = .empty;
+            defer stderr_buffer.deinit(self.allocator);
+            try self.completeBuiltin(parsed.argv.items, &stdout_buffer);
             try self.emitCommandOutput(&parsed, stdout_buffer.items, stderr_buffer.items);
             return true;
         }
@@ -478,6 +601,64 @@ const Shell = struct {
             }
 
             try self.env.put(name, assignment[eq + 1 ..]);
+        }
+    }
+
+    fn completeBuiltin(self: *Shell, argv: []const []const u8, stdout_buffer: *std.ArrayList(u8)) !void {
+        if (argv.len >= 3 and std.mem.eql(u8, argv[1], "-p")) {
+            const command = argv[2];
+            if (self.findCompletionSpec(command)) |spec| {
+                try appendFmt(self.allocator, stdout_buffer, "complete -C '{s}' {s}\n", .{ spec.completer, spec.command });
+            } else {
+                try appendFmt(self.allocator, stdout_buffer, "complete: {s}: no completion specification\n", .{command});
+            }
+            return;
+        }
+
+        if (argv.len >= 4 and std.mem.eql(u8, argv[1], "-C")) {
+            try self.putCompletionSpec(argv[3], argv[2]);
+            return;
+        }
+
+        if (argv.len >= 3 and std.mem.eql(u8, argv[1], "-r")) {
+            self.removeCompletionSpec(argv[2]);
+            return;
+        }
+    }
+
+    fn findCompletionSpec(self: *Shell, command: []const u8) ?*CompletionSpec {
+        for (self.completion_specs.items) |*spec| {
+            if (std.mem.eql(u8, spec.command, command)) return spec;
+        }
+        return null;
+    }
+
+    fn putCompletionSpec(self: *Shell, command: []const u8, completer: []const u8) !void {
+        if (self.findCompletionSpec(command)) |spec| {
+            const new_completer = try self.allocator.dupe(u8, completer);
+            self.allocator.free(spec.completer);
+            spec.completer = new_completer;
+            return;
+        }
+
+        const owned_command = try self.allocator.dupe(u8, command);
+        errdefer self.allocator.free(owned_command);
+        const owned_completer = try self.allocator.dupe(u8, completer);
+        errdefer self.allocator.free(owned_completer);
+        try self.completion_specs.append(self.allocator, .{
+            .command = owned_command,
+            .completer = owned_completer,
+        });
+    }
+
+    fn removeCompletionSpec(self: *Shell, command: []const u8) void {
+        for (self.completion_specs.items, 0..) |spec, index| {
+            if (std.mem.eql(u8, spec.command, command)) {
+                const removed = self.completion_specs.orderedRemove(index);
+                self.allocator.free(removed.command);
+                self.allocator.free(removed.completer);
+                return;
+            }
         }
     }
 
@@ -845,12 +1026,40 @@ fn appendFmt(allocator: Allocator, buffer: *std.ArrayList(u8), comptime fmt: []c
     try buffer.appendSlice(allocator, text);
 }
 
+fn isCompletionWhitespace(c: u8) bool {
+    return c == ' ' or c == '\t';
+}
+
 fn completionTokenStart(line: []const u8) usize {
     var start: usize = 0;
     for (line, 0..) |c, index| {
-        if (c == ' ' or c == '\t') start = index + 1;
+        if (isCompletionWhitespace(c)) start = index + 1;
     }
     return start;
+}
+
+fn commandNameForCompletion(line: []const u8) ?[]const u8 {
+    var start: usize = 0;
+    while (start < line.len and isCompletionWhitespace(line[start])) : (start += 1) {}
+
+    var end = start;
+    while (end < line.len and !isCompletionWhitespace(line[end])) : (end += 1) {}
+
+    if (end == start) return null;
+    return line[start..end];
+}
+
+fn previousCompletionWord(line: []const u8, token_start: usize) []const u8 {
+    const command = commandNameForCompletion(line) orelse return "";
+    const command_end = (@intFromPtr(command.ptr) - @intFromPtr(line.ptr)) + command.len;
+
+    var end = token_start;
+    while (end > 0 and isCompletionWhitespace(line[end - 1])) : (end -= 1) {}
+    if (end <= command_end) return "";
+
+    var start = end;
+    while (start > command_end and !isCompletionWhitespace(line[start - 1])) : (start -= 1) {}
+    return line[start..end];
 }
 
 fn lastPathSeparator(path: []const u8) ?usize {
@@ -887,6 +1096,11 @@ fn longestCommonPrefixEntries(items: []const CompletionEntry) []const u8 {
     }
 
     return items[0].text[0..prefix_len];
+}
+
+fn trimTrailingCarriageReturn(line: []const u8) []const u8 {
+    if (line.len > 0 and line[line.len - 1] == '\r') return line[0 .. line.len - 1];
+    return line;
 }
 
 fn sortCompletionMatches(items: [][]u8) void {
