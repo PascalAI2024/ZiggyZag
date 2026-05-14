@@ -72,6 +72,11 @@ complete -c zig -a 'build fmt test' -d 'common Zig command'
 export EDITOR=vim
 echo $EDITOR
 
+which zig
+path --json
+timeit echo quick
+repeat 2 echo again
+
 inspect echo hello | grep hello
 doctor
 history --search zig
@@ -94,7 +99,7 @@ export ZIGGYZAG_HISTORY_DB=~/.ziggyzag-history.tsv
 | Area | Status | Notes |
 | --- | --- | --- |
 | REPL prompt | Done | Interactive command loop with manual terminal echo support. |
-| Builtins | Done | `cd`, `pwd`, `echo`, `type`, `history`, `jobs`, `complete`, `declare`, `help`, `alias`, `abbr`, `unabbr`, `unalias`, `config`, `doctor`, `export`, `inspect`, `prompt`, `unset`, `exit`. |
+| Builtins | Done | `about`, `abbr`, `alias`, `cd`, `complete`, `config`, `declare`, `doctor`, `echo`, `env`, `exit`, `export`, `help`, `history`, `inspect`, `jobs`, `mkcd`, `path`, `prompt`, `pwd`, `repeat`, `source`, `timeit`, `type`, `unalias`, `unabbr`, `unset`, `up`, `vars`, `which`. |
 | External programs | Done | PATH lookup and process spawning. |
 | Quoting | Done | Single quotes, double quotes, and backslash behavior. |
 | Redirection | Done | stdout/stderr redirect and append forms. |
@@ -104,7 +109,8 @@ export ZIGGYZAG_HISTORY_DB=~/.ziggyzag-history.tsv
 | Job control | Done | Background jobs, `jobs`, reaping, and job number reuse. |
 | Parameter expansion | Done | `$VAR`, `${VAR}`, missing variables, and shell variable storage. |
 | Modern UX | Done | Autosuggestion hooks, Ctrl-F accept, Ctrl-R fuzzy recall, syntax highlighting in smart prompt mode, abbreviations, and startup config. |
-| Introspection | Done | `doctor`, `inspect`, slash shortcuts, JSON output for jobs/history/prompt/doctor, and config validation/reload. |
+| Introspection | Done | `about`, `doctor`, `inspect`, `which`, `path`, slash shortcuts, JSON output for jobs/history/prompt/env/doctor, and config validation/reload. |
+| Convenience commands | Done | `mkcd`, `up`, `repeat`, `timeit`, `source`, `env`, and `vars`. |
 | Developer polish | Done | Repo docs, diagrams, refactors, smoke script, and user-facing enhancements. |
 
 ## Architecture
