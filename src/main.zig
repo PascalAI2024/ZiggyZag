@@ -13,8 +13,12 @@ pub fn main(init: std.process.Init) !void {
 
         if (std.mem.eql(u8, command_text, "exit")) {
             break;
+        } else if (std.mem.eql(u8, command_text, "echo")) {
+            try stdout.interface.print("\n", .{});
+        } else if (std.mem.startsWith(u8, command_text, "echo ")) {
+            try stdout.interface.print("{s}\n", .{command_text[5..]});
+        } else {
+            try stdout.interface.print("{s}: command not found\n", .{command_text});
         }
-
-        try stdout.interface.print("{s}: command not found\n", .{command_text});
     }
 }
