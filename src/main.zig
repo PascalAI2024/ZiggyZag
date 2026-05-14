@@ -118,6 +118,15 @@ const Shell = struct {
 
         if (matches.items.len > 1) {
             sortCompletionMatches(matches.items);
+            const common_prefix = longestCommonPrefix(matches.items);
+            if (common_prefix.len > prefix.len) {
+                const suffix = common_prefix[prefix.len..];
+                try line.appendSlice(self.allocator, suffix);
+                try stdout.writeAll(suffix);
+                self.clearCompletionState();
+                return;
+            }
+
             if (self.last_completion_prefix) |last_prefix| {
                 if (std.mem.eql(u8, last_prefix, prefix)) {
                     try stdout.writeByte('\n');
@@ -741,6 +750,20 @@ fn appendFmt(allocator: Allocator, buffer: *std.ArrayList(u8), comptime fmt: []c
     const text = try std.fmt.allocPrint(allocator, fmt, args);
     defer allocator.free(text);
     try buffer.appendSlice(allocator, text);
+}
+
+fn longestCommonPrefix(items: []const []u8) []const u8 {
+    if (items.len == 0) return "";
+
+    var prefix_len = items[0].len;
+    for (items[1..]) |item| {
+        var i: usize = 0;
+        const limit = if (prefix_len < item.len) prefix_len else item.len;
+        while (i < limit and items[0][i] == item[i]) : (i += 1) {}
+        prefix_len = i;
+    }
+
+    return items[0][0..prefix_len];
 }
 
 fn sortCompletionMatches(items: [][]u8) void {
