@@ -85,6 +85,9 @@ const Shell = struct {
     fn readLine(self: *Shell, reader: *std.Io.Reader, stdout: *std.Io.Writer) !?[]u8 {
         var line: std.ArrayList(u8) = .empty;
         errdefer line.deinit(self.allocator);
+        var history_index = self.history.items.len;
+        var draft_line: ?[]u8 = null;
+        defer if (draft_line) |draft| self.allocator.free(draft);
 
         while (true) {
             const byte = reader.takeByte() catch |err| switch (err) {
@@ -106,6 +109,7 @@ const Shell = struct {
                 },
                 '\r' => {},
                 '\t' => try self.completeCommand(&line, stdout),
+                0x1b => try self.handleEscapeSequence(reader, stdout, &line, &history_index, &draft_line),
                 0x08, 0x7f => {
                     self.clearCompletionState();
                     if (line.items.len > 0) {
@@ -120,6 +124,77 @@ const Shell = struct {
                 },
             }
         }
+    }
+
+    fn handleEscapeSequence(
+        self: *Shell,
+        reader: *std.Io.Reader,
+        stdout: *std.Io.Writer,
+        line: *std.ArrayList(u8),
+        history_index: *usize,
+        draft_line: *?[]u8,
+    ) !void {
+        const introducer = reader.takeByte() catch return;
+        if (introducer != '[' and introducer != 'O') return;
+
+        const key = reader.takeByte() catch return;
+        switch (key) {
+            'A' => try self.navigateHistory(.previous, stdout, line, history_index, draft_line),
+            'B' => try self.navigateHistory(.next, stdout, line, history_index, draft_line),
+            else => {},
+        }
+    }
+
+    const HistoryDirection = enum {
+        previous,
+        next,
+    };
+
+    fn navigateHistory(
+        self: *Shell,
+        direction: HistoryDirection,
+        stdout: *std.Io.Writer,
+        line: *std.ArrayList(u8),
+        history_index: *usize,
+        draft_line: *?[]u8,
+    ) !void {
+        self.clearCompletionState();
+        if (self.history.items.len == 0) return;
+
+        if (draft_line.* == null and history_index.* == self.history.items.len) {
+            draft_line.* = try self.allocator.dupe(u8, line.items);
+        }
+
+        switch (direction) {
+            .previous => {
+                if (history_index.* > 0) history_index.* -= 1;
+                try self.replaceCurrentLine(line, self.history.items[history_index.*]);
+            },
+            .next => {
+                if (history_index.* + 1 < self.history.items.len) {
+                    history_index.* += 1;
+                    try self.replaceCurrentLine(line, self.history.items[history_index.*]);
+                } else {
+                    history_index.* = self.history.items.len;
+                    try self.replaceCurrentLine(line, draft_line.* orelse "");
+                }
+            },
+        }
+
+        try self.redrawPromptLine(stdout, line.items);
+    }
+
+    fn replaceCurrentLine(self: *Shell, line: *std.ArrayList(u8), contents: []const u8) !void {
+        while (line.items.len > 0) {
+            _ = line.pop();
+        }
+        try line.appendSlice(self.allocator, contents);
+    }
+
+    fn redrawPromptLine(self: *Shell, stdout: *std.Io.Writer, line: []const u8) !void {
+        if (!self.manual_echo) return;
+        try stdout.writeAll("\r\x1b[2K$ ");
+        try stdout.writeAll(line);
     }
 
     fn completeCommand(self: *Shell, line: *std.ArrayList(u8), stdout: *std.Io.Writer) !void {
