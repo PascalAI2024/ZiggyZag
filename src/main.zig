@@ -42,7 +42,12 @@ const Shell = struct {
     }
 
     fn execute(self: *Shell, line: []const u8) !bool {
-        var parsed = try parseTokens(self.allocator, line);
+        if (hasUnquotedPipe(line)) {
+            try self.runViaSystemShell(line);
+            return true;
+        }
+
+        var parsed = try parseCommand(self.allocator, line);
         defer parsed.deinit();
 
         if (parsed.argv.items.len == 0) return true;
@@ -53,42 +58,86 @@ const Shell = struct {
         }
 
         if (std.mem.eql(u8, command, "cd")) {
-            try self.changeDirectory(parsed.argv.items);
+            var stdout_buffer: std.ArrayList(u8) = .empty;
+            defer stdout_buffer.deinit(self.allocator);
+            var stderr_buffer: std.ArrayList(u8) = .empty;
+            defer stderr_buffer.deinit(self.allocator);
+            try self.changeDirectory(parsed.argv.items, &stderr_buffer);
+            try self.emitCommandOutput(&parsed, stdout_buffer.items, stderr_buffer.items);
             return true;
         }
 
         if (std.mem.eql(u8, command, "type")) {
-            try self.typeCommand(parsed.argv.items);
+            var stdout_buffer: std.ArrayList(u8) = .empty;
+            defer stdout_buffer.deinit(self.allocator);
+            var stderr_buffer: std.ArrayList(u8) = .empty;
+            defer stderr_buffer.deinit(self.allocator);
+            try self.typeCommand(parsed.argv.items, &stdout_buffer);
+            try self.emitCommandOutput(&parsed, stdout_buffer.items, stderr_buffer.items);
             return true;
         }
 
         if (std.mem.eql(u8, command, "echo")) {
-            try self.echoCommand(parsed.argv.items);
+            var stdout_buffer: std.ArrayList(u8) = .empty;
+            defer stdout_buffer.deinit(self.allocator);
+            var stderr_buffer: std.ArrayList(u8) = .empty;
+            defer stderr_buffer.deinit(self.allocator);
+            try self.echoCommand(parsed.argv.items, &stdout_buffer);
+            try self.emitCommandOutput(&parsed, stdout_buffer.items, stderr_buffer.items);
             return true;
         }
 
         if (std.mem.eql(u8, command, "pwd")) {
-            try self.printWorkingDirectory();
+            var stdout_buffer: std.ArrayList(u8) = .empty;
+            defer stdout_buffer.deinit(self.allocator);
+            var stderr_buffer: std.ArrayList(u8) = .empty;
+            defer stderr_buffer.deinit(self.allocator);
+            try self.printWorkingDirectory(&stdout_buffer);
+            try self.emitCommandOutput(&parsed, stdout_buffer.items, stderr_buffer.items);
             return true;
         }
 
         if (std.mem.eql(u8, command, "history")) {
-            try self.printHistory(parsed.argv.items);
+            var stdout_buffer: std.ArrayList(u8) = .empty;
+            defer stdout_buffer.deinit(self.allocator);
+            var stderr_buffer: std.ArrayList(u8) = .empty;
+            defer stderr_buffer.deinit(self.allocator);
+            try self.printHistory(parsed.argv.items, &stdout_buffer);
+            try self.emitCommandOutput(&parsed, stdout_buffer.items, stderr_buffer.items);
             return true;
         }
 
         if (std.mem.eql(u8, command, "declare")) {
-            try self.declareVariable(parsed.argv.items);
+            var stdout_buffer: std.ArrayList(u8) = .empty;
+            defer stdout_buffer.deinit(self.allocator);
+            var stderr_buffer: std.ArrayList(u8) = .empty;
+            defer stderr_buffer.deinit(self.allocator);
+            try self.declareVariable(parsed.argv.items, &stdout_buffer);
+            try self.emitCommandOutput(&parsed, stdout_buffer.items, stderr_buffer.items);
             return true;
         }
 
         if (std.mem.eql(u8, command, "jobs")) {
+            var stdout_buffer: std.ArrayList(u8) = .empty;
+            defer stdout_buffer.deinit(self.allocator);
+            var stderr_buffer: std.ArrayList(u8) = .empty;
+            defer stderr_buffer.deinit(self.allocator);
+            try self.emitCommandOutput(&parsed, stdout_buffer.items, stderr_buffer.items);
             return true;
         }
 
         if (!isShellBuiltin(command) and (try self.findExecutable(command)) == null) {
-            var stdout = std.Io.File.stdout().writer(self.io, &.{});
-            try stdout.interface.print("{s}: command not found\n", .{command});
+            var stdout_buffer: std.ArrayList(u8) = .empty;
+            defer stdout_buffer.deinit(self.allocator);
+            var stderr_buffer: std.ArrayList(u8) = .empty;
+            defer stderr_buffer.deinit(self.allocator);
+            try appendFmt(self.allocator, &stderr_buffer, "{s}: command not found\n", .{command});
+            try self.emitCommandOutput(&parsed, stdout_buffer.items, stderr_buffer.items);
+            return true;
+        }
+
+        if (parsed.hasRedirection()) {
+            try self.runViaSystemShell(line);
             return true;
         }
 
@@ -96,7 +145,7 @@ const Shell = struct {
         return true;
     }
 
-    fn changeDirectory(self: *Shell, argv: []const []const u8) !void {
+    fn changeDirectory(self: *Shell, argv: []const []const u8, stderr_buffer: *std.ArrayList(u8)) !void {
         const target = if (argv.len < 2 or std.mem.eql(u8, argv[1], "~"))
             self.env.get("HOME") orelse ""
         else
@@ -104,59 +153,53 @@ const Shell = struct {
 
         if (target.len == 0) return;
         std.process.setCurrentPath(self.io, target) catch {
-            var stdout = std.Io.File.stdout().writer(self.io, &.{});
-            try stdout.interface.print("cd: {s}: No such file or directory\n", .{target});
+            try appendFmt(self.allocator, stderr_buffer, "cd: {s}: No such file or directory\n", .{target});
         };
     }
 
-    fn typeCommand(self: *Shell, argv: []const []const u8) !void {
-        var stdout = std.Io.File.stdout().writer(self.io, &.{});
+    fn typeCommand(self: *Shell, argv: []const []const u8, stdout_buffer: *std.ArrayList(u8)) !void {
         if (argv.len < 2) return;
 
         for (argv[1..]) |name| {
             if (isShellBuiltin(name)) {
-                try stdout.interface.print("{s} is a shell builtin\n", .{name});
+                try appendFmt(self.allocator, stdout_buffer, "{s} is a shell builtin\n", .{name});
             } else if (try self.findExecutable(name)) |path| {
                 defer self.allocator.free(path);
-                try stdout.interface.print("{s} is {s}\n", .{ name, path });
+                try appendFmt(self.allocator, stdout_buffer, "{s} is {s}\n", .{ name, path });
             } else {
-                try stdout.interface.print("{s}: not found\n", .{name});
+                try appendFmt(self.allocator, stdout_buffer, "{s}: not found\n", .{name});
             }
         }
     }
 
-    fn echoCommand(self: *Shell, argv: []const []const u8) !void {
-        var stdout = std.Io.File.stdout().writer(self.io, &.{});
+    fn echoCommand(self: *Shell, argv: []const []const u8, stdout_buffer: *std.ArrayList(u8)) !void {
         for (argv[1..], 0..) |arg, index| {
-            if (index != 0) try stdout.interface.print(" ", .{});
-            try stdout.interface.print("{s}", .{arg});
+            if (index != 0) try stdout_buffer.append(self.allocator, ' ');
+            try stdout_buffer.appendSlice(self.allocator, arg);
         }
-        try stdout.interface.print("\n", .{});
+        try stdout_buffer.append(self.allocator, '\n');
     }
 
-    fn printWorkingDirectory(self: *Shell) !void {
-        var stdout = std.Io.File.stdout().writer(self.io, &.{});
+    fn printWorkingDirectory(self: *Shell, stdout_buffer: *std.ArrayList(u8)) !void {
         const cwd = try std.process.currentPathAlloc(self.io, self.allocator);
         defer self.allocator.free(cwd);
-        try stdout.interface.print("{s}\n", .{cwd});
+        try appendFmt(self.allocator, stdout_buffer, "{s}\n", .{cwd});
     }
 
-    fn printHistory(self: *Shell, argv: []const []const u8) !void {
-        var stdout = std.Io.File.stdout().writer(self.io, &.{});
+    fn printHistory(self: *Shell, argv: []const []const u8, stdout_buffer: *std.ArrayList(u8)) !void {
         const limit = if (argv.len >= 2) std.fmt.parseInt(usize, argv[1], 10) catch self.history.items.len else self.history.items.len;
         const start = if (limit < self.history.items.len) self.history.items.len - limit else 0;
 
         for (self.history.items[start..], start..) |entry, index| {
-            try stdout.interface.print("{d: >5}  {s}\n", .{ index + 1, entry });
+            try appendFmt(self.allocator, stdout_buffer, "{d: >5}  {s}\n", .{ index + 1, entry });
         }
     }
 
-    fn declareVariable(self: *Shell, argv: []const []const u8) !void {
-        var stdout = std.Io.File.stdout().writer(self.io, &.{});
+    fn declareVariable(self: *Shell, argv: []const []const u8, stdout_buffer: *std.ArrayList(u8)) !void {
         if (argv.len == 1) {
             var it = self.env.iterator();
             while (it.next()) |entry| {
-                try stdout.interface.print("declare -- {s}=\"{s}\"\n", .{ entry.key_ptr.*, entry.value_ptr.* });
+                try appendFmt(self.allocator, stdout_buffer, "declare -- {s}=\"{s}\"\n", .{ entry.key_ptr.*, entry.value_ptr.* });
             }
             return;
         }
@@ -164,21 +207,63 @@ const Shell = struct {
         for (argv[1..]) |assignment| {
             const eq = std.mem.indexOfScalar(u8, assignment, '=') orelse {
                 if (self.env.get(assignment)) |value| {
-                    try stdout.interface.print("declare -- {s}=\"{s}\"\n", .{ assignment, value });
+                    try appendFmt(self.allocator, stdout_buffer, "declare -- {s}=\"{s}\"\n", .{ assignment, value });
                 } else {
-                    try stdout.interface.print("{s}: not found\n", .{assignment});
+                    try appendFmt(self.allocator, stdout_buffer, "{s}: not found\n", .{assignment});
                 }
                 continue;
             };
 
             const name = assignment[0..eq];
             if (!isValidName(name)) {
-                try stdout.interface.print("declare: `{s}': not a valid identifier\n", .{name});
+                try appendFmt(self.allocator, stdout_buffer, "declare: `{s}': not a valid identifier\n", .{name});
                 continue;
             }
 
             try self.env.put(name, assignment[eq + 1 ..]);
         }
+    }
+
+    fn emitCommandOutput(self: *Shell, parsed: *const ParsedCommand, stdout_bytes: []const u8, stderr_bytes: []const u8) !void {
+        if (parsed.stdout_redirect) |redirect| {
+            try self.writeRedirect(redirect, stdout_bytes);
+        } else if (stdout_bytes.len > 0) {
+            var stdout = std.Io.File.stdout().writer(self.io, &.{});
+            try stdout.interface.writeAll(stdout_bytes);
+        }
+
+        if (parsed.stderr_redirect) |redirect| {
+            try self.writeRedirect(redirect, stderr_bytes);
+        } else if (stderr_bytes.len > 0) {
+            var stderr = std.Io.File.stderr().writer(self.io, &.{});
+            try stderr.interface.writeAll(stderr_bytes);
+        }
+    }
+
+    fn writeRedirect(self: *Shell, redirect: Redirection, bytes: []const u8) !void {
+        if (!redirect.append) {
+            try std.Io.Dir.cwd().writeFile(self.io, .{ .sub_path = redirect.path, .data = bytes });
+            return;
+        }
+
+        var output: std.ArrayList(u8) = .empty;
+        defer output.deinit(self.allocator);
+
+        const existing_file = std.Io.Dir.cwd().openFile(self.io, redirect.path, .{}) catch |err| switch (err) {
+            error.FileNotFound => null,
+            else => |e| return e,
+        };
+        if (existing_file) |file| {
+            defer file.close(self.io);
+            var read_buffer: [4096]u8 = undefined;
+            var reader = file.readerStreaming(self.io, &read_buffer);
+            const existing = try reader.interface.allocRemaining(self.allocator, .unlimited);
+            defer self.allocator.free(existing);
+            try output.appendSlice(self.allocator, existing);
+        }
+
+        try output.appendSlice(self.allocator, bytes);
+        try std.Io.Dir.cwd().writeFile(self.io, .{ .sub_path = redirect.path, .data = output.items });
     }
 
     fn runViaSystemShell(self: *Shell, line: []const u8) !void {
@@ -234,15 +319,90 @@ const Shell = struct {
     }
 };
 
+const Redirection = struct {
+    path: []u8,
+    append: bool,
+};
+
+const RedirectTarget = enum {
+    stdout,
+    stderr,
+};
+
+const RedirectionSpec = struct {
+    target: RedirectTarget,
+    append: bool,
+};
+
 const ParsedCommand = struct {
     allocator: Allocator,
     argv: std.ArrayList([]u8),
+    stdout_redirect: ?Redirection = null,
+    stderr_redirect: ?Redirection = null,
 
     fn deinit(self: *ParsedCommand) void {
         for (self.argv.items) |arg| self.allocator.free(arg);
         self.argv.deinit(self.allocator);
+        if (self.stdout_redirect) |redirect| self.allocator.free(redirect.path);
+        if (self.stderr_redirect) |redirect| self.allocator.free(redirect.path);
+    }
+
+    fn hasRedirection(self: *const ParsedCommand) bool {
+        return self.stdout_redirect != null or self.stderr_redirect != null;
+    }
+
+    fn extractRedirections(self: *ParsedCommand) !void {
+        var argv: std.ArrayList([]u8) = .empty;
+
+        var index: usize = 0;
+        while (index < self.argv.items.len) {
+            const token = self.argv.items[index];
+            if (parseRedirectionOperator(token)) |spec| {
+                self.allocator.free(token);
+                if (index + 1 >= self.argv.items.len) {
+                    index += 1;
+                    break;
+                }
+
+                const path = self.argv.items[index + 1];
+                self.setRedirection(spec, path);
+                index += 2;
+                continue;
+            }
+
+            try argv.append(self.allocator, token);
+            index += 1;
+        }
+
+        while (index < self.argv.items.len) : (index += 1) {
+            self.allocator.free(self.argv.items[index]);
+        }
+
+        self.argv.deinit(self.allocator);
+        self.argv = argv;
+    }
+
+    fn setRedirection(self: *ParsedCommand, spec: RedirectionSpec, path: []u8) void {
+        const redirect: Redirection = .{ .path = path, .append = spec.append };
+        switch (spec.target) {
+            .stdout => {
+                if (self.stdout_redirect) |old| self.allocator.free(old.path);
+                self.stdout_redirect = redirect;
+            },
+            .stderr => {
+                if (self.stderr_redirect) |old| self.allocator.free(old.path);
+                self.stderr_redirect = redirect;
+            },
+        }
     }
 };
+
+fn parseCommand(allocator: Allocator, line: []const u8) !ParsedCommand {
+    var parsed = try parseTokens(allocator, line);
+    errdefer parsed.deinit();
+    try parsed.extractRedirections();
+    return parsed;
+}
 
 fn parseTokens(allocator: Allocator, line: []const u8) !ParsedCommand {
     var argv: std.ArrayList([]u8) = .empty;
@@ -261,6 +421,32 @@ fn parseTokens(allocator: Allocator, line: []const u8) !ParsedCommand {
             ' ', '\t' => {
                 try flushToken(allocator, &argv, &current);
                 i += 1;
+            },
+            '>' => {
+                try flushToken(allocator, &argv, &current);
+                if (i + 1 < line.len and line[i + 1] == '>') {
+                    try appendToken(allocator, &argv, ">>");
+                    i += 2;
+                } else {
+                    try appendToken(allocator, &argv, ">");
+                    i += 1;
+                }
+            },
+            '1', '2' => {
+                if (current.items.len == 0 and i + 1 < line.len and line[i + 1] == '>') {
+                    if (i + 2 < line.len and line[i + 2] == '>') {
+                        var operator = [_]u8{ c, '>', '>' };
+                        try appendToken(allocator, &argv, &operator);
+                        i += 3;
+                    } else {
+                        var operator = [_]u8{ c, '>' };
+                        try appendToken(allocator, &argv, &operator);
+                        i += 2;
+                    }
+                } else {
+                    try current.append(allocator, c);
+                    i += 1;
+                }
             },
             '\'' => {
                 i += 1;
@@ -304,10 +490,63 @@ fn parseTokens(allocator: Allocator, line: []const u8) !ParsedCommand {
     return .{ .allocator = allocator, .argv = argv };
 }
 
+fn appendToken(allocator: Allocator, argv: *std.ArrayList([]u8), token: []const u8) !void {
+    try argv.append(allocator, try allocator.dupe(u8, token));
+}
+
 fn flushToken(allocator: Allocator, argv: *std.ArrayList([]u8), current: *std.ArrayList(u8)) !void {
     if (current.items.len == 0) return;
     try argv.append(allocator, try allocator.dupe(u8, current.items));
     current.clearRetainingCapacity();
+}
+
+fn parseRedirectionOperator(token: []const u8) ?RedirectionSpec {
+    if (std.mem.eql(u8, token, ">") or std.mem.eql(u8, token, "1>")) {
+        return .{ .target = .stdout, .append = false };
+    }
+    if (std.mem.eql(u8, token, ">>") or std.mem.eql(u8, token, "1>>")) {
+        return .{ .target = .stdout, .append = true };
+    }
+    if (std.mem.eql(u8, token, "2>")) {
+        return .{ .target = .stderr, .append = false };
+    }
+    if (std.mem.eql(u8, token, "2>>")) {
+        return .{ .target = .stderr, .append = true };
+    }
+    return null;
+}
+
+fn hasUnquotedPipe(line: []const u8) bool {
+    var quote: ?u8 = null;
+    var i: usize = 0;
+    while (i < line.len) : (i += 1) {
+        const c = line[i];
+        if (quote) |q| {
+            if (q == '\'' and c == '\'') {
+                quote = null;
+            } else if (q == '"' and c == '"') {
+                quote = null;
+            } else if (q == '"' and c == '\\' and i + 1 < line.len) {
+                i += 1;
+            }
+            continue;
+        }
+
+        if (c == '\'' or c == '"') {
+            quote = c;
+        } else if (c == '\\' and i + 1 < line.len) {
+            i += 1;
+        } else if (c == '|') {
+            return true;
+        }
+    }
+    return false;
+}
+
+fn appendFmt(allocator: Allocator, buffer: *std.ArrayList(u8), comptime fmt: []const u8, args: anytype) !void {
+    const text = try std.fmt.allocPrint(allocator, fmt, args);
+    defer allocator.free(text);
+    try buffer.appendSlice(allocator, text);
 }
 
 fn isShellBuiltin(name: []const u8) bool {
