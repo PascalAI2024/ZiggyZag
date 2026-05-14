@@ -25,6 +25,7 @@ const Shell = struct {
     io: std.Io,
     env: *std.process.Environ.Map,
     history: std.ArrayList([]u8),
+    history_append_index: usize,
     completion_specs: std.ArrayList(CompletionSpec),
     background_jobs: std.ArrayList(BackgroundJob),
     manual_echo: bool,
@@ -36,6 +37,7 @@ const Shell = struct {
             .io = io,
             .env = env,
             .history = .empty,
+            .history_append_index = 0,
             .completion_specs = .empty,
             .background_jobs = .empty,
             .manual_echo = false,
@@ -669,18 +671,21 @@ const Shell = struct {
         }
 
         if (argv.len >= 3 and std.mem.eql(u8, argv[1], "-w")) {
-            try self.writeHistoryFile(argv[2], false);
+            try self.writeHistoryFile(argv[2], false, 0);
+            self.history_append_index = self.history.items.len;
             return;
         }
 
         if (argv.len >= 3 and std.mem.eql(u8, argv[1], "-a")) {
-            try self.writeHistoryFile(argv[2], true);
+            try self.writeHistoryFile(argv[2], true, self.history_append_index);
+            self.history_append_index = self.history.items.len;
             return;
         }
 
         if (argv.len >= 2 and std.mem.eql(u8, argv[1], "-c")) {
             for (self.history.items) |entry| self.allocator.free(entry);
             self.history.clearRetainingCapacity();
+            self.history_append_index = 0;
             return;
         }
 
@@ -716,7 +721,7 @@ const Shell = struct {
         }
     }
 
-    fn writeHistoryFile(self: *Shell, path: []const u8, append: bool) !void {
+    fn writeHistoryFile(self: *Shell, path: []const u8, append: bool, start_index: usize) !void {
         var output: std.ArrayList(u8) = .empty;
         defer output.deinit(self.allocator);
 
@@ -739,10 +744,14 @@ const Shell = struct {
                 const existing = try reader.interface.allocRemaining(self.allocator, .unlimited);
                 defer self.allocator.free(existing);
                 try output.appendSlice(self.allocator, existing);
+                if (existing.len > 0 and existing[existing.len - 1] != '\n') {
+                    try output.append(self.allocator, '\n');
+                }
             }
         }
 
-        for (self.history.items) |entry| {
+        const start = @min(start_index, self.history.items.len);
+        for (self.history.items[start..]) |entry| {
             try output.appendSlice(self.allocator, entry);
             try output.append(self.allocator, '\n');
         }
