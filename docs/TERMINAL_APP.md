@@ -54,7 +54,7 @@ The repo now contains a Windows-native all-Zig alpha under `apps/desktop`:
 - Windows ConPTY shell hosting.
 - Keyboard input forwarded to the shell process.
 - Resize handling across the window, grid, and pseudoconsole.
-- Status bar and window-title updates from shell integration events.
+- Status bar and window-title updates from shell integration events, including project and git prompt context.
 - Built-in terminal themes, theme-aware ANSI colors, a settings overlay, live theme cycling, and desktop config loading.
 - Tested terminal grid and OSC 777 event extraction.
 - Slim `ziggyzag-agentd` sidecar under `apps/agentd` for terminal AI panel integration.
@@ -126,7 +126,7 @@ Potential event types:
 - `jobs.changed`: background job count and short statuses.
 - `completion.candidates`: optional rich completions for app-side display experiments.
 
-This keeps the PTY path simple and lets non-ZiggyZag terminals ignore unknown OSC sequences.
+The current `prompt.rendered` payload already carries cwd, prompt mode, last status, last duration, jobs, project kind, and git branch/status counts. This keeps the PTY path simple and lets non-ZiggyZag terminals ignore unknown OSC sequences.
 
 ### Sidecar IPC Later
 

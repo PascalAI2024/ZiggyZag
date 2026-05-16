@@ -12,7 +12,7 @@ The previous Tauri/xterm.js prototype lives in `apps/desktop-tauri-spike` as a p
 
 This directory contains a buildable Zig executable named `ziggyzag-desktop` plus the desktop core modules:
 
-- `windows_app.zig`: Win32 window, GDI renderer, keyboard input, copy/paste, mouse-wheel scrollback, Windows ConPTY bridge, shell lifecycle, and status bar.
+- `windows_app.zig`: Win32 window, GDI renderer, keyboard input, copy/paste, mouse-wheel scrollback, Windows ConPTY bridge, shell lifecycle, and shell-aware status bar with project/git context.
 - `terminal.zig`: terminal grid with printable text, SGR styling, newline, carriage return, deferred wrapping, scrollback capture, resize, and a small CSI subset.
 - `integration.zig`: OSC 777 ZiggyZag event extraction that strips app-only events from display bytes.
 - `config.zig`: lightweight desktop settings model and key=value parser.
@@ -90,10 +90,11 @@ Use this Windows checklist before sharing a build with friends:
 6. Send Ctrl+C during a running command and confirm it behaves like a terminal interrupt.
 7. Copy visible terminal text with Ctrl+Shift+C, then paste into Notepad or another editor.
 8. Resize the window smaller and larger; the prompt should remain usable.
-9. Run commands that change status, such as `doctor`, `pwd`, `history --stats`, and an invalid command.
+9. Run commands that change status, such as `doctor`, `pwd`, `history --stats`, `prompt dev`, and an invalid command.
 10. Use the mouse wheel after producing more output than fits on screen.
-11. Press `Ctrl+,` and confirm the settings overlay opens; press `Ctrl+Shift+T` and confirm the theme changes.
-12. Close the window and confirm no stuck `ziggyzag.exe` child process remains.
+11. Confirm the status bar shows project/git context when launched inside a repo.
+12. Press `Ctrl+,` and confirm the settings overlay opens; press `Ctrl+Shift+T` and confirm the theme changes.
+13. Close the window and confirm no stuck `ziggyzag.exe` child process remains.
 
 For macOS/Linux friends, use this alpha checklist:
 

@@ -66,6 +66,42 @@ const ProjectInfo = struct {
 const PromptMode = enum {
     classic,
     smart,
+    compact,
+    dev,
+    dashboard,
+};
+
+const prompt_modes = [_]PromptMode{ .classic, .smart, .compact, .dev, .dashboard };
+
+const GitPromptStatus = struct {
+    present: bool = false,
+    branch: [96]u8 = undefined,
+    branch_len: usize = 0,
+    staged: usize = 0,
+    changed: usize = 0,
+    untracked: usize = 0,
+    conflicts: usize = 0,
+    ahead: usize = 0,
+    behind: usize = 0,
+
+    fn branchSlice(self: *const GitPromptStatus) []const u8 {
+        return self.branch[0..self.branch_len];
+    }
+
+    fn hasChanges(self: *const GitPromptStatus) bool {
+        return self.staged > 0 or self.changed > 0 or self.untracked > 0 or self.conflicts > 0;
+    }
+};
+
+const PromptSnapshot = struct {
+    cwd: [512]u8 = undefined,
+    cwd_len: usize = 0,
+    project_kind: ?ProjectKind = null,
+    git: GitPromptStatus = .{},
+
+    fn cwdSlice(self: *const PromptSnapshot) []const u8 {
+        return self.cwd[0..self.cwd_len];
+    }
 };
 
 const PipelineStageResult = struct {
@@ -96,6 +132,8 @@ const Shell = struct {
     manual_echo: bool,
     last_completion_prefix: ?[]u8,
     prompt_mode: PromptMode,
+    prompt_snapshot: PromptSnapshot,
+    prompt_snapshot_valid: bool,
     last_status: u8,
     last_duration_ms: i64,
 
@@ -117,6 +155,8 @@ const Shell = struct {
             .manual_echo = false,
             .last_completion_prefix = null,
             .prompt_mode = .classic,
+            .prompt_snapshot = .{},
+            .prompt_snapshot_valid = false,
             .last_status = 0,
             .last_duration_ms = 0,
         };
@@ -206,6 +246,7 @@ const Shell = struct {
             try self.writeIntegrationCommandStarted(&stdout.interface, command_id, submitted_line, started_at);
             const keep_running = try self.execute(submitted_line);
             self.last_duration_ms = std.Io.Clock.real.now(self.io).toMilliseconds() - started_at;
+            self.prompt_snapshot_valid = false;
             try self.recordHistoryMeta(submitted_line, started_at, self.last_duration_ms, self.last_status);
             try self.writeIntegrationCommandFinished(&stdout.interface, command_id, self.last_status, self.last_duration_ms);
             if (!keep_running) break;
@@ -472,16 +513,121 @@ const Shell = struct {
                     return;
                 };
                 defer self.allocator.free(cwd);
-                try stdout.print("{s}", .{baseName(cwd)});
-                if (try self.gitBranch()) |branch| {
-                    defer self.allocator.free(branch);
-                    try stdout.print(" ({s})", .{branch});
-                }
+                const snapshot = self.promptSnapshot(cwd);
+                try stdout.print("{s}", .{baseName(snapshot.cwdSlice())});
+                try self.writeGitCompact(stdout, snapshot, true);
+                if (snapshot.project_kind) |kind| try stdout.print(" project:{s}", .{@tagName(kind)});
                 if (self.background_jobs.items.len > 0) try stdout.print(" jobs:{d}", .{self.background_jobs.items.len});
                 if (self.last_duration_ms > 250) try stdout.print(" {d}ms", .{self.last_duration_ms});
                 try stdout.writeAll(" $ ");
             },
+            .compact => {
+                const cwd = std.process.currentPathAlloc(self.io, self.allocator) catch {
+                    try stdout.writeAll("$ ");
+                    return;
+                };
+                defer self.allocator.free(cwd);
+                const snapshot = self.promptSnapshot(cwd);
+                try stdout.print("{s}", .{baseName(snapshot.cwdSlice())});
+                try self.writeGitCompact(stdout, snapshot, false);
+                if (self.last_status != 0) try stdout.print(" !{d}", .{self.last_status});
+                if (self.background_jobs.items.len > 0) try stdout.print(" &{d}", .{self.background_jobs.items.len});
+                try stdout.writeAll(" $ ");
+            },
+            .dev => {
+                const cwd = std.process.currentPathAlloc(self.io, self.allocator) catch {
+                    try stdout.writeAll("$ ");
+                    return;
+                };
+                defer self.allocator.free(cwd);
+                const snapshot = self.promptSnapshot(cwd);
+                try self.writeDevPrompt(stdout, snapshot);
+            },
+            .dashboard => {
+                const cwd = std.process.currentPathAlloc(self.io, self.allocator) catch {
+                    try stdout.writeAll("$ ");
+                    return;
+                };
+                defer self.allocator.free(cwd);
+                const snapshot = self.promptSnapshot(cwd);
+                try self.writeDashboardPrompt(stdout, snapshot);
+            },
         }
+    }
+
+    fn promptSnapshot(self: *Shell, cwd: []const u8) *const PromptSnapshot {
+        if (self.prompt_snapshot_valid and std.mem.eql(u8, cwd, self.prompt_snapshot.cwdSlice())) {
+            return &self.prompt_snapshot;
+        }
+
+        self.prompt_snapshot = .{};
+        self.prompt_snapshot.cwd_len = copyBounded(self.prompt_snapshot.cwd[0..], cwd);
+        self.prompt_snapshot.project_kind = self.detectProjectKindFrom(cwd) catch null;
+        self.prompt_snapshot.git = self.gitPromptStatus(cwd) catch .{};
+        self.prompt_snapshot_valid = true;
+        return &self.prompt_snapshot;
+    }
+
+    fn writeGitCompact(self: *Shell, stdout: *std.Io.Writer, snapshot: *const PromptSnapshot, spaced: bool) !void {
+        _ = self;
+        if (!snapshot.git.present) return;
+        if (spaced) {
+            try stdout.writeAll(" (");
+        } else {
+            try stdout.writeAll(" git:");
+        }
+        try stdout.print("{s}", .{snapshot.git.branchSlice()});
+        if (snapshot.git.hasChanges()) try stdout.writeAll("*");
+        if (snapshot.git.ahead > 0) try stdout.print(" >{d}", .{snapshot.git.ahead});
+        if (snapshot.git.behind > 0) try stdout.print(" <{d}", .{snapshot.git.behind});
+        if (spaced) try stdout.writeAll(")");
+    }
+
+    fn writeDevPrompt(self: *Shell, stdout: *std.Io.Writer, snapshot: *const PromptSnapshot) !void {
+        try stdout.writeAll("\x1b[36m");
+        try stdout.print("{s}", .{baseName(snapshot.cwdSlice())});
+        try stdout.writeAll("\x1b[0m");
+        if (snapshot.project_kind) |kind| {
+            try stdout.writeAll(" | \x1b[35mproject:");
+            try stdout.print("{s}", .{@tagName(kind)});
+            try stdout.writeAll("\x1b[0m");
+        }
+        try self.writeGitVisual(stdout, snapshot);
+        try self.writeRuntimeVisual(stdout);
+        try stdout.writeAll("\n\x1b[32mdev\x1b[0m $ ");
+    }
+
+    fn writeDashboardPrompt(self: *Shell, stdout: *std.Io.Writer, snapshot: *const PromptSnapshot) !void {
+        try stdout.writeAll("\x1b[2m[ziggyzag]\x1b[0m ");
+        try stdout.print("cwd:{s}", .{baseName(snapshot.cwdSlice())});
+        if (snapshot.project_kind) |kind| try stdout.print(" project:{s}", .{@tagName(kind)});
+        try self.writeGitVisual(stdout, snapshot);
+        try self.writeRuntimeVisual(stdout);
+        try stdout.writeAll("\n> ");
+    }
+
+    fn writeGitVisual(self: *Shell, stdout: *std.Io.Writer, snapshot: *const PromptSnapshot) !void {
+        _ = self;
+        if (!snapshot.git.present) return;
+        try stdout.writeAll(" | \x1b[33mgit:");
+        try stdout.print("{s}", .{snapshot.git.branchSlice()});
+        try stdout.writeAll("\x1b[0m");
+        if (snapshot.git.staged > 0) try stdout.print(" +{d}", .{snapshot.git.staged});
+        if (snapshot.git.changed > 0) try stdout.print(" ~{d}", .{snapshot.git.changed});
+        if (snapshot.git.untracked > 0) try stdout.print(" ?{d}", .{snapshot.git.untracked});
+        if (snapshot.git.conflicts > 0) try stdout.print(" !{d}", .{snapshot.git.conflicts});
+        if (snapshot.git.ahead > 0) try stdout.print(" >{d}", .{snapshot.git.ahead});
+        if (snapshot.git.behind > 0) try stdout.print(" <{d}", .{snapshot.git.behind});
+    }
+
+    fn writeRuntimeVisual(self: *Shell, stdout: *std.Io.Writer) !void {
+        if (self.last_status == 0) {
+            try stdout.writeAll(" | \x1b[32mok\x1b[0m");
+        } else {
+            try stdout.print(" | \x1b[31mexit:{d}\x1b[0m", .{self.last_status});
+        }
+        if (self.last_duration_ms > 0) try stdout.print(" {d}ms", .{self.last_duration_ms});
+        if (self.background_jobs.items.len > 0) try stdout.print(" | jobs:{d}", .{self.background_jobs.items.len});
     }
 
     fn writeTerminalIntegration(self: *Shell, stdout: *std.Io.Writer) !void {
@@ -520,11 +666,34 @@ const Shell = struct {
         try appendJsonString(self.allocator, &payload, cwd);
         try payload.appendSlice(self.allocator, ",\"prompt_mode\":");
         try appendJsonString(self.allocator, &payload, @tagName(self.prompt_mode));
-        try appendFmt(self.allocator, &payload, ",\"last_status\":{d},\"last_duration_ms\":{d},\"jobs\":{d}}}", .{
+        try appendFmt(self.allocator, &payload, ",\"last_status\":{d},\"last_duration_ms\":{d},\"jobs\":{d}", .{
             self.last_status,
             self.last_duration_ms,
             self.background_jobs.items.len,
         });
+        const snapshot = self.promptSnapshot(cwd);
+        try payload.appendSlice(self.allocator, ",\"project_kind\":");
+        if (snapshot.project_kind) |kind| {
+            try appendJsonString(self.allocator, &payload, @tagName(kind));
+        } else {
+            try payload.appendSlice(self.allocator, "null");
+        }
+        try payload.appendSlice(self.allocator, ",\"git\":");
+        if (snapshot.git.present) {
+            try payload.appendSlice(self.allocator, "{\"branch\":");
+            try appendJsonString(self.allocator, &payload, snapshot.git.branchSlice());
+            try appendFmt(self.allocator, &payload, ",\"staged\":{d},\"changed\":{d},\"untracked\":{d},\"conflicts\":{d},\"ahead\":{d},\"behind\":{d}}}", .{
+                snapshot.git.staged,
+                snapshot.git.changed,
+                snapshot.git.untracked,
+                snapshot.git.conflicts,
+                snapshot.git.ahead,
+                snapshot.git.behind,
+            });
+        } else {
+            try payload.appendSlice(self.allocator, "null");
+        }
+        try payload.append(self.allocator, '}');
         try self.writeIntegrationEvent(stdout, payload.items);
     }
 
@@ -623,6 +792,35 @@ const Shell = struct {
             self.allocator.free(current);
             current = next;
         }
+    }
+
+    fn gitPromptStatus(self: *Shell, cwd: []const u8) !GitPromptStatus {
+        if (isFalseyEnv(self.env.get("ZIGGYZAG_PROMPT_GIT_STATUS"))) {
+            return try self.gitBranchOnlyStatus();
+        }
+
+        const result = std.process.run(self.allocator, self.io, .{
+            .argv = &.{ "git", "-C", cwd, "status", "--porcelain=v1", "--branch" },
+            .environ_map = self.env,
+        }) catch {
+            return try self.gitBranchOnlyStatus();
+        };
+        defer self.allocator.free(result.stdout);
+        defer self.allocator.free(result.stderr);
+
+        if (termExitCode(result.term) != 0) return try self.gitBranchOnlyStatus();
+        var status: GitPromptStatus = .{};
+        parseGitStatusOutput(result.stdout, &status);
+        return status;
+    }
+
+    fn gitBranchOnlyStatus(self: *Shell) !GitPromptStatus {
+        var status: GitPromptStatus = .{};
+        const branch = try self.gitBranch() orelse return status;
+        defer self.allocator.free(branch);
+        status.present = true;
+        status.branch_len = copyBounded(status.branch[0..], branch);
+        return status;
     }
 
     fn writeHighlightedLine(self: *Shell, stdout: *std.Io.Writer, line: []const u8) !void {
@@ -1792,7 +1990,7 @@ const Shell = struct {
             \\  mkcd DIR           Create and enter a directory
             \\  path [--json]      Show PATH entries
             \\  project [--json]   Detect project kind, root, and tasks
-            \\  prompt [MODE]      Show or set prompt mode: classic, smart
+            \\  prompt [MODE]      Show or set prompt mode: classic, smart, compact, dev, dashboard
             \\  pwd                Print the current directory
             \\  repeat N COMMAND   Run a command multiple times
             \\  run [TASK]         Run a project-aware task
@@ -1811,7 +2009,7 @@ const Shell = struct {
             \\  and background jobs.
             \\
             \\Slash commands:
-            \\  /help, /doctor, /config, /reload, /inspect, /smart, /classic
+            \\  /help, /doctor, /config, /reload, /inspect, /smart, /classic, /compact, /dev, /dashboard, /themes
             \\
         );
     }
@@ -1972,7 +2170,7 @@ const Shell = struct {
 
     fn loadStartupConfig(self: *Shell) !void {
         if (self.env.get("ZIGGYZAG_PROMPT")) |mode| {
-            if (std.mem.eql(u8, mode, "smart")) self.prompt_mode = .smart;
+            if (promptModeByName(mode)) |prompt_mode| self.prompt_mode = prompt_mode;
         }
 
         const path = try self.configPathAlloc();
@@ -2442,11 +2640,16 @@ const Shell = struct {
 
     fn promptCommand(self: *Shell, argv: []const []const u8, stdout_buffer: *std.ArrayList(u8)) !void {
         if (hasArg(argv, "--json")) {
-            try appendFmt(self.allocator, stdout_buffer, "{{\"mode\":\"{s}\",\"last_status\":{d},\"last_duration_ms\":{d}}}\n", .{
+            try appendFmt(self.allocator, stdout_buffer, "{{\"mode\":\"{s}\",\"last_status\":{d},\"last_duration_ms\":{d},\"modes\":[", .{
                 @tagName(self.prompt_mode),
                 self.last_status,
                 self.last_duration_ms,
             });
+            for (prompt_modes, 0..) |mode, index| {
+                if (index > 0) try stdout_buffer.append(self.allocator, ',');
+                try appendJsonString(self.allocator, stdout_buffer, @tagName(mode));
+            }
+            try stdout_buffer.appendSlice(self.allocator, "]}\n");
             return;
         }
 
@@ -2455,12 +2658,18 @@ const Shell = struct {
             return;
         }
 
-        if (std.mem.eql(u8, argv[1], "classic")) {
-            self.prompt_mode = .classic;
-        } else if (std.mem.eql(u8, argv[1], "smart")) {
-            self.prompt_mode = .smart;
+        if (std.mem.eql(u8, argv[1], "themes") or std.mem.eql(u8, argv[1], "modes")) {
+            for (prompt_modes) |mode| {
+                try appendFmt(self.allocator, stdout_buffer, "{s: <10} {s}\n", .{ @tagName(mode), promptModeDescription(mode) });
+            }
+            return;
+        }
+
+        if (promptModeByName(argv[1])) |mode| {
+            self.prompt_mode = mode;
+            self.prompt_snapshot_valid = false;
         } else {
-            try appendFmt(self.allocator, stdout_buffer, "prompt: {s}: expected classic or smart\n", .{argv[1]});
+            try appendFmt(self.allocator, stdout_buffer, "prompt: {s}: expected classic, smart, compact, dev, dashboard, or themes\n", .{argv[1]});
         }
     }
 
@@ -2497,7 +2706,7 @@ const Shell = struct {
                 \\alias gs='git status --short'
                 \\abbr gco='git checkout'
                 \\complete -c zig -a 'build fmt test' -d 'common Zig command'
-                \\prompt smart
+                \\prompt dev
                 \\export ZIGGYZAG_HISTORY_DB=~/.ziggyzag-history.tsv
                 \\
             );
@@ -2671,6 +2880,27 @@ const Shell = struct {
             if (try self.pathExistsAt(current, "go.mod")) return .{ .root = try self.allocator.dupe(u8, current), .kind = .go };
             if (try self.pathExistsAt(current, "Makefile")) return .{ .root = try self.allocator.dupe(u8, current), .kind = .make };
             if (try self.pathExistsAt(current, ".git")) return .{ .root = try self.allocator.dupe(u8, current), .kind = .git };
+
+            const parent = std.fs.path.dirname(current) orelse return null;
+            if (std.mem.eql(u8, parent, current)) return null;
+            const next = try self.allocator.dupe(u8, parent);
+            self.allocator.free(current);
+            current = next;
+        }
+    }
+
+    fn detectProjectKindFrom(self: *Shell, cwd: []const u8) !?ProjectKind {
+        var current = try self.allocator.dupe(u8, cwd);
+        defer self.allocator.free(current);
+
+        while (true) {
+            if (try self.pathExistsAt(current, "build.zig")) return .zig;
+            if (try self.pathExistsAt(current, "package.json")) return .node;
+            if (try self.pathExistsAt(current, "Cargo.toml")) return .rust;
+            if (try self.pathExistsAt(current, "pyproject.toml")) return .python;
+            if (try self.pathExistsAt(current, "go.mod")) return .go;
+            if (try self.pathExistsAt(current, "Makefile")) return .make;
+            if (try self.pathExistsAt(current, ".git")) return .git;
 
             const parent = std.fs.path.dirname(current) orelse return null;
             if (std.mem.eql(u8, parent, current)) return null;
@@ -3987,6 +4217,86 @@ fn hasArg(argv: []const []const u8, wanted: []const u8) bool {
     return false;
 }
 
+fn parseGitStatusOutput(output: []const u8, status: *GitPromptStatus) void {
+    var lines = std.mem.splitScalar(u8, output, '\n');
+    while (lines.next()) |raw_line| {
+        const line = trimTrailingCarriageReturn(raw_line);
+        if (line.len == 0) continue;
+        if (std.mem.startsWith(u8, line, "## ")) {
+            parseGitBranchLine(line[3..], status);
+            continue;
+        }
+        parseGitStatusLine(line, status);
+    }
+}
+
+fn parseGitBranchLine(line: []const u8, status: *GitPromptStatus) void {
+    status.present = true;
+    parseAheadBehind(line, status);
+
+    const no_commits = "No commits yet on ";
+    const branch = if (std.mem.startsWith(u8, line, no_commits))
+        line[no_commits.len..]
+    else if (std.mem.startsWith(u8, line, "HEAD"))
+        "detached"
+    else branch_name: {
+        var end = line.len;
+        if (std.mem.indexOf(u8, line, "...")) |index| end = @min(end, index);
+        if (std.mem.indexOfScalar(u8, line, ' ')) |index| end = @min(end, index);
+        if (std.mem.indexOfScalar(u8, line, '[')) |index| end = @min(end, index);
+        break :branch_name line[0..end];
+    };
+
+    const trimmed = std.mem.trim(u8, branch, " \t\r\n");
+    status.branch_len = copyBounded(status.branch[0..], if (trimmed.len > 0) trimmed else "unknown");
+}
+
+fn parseGitStatusLine(line: []const u8, status: *GitPromptStatus) void {
+    if (line.len < 2) return;
+    const x = line[0];
+    const y = line[1];
+    if (x == '?' and y == '?') {
+        status.untracked += 1;
+        return;
+    }
+    if (x == '!' and y == '!') return;
+    if (isGitConflictStatus(x, y)) {
+        status.conflicts += 1;
+        return;
+    }
+    if (x != ' ' and x != '?') status.staged += 1;
+    if (y != ' ' and y != '?') status.changed += 1;
+}
+
+fn isGitConflictStatus(x: u8, y: u8) bool {
+    return x == 'U' or y == 'U' or
+        (x == 'A' and y == 'A') or
+        (x == 'D' and y == 'D');
+}
+
+fn parseAheadBehind(line: []const u8, status: *GitPromptStatus) void {
+    const open = std.mem.indexOfScalar(u8, line, '[') orelse return;
+    const close_offset = std.mem.indexOfScalar(u8, line[open + 1 ..], ']') orelse return;
+    const inside = line[open + 1 .. open + 1 + close_offset];
+    var parts = std.mem.splitScalar(u8, inside, ',');
+    while (parts.next()) |raw_part| {
+        const part = std.mem.trim(u8, raw_part, " \t\r\n");
+        const ahead = "ahead ";
+        const behind = "behind ";
+        if (std.mem.startsWith(u8, part, ahead)) {
+            status.ahead = std.fmt.parseInt(usize, part[ahead.len..], 10) catch status.ahead;
+        } else if (std.mem.startsWith(u8, part, behind)) {
+            status.behind = std.fmt.parseInt(usize, part[behind.len..], 10) catch status.behind;
+        }
+    }
+}
+
+fn copyBounded(out: []u8, value: []const u8) usize {
+    const len = @min(out.len, value.len);
+    @memcpy(out[0..len], value[0..len]);
+    return len;
+}
+
 fn isConfigDirective(command: []const u8) bool {
     return std.mem.eql(u8, command, "alias") or
         std.mem.eql(u8, command, "abbr") or
@@ -4003,6 +4313,14 @@ fn isTruthyEnv(value: ?[]const u8) bool {
         std.ascii.eqlIgnoreCase(text, "on");
 }
 
+fn isFalseyEnv(value: ?[]const u8) bool {
+    const text = value orelse return false;
+    return std.mem.eql(u8, text, "0") or
+        std.ascii.eqlIgnoreCase(text, "false") or
+        std.ascii.eqlIgnoreCase(text, "no") or
+        std.ascii.eqlIgnoreCase(text, "off");
+}
+
 fn slashCommandReplacement(command: []const u8) ?[]const u8 {
     if (std.mem.eql(u8, command, "/help")) return "help";
     if (std.mem.eql(u8, command, "/doctor")) return "doctor";
@@ -4012,6 +4330,10 @@ fn slashCommandReplacement(command: []const u8) ?[]const u8 {
     if (std.mem.eql(u8, command, "/inspect")) return "inspect";
     if (std.mem.eql(u8, command, "/smart")) return "prompt smart";
     if (std.mem.eql(u8, command, "/classic")) return "prompt classic";
+    if (std.mem.eql(u8, command, "/compact")) return "prompt compact";
+    if (std.mem.eql(u8, command, "/dev")) return "prompt dev";
+    if (std.mem.eql(u8, command, "/dashboard")) return "prompt dashboard";
+    if (std.mem.eql(u8, command, "/themes")) return "prompt themes";
     return null;
 }
 
@@ -4045,6 +4367,23 @@ fn projectTasks(kind: ProjectKind) []const u8 {
         .go => "build test run fmt",
         .make => "build test install clean",
         .git => "status branch",
+    };
+}
+
+fn promptModeByName(name: []const u8) ?PromptMode {
+    for (prompt_modes) |mode| {
+        if (std.ascii.eqlIgnoreCase(name, @tagName(mode))) return mode;
+    }
+    return null;
+}
+
+fn promptModeDescription(mode: PromptMode) []const u8 {
+    return switch (mode) {
+        .classic => "plain `$` prompt for scripts, demos, and compatibility checks",
+        .smart => "cwd, git branch, project kind, jobs, status, and slow command duration",
+        .compact => "dense one-line prompt with cwd, git branch/change marker, status, and jobs",
+        .dev => "two-line colored developer prompt with git counts, project type, status, and duration",
+        .dashboard => "two-line status prompt for demos with cwd, project, git, jobs, and timing",
     };
 }
 
@@ -4380,11 +4719,37 @@ test "fuzzy score and slash command helpers" {
     try std.testing.expect(fuzzyScore("gs", "git status") != null);
     try std.testing.expect(fuzzyScore("zz", "git status") == null);
     try std.testing.expectEqualStrings("config reload", slashCommandReplacement("/reload").?);
+    try std.testing.expectEqualStrings("prompt dev", slashCommandReplacement("/dev").?);
     try std.testing.expect(slashCommandReplacement("/bin/ls") == null);
     try std.testing.expectEqualStrings("echo hello", commandRemainder("repeat 2 echo hello", 2).?);
     try std.testing.expect(commandRemainder("timeit", 1) == null);
     try std.testing.expectEqual(@as(usize, 4), previousWordStart("one two", 7));
     try std.testing.expectEqualStrings("build test run fmt", projectTasks(.zig));
+}
+
+test "prompt modes and git status parsing" {
+    try std.testing.expectEqual(PromptMode.dev, promptModeByName("dev").?);
+    try std.testing.expectEqual(PromptMode.dashboard, promptModeByName("DASHBOARD").?);
+    try std.testing.expect(promptModeByName("unknown") == null);
+
+    var status: GitPromptStatus = .{};
+    parseGitStatusOutput(
+        \\## main...origin/main [ahead 2, behind 1]
+        \\ M apps/shell/src/main.zig
+        \\A  docs/NEW.md
+        \\?? scratch.txt
+        \\UU conflict.txt
+        \\
+    , &status);
+
+    try std.testing.expect(status.present);
+    try std.testing.expectEqualStrings("main", status.branchSlice());
+    try std.testing.expectEqual(@as(usize, 1), status.staged);
+    try std.testing.expectEqual(@as(usize, 1), status.changed);
+    try std.testing.expectEqual(@as(usize, 1), status.untracked);
+    try std.testing.expectEqual(@as(usize, 1), status.conflicts);
+    try std.testing.expectEqual(@as(usize, 2), status.ahead);
+    try std.testing.expectEqual(@as(usize, 1), status.behind);
 }
 
 test "config directives and names" {

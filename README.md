@@ -59,6 +59,10 @@ The desktop host now ships with a modern preset collection inspired by popular t
 
 On Windows, press `Ctrl+,` to open the settings overlay and `Ctrl+Shift+T` to cycle themes live. Persistent desktop settings are loaded from `%APPDATA%\ZiggyZag\desktop.conf`, or from `ZIGGYZAG_DESKTOP_CONFIG` when that environment variable is set. Shell startup commands remain separate and still use `$ZIGGYZAG_CONFIG` or `~/.ziggyzagrc`.
 
+## Prompt Themes
+
+The shell has prompt themes too: `classic`, `smart`, `compact`, `dev`, and `dashboard`. The visual themes can surface cwd, project type, git branch, staged/changed/untracked/conflict counts, ahead/behind counts, exit status, command duration, and background jobs. Run `prompt themes` to see the current list, or use `prompt dev` for the richest developer prompt.
+
 ## Feature Map
 
 | Area | Status | Notes |
@@ -73,11 +77,11 @@ On Windows, press `Ctrl+,` to open the settings overlay and `Ctrl+Shift+T` to cy
 | History | Done | Listing, navigation, command recall, fuzzy search, failed/slow/cwd/stats queries, metadata tracking, read/write/append, and `HISTFILE` persistence. |
 | Job control | Done | Background jobs, `jobs`, reaping, and job number reuse. |
 | Parameter expansion | Done | `$VAR`, `${VAR}`, missing variables, and shell variable storage. |
-| Modern UX | Done | Cursor-aware line editing, autosuggestion hooks, Ctrl-F accept, Ctrl-R fuzzy recall, syntax highlighting in smart prompt mode, abbreviations, and startup config. |
+| Modern UX | Done | Cursor-aware line editing, autosuggestion hooks, Ctrl-F accept, Ctrl-R fuzzy recall, syntax highlighting in smart prompt mode, visual prompt themes, abbreviations, and startup config. |
 | Introspection | Done | `about`, `doctor`, `inspect`, `which`, `path`, `project`, slash shortcuts, JSON output for jobs/history/prompt/env/doctor/project/dirs, and config validation/reload. |
 | Convenience commands | Done | `mkcd`, `up`, `back`, `forward`, `jump`, `repeat`, `timeit`, `source`, `env`, `vars`, and project-aware `run`. |
 | Developer polish | Done | Repo docs, diagrams, refactors, smoke script, and user-facing enhancements. |
-| Desktop terminal host | Alpha | Windows-native all-Zig app with Win32 windowing, GDI terminal rendering, ConPTY shell hosting, keyboard input, copy/paste, wheel scrollback, status bar, themes, desktop config loading, and OSC 777 shell-event parsing. macOS/Linux currently build a terminal-attached launcher that resolves and starts `ziggyzag` through `script(1)` when available; native POSIX graphical hosting is still in progress. |
+| Desktop terminal host | Alpha | Windows-native all-Zig app with Win32 windowing, GDI terminal rendering, ConPTY shell hosting, keyboard input, copy/paste, wheel scrollback, shell-aware status bar, themes, desktop config loading, and OSC 777 shell-event parsing. macOS/Linux currently build a terminal-attached launcher that resolves and starts `ziggyzag` through `script(1)` when available; native POSIX graphical hosting is still in progress. |
 | Agent runtime | Alpha | Slim `ziggyzag-agentd` binary with JSON-lines protocol, tool descriptions/calls, terminal host actions, and OpenAI-compatible/Ollama request shaping on Windows, macOS, and Linux. |
 
 ## Architecture

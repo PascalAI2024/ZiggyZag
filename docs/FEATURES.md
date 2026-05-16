@@ -15,7 +15,7 @@ This file tracks what ZiggyZag already does and what would make it more useful a
 | History | Listing, limits, Up/Down navigation, command recall, fuzzy search, failed/slow/cwd/stats queries, metadata capture, read/write/append, startup and exit persistence. |
 | Jobs | Background execution, `jobs`, job number reuse, and reaping. |
 | Variables | `declare`, validation, `$VAR`, `${VAR}`, and unset expansion behavior. |
-| Modern UX | Startup config, abbreviations, cursor editing, autosuggestion hooks, Ctrl-F accept, Ctrl-R fuzzy recall, syntax highlighting in smart prompt mode, and smart prompt modules. |
+| Modern UX | Startup config, abbreviations, cursor editing, autosuggestion hooks, Ctrl-F accept, Ctrl-R fuzzy recall, syntax highlighting in smart prompt mode, visual prompt themes, and smart prompt modules. |
 | Introspection | `about`, `doctor`, `inspect`, `which`, `path`, `project`, slash shortcuts, JSON output for history/jobs/prompt/env/doctor/project/dirs, and config validation/reload. |
 | Convenience commands | `mkcd`, `up`, `back`, `forward`, `jump`, `repeat`, `timeit`, `source`, `env`, `vars`, and project-aware `run` make ZiggyZag more useful as a daily shell lab. |
 | Pipelines | Native simple pipelines for straightforward stdout chains, with fallback for complex shell syntax. |
@@ -30,7 +30,7 @@ This file tracks what ZiggyZag already does and what would make it more useful a
 | Shell core | Keep deepening ZiggyZag as a compact shell with stronger history, streaming pipelines, richer completion schemas, prompt modules, and parser diagnostics. |
 | Desktop terminal | Windows-native all-Zig MVP with Win32 windowing, GDI terminal rendering, ConPTY shell hosting, keyboard input, copy/paste, wheel scrollback, resize handling, status bar, tested styled terminal grid, OSC 777 event extraction, themes, desktop config parsing, POSIX terminal-attached release launcher, and a preserved Tauri/xterm.js spike for reference. |
 | Agent panel | First-party `apps/agentd` binary is ready for the desktop host to spawn as a sidecar for approval-aware terminal assistance. |
-| Shared integration | Added a small optional OSC 777 protocol for command lifecycle, cwd, status, duration, jobs, and prompt context. |
+| Shared integration | Added a small optional OSC 777 protocol for command lifecycle, cwd, status, duration, jobs, project kind, git state, and prompt context. |
 
 ## User Experience Roadmap
 

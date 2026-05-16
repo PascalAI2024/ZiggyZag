@@ -238,9 +238,20 @@ const Status = struct {
     ready: bool = false,
     cwd: [260]u8 = undefined,
     cwd_len: usize = 0,
+    project_kind: [32]u8 = undefined,
+    project_kind_len: usize = 0,
+    git_branch: [96]u8 = undefined,
+    git_branch_len: usize = 0,
+    git_staged: usize = 0,
+    git_changed: usize = 0,
+    git_untracked: usize = 0,
+    git_conflicts: usize = 0,
+    git_ahead: usize = 0,
+    git_behind: usize = 0,
     last_status: ?u8 = null,
     last_duration_ms: ?i64 = null,
     commands: usize = 0,
+    jobs: usize = 0,
 
     fn setCwd(self: *Status, cwd: []const u8) void {
         const len = @min(cwd.len, self.cwd.len);
@@ -250,6 +261,42 @@ const Status = struct {
 
     fn cwdSlice(self: *const Status) []const u8 {
         return self.cwd[0..self.cwd_len];
+    }
+
+    fn setProjectKind(self: *Status, project_kind: []const u8) void {
+        const len = @min(project_kind.len, self.project_kind.len);
+        @memcpy(self.project_kind[0..len], project_kind[0..len]);
+        self.project_kind_len = len;
+    }
+
+    fn projectKindSlice(self: *const Status) []const u8 {
+        return self.project_kind[0..self.project_kind_len];
+    }
+
+    fn setGitBranch(self: *Status, branch: []const u8) void {
+        const len = @min(branch.len, self.git_branch.len);
+        @memcpy(self.git_branch[0..len], branch[0..len]);
+        self.git_branch_len = len;
+    }
+
+    fn gitBranchSlice(self: *const Status) []const u8 {
+        return self.git_branch[0..self.git_branch_len];
+    }
+
+    fn gitDirtyCount(self: *const Status) usize {
+        return self.git_staged + self.git_changed + self.git_untracked + self.git_conflicts;
+    }
+
+    fn clearPromptContext(self: *Status) void {
+        self.project_kind_len = 0;
+        self.git_branch_len = 0;
+        self.git_staged = 0;
+        self.git_changed = 0;
+        self.git_untracked = 0;
+        self.git_conflicts = 0;
+        self.git_ahead = 0;
+        self.git_behind = 0;
+        self.jobs = 0;
     }
 };
 
@@ -876,13 +923,16 @@ const App = struct {
         _ = SetTextColor(hdc, toColorRef(self.selected_theme.accent));
         var status_text: [512]u8 = undefined;
         var duration_text: [64]u8 = undefined;
+        var context_text: [192]u8 = undefined;
         const cwd = if (status.cwd_len > 0) status.cwdSlice() else "starting shell";
         const duration = if (status.last_duration_ms) |ms| std.fmt.bufPrint(&duration_text, "{d}ms", .{ms}) catch "n/a" else "n/a";
         const wide_layout = rect.right - rect.left > 920;
         const shortcuts = "Ctrl+C int | Ctrl+Shift+C copy | Ctrl+V paste | Ctrl+, settings | Ctrl+Shift+T theme";
+        const context = statusContext(context_text[0..], status);
         const text = if (wide_layout)
-            (std.fmt.bufPrint(&status_text, "ZiggyZag  |  {s}  |  commands:{d}  |  status:{s}  |  last:{s}{s}  |  {s}", .{
+            (std.fmt.bufPrint(&status_text, "ZiggyZag  |  {s}{s}  |  commands:{d}  |  status:{s}  |  last:{s}{s}  |  {s}", .{
                 cwd,
+                context,
                 status.commands,
                 if (status.last_status) |value| statusName(value) else "waiting",
                 duration,
@@ -890,8 +940,9 @@ const App = struct {
                 shortcuts,
             }) catch "ZiggyZag")
         else
-            (std.fmt.bufPrint(&status_text, "ZiggyZag  |  status:{s}  |  {s}{s}", .{
+            (std.fmt.bufPrint(&status_text, "ZiggyZag  |  status:{s}{s}  |  {s}{s}", .{
                 if (status.last_status) |value| statusName(value) else "waiting",
+                shortGitContext(context_text[0..], status),
                 "Ctrl+Shift+C copy | Ctrl+V paste",
                 if (scroll_offset > 0) "  |  scrollback" else "",
             }) catch "ZiggyZag");
@@ -1025,8 +1076,18 @@ const App = struct {
                 .session_ready => self.status.ready = true,
                 .prompt_rendered => {
                     if (integration.jsonStringValue(event.payload, "cwd")) |cwd| self.status.setCwd(cwd);
+                    self.status.clearPromptContext();
+                    if (integration.jsonStringValue(event.payload, "project_kind")) |project_kind| self.status.setProjectKind(project_kind);
+                    if (integration.jsonStringValue(event.payload, "branch")) |branch| self.status.setGitBranch(branch);
                     if (integration.jsonIntValue(u8, event.payload, "last_status")) |value| self.status.last_status = value;
                     if (integration.jsonIntValue(i64, event.payload, "last_duration_ms")) |value| self.status.last_duration_ms = value;
+                    if (integration.jsonIntValue(usize, event.payload, "jobs")) |value| self.status.jobs = value;
+                    if (integration.jsonIntValue(usize, event.payload, "staged")) |value| self.status.git_staged = value;
+                    if (integration.jsonIntValue(usize, event.payload, "changed")) |value| self.status.git_changed = value;
+                    if (integration.jsonIntValue(usize, event.payload, "untracked")) |value| self.status.git_untracked = value;
+                    if (integration.jsonIntValue(usize, event.payload, "conflicts")) |value| self.status.git_conflicts = value;
+                    if (integration.jsonIntValue(usize, event.payload, "ahead")) |value| self.status.git_ahead = value;
+                    if (integration.jsonIntValue(usize, event.payload, "behind")) |value| self.status.git_behind = value;
                 },
                 .command_started => {
                     self.status.commands += 1;
@@ -1457,4 +1518,50 @@ fn utf8ToWide(text: []const u8, out: []WCHAR) usize {
 
 fn statusName(status: u8) []const u8 {
     return if (status == 0) "ok" else "failed";
+}
+
+fn statusContext(buffer: []u8, status: Status) []const u8 {
+    var index: usize = 0;
+    if (status.project_kind_len > 0) {
+        appendFmtBounded(buffer, &index, "  |  project:{s}", .{status.projectKindSlice()});
+    }
+    if (status.git_branch_len > 0) {
+        appendFmtBounded(buffer, &index, "  |  git:{s}", .{status.gitBranchSlice()});
+        appendGitCounts(buffer, &index, status);
+    }
+    if (status.jobs > 0) {
+        appendFmtBounded(buffer, &index, "  |  jobs:{d}", .{status.jobs});
+    }
+    return buffer[0..index];
+}
+
+fn shortGitContext(buffer: []u8, status: Status) []const u8 {
+    var index: usize = 0;
+    if (status.git_branch_len > 0) {
+        appendFmtBounded(buffer, &index, "  |  git:{s}", .{status.gitBranchSlice()});
+        if (status.gitDirtyCount() > 0) appendFmtBounded(buffer, &index, "*", .{});
+        if (status.git_ahead > 0) appendFmtBounded(buffer, &index, " >{d}", .{status.git_ahead});
+        if (status.git_behind > 0) appendFmtBounded(buffer, &index, " <{d}", .{status.git_behind});
+    }
+    return buffer[0..index];
+}
+
+fn appendGitCounts(buffer: []u8, index: *usize, status: Status) void {
+    if (status.git_staged > 0) appendFmtBounded(buffer, index, " +{d}", .{status.git_staged});
+    if (status.git_changed > 0) appendFmtBounded(buffer, index, " ~{d}", .{status.git_changed});
+    if (status.git_untracked > 0) appendFmtBounded(buffer, index, " ?{d}", .{status.git_untracked});
+    if (status.git_conflicts > 0) appendFmtBounded(buffer, index, " !{d}", .{status.git_conflicts});
+    if (status.git_ahead > 0) appendFmtBounded(buffer, index, " >{d}", .{status.git_ahead});
+    if (status.git_behind > 0) appendFmtBounded(buffer, index, " <{d}", .{status.git_behind});
+}
+
+fn appendFmtBounded(buffer: []u8, index: *usize, comptime fmt: []const u8, args: anytype) void {
+    if (index.* >= buffer.len) return;
+    const written = std.fmt.bufPrint(buffer[index.*..], fmt, args) catch |err| switch (err) {
+        error.NoSpaceLeft => {
+            index.* = buffer.len;
+            return;
+        },
+    };
+    index.* += written.len;
 }

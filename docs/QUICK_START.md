@@ -93,9 +93,38 @@ The shell startup config is separate. ZiggyZag shell commands still load from `$
 alias gs='git status --short'
 abbr gco='git checkout'
 complete -c zig -a 'build fmt test' -d 'common Zig command'
-prompt smart
+prompt dev
 export ZIGGYZAG_HISTORY_DB=~/.ziggyzag-history.tsv
 ```
+
+## Prompt Themes
+
+List the shell prompt themes:
+
+```sh
+prompt themes
+```
+
+Switch prompt themes:
+
+```sh
+prompt smart
+prompt compact
+prompt dev
+prompt dashboard
+```
+
+Useful slash shortcuts:
+
+```sh
+/smart
+/compact
+/dev
+/dashboard
+/themes
+```
+
+The visual prompt themes can show project type, git branch, staged/changed/untracked/conflict counts, ahead/behind counts, exit status, command duration, and background jobs. Set `ZIGGYZAG_PROMPT_GIT_STATUS=0` if you want branch-only git prompts.
 
 ## AgentD
 
@@ -144,6 +173,7 @@ abbr gco='git checkout'
 gco main
 
 complete -c zig -a 'build fmt test' -d 'common Zig command'
+prompt dev
 
 export EDITOR=vim
 echo $EDITOR
