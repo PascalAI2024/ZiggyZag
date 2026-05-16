@@ -154,6 +154,7 @@ pie title ZiggyZag capability mix
 |   |-- ALL_ZIG_TERMINAL.md
 |   |-- ARCHITECTURE.md
 |   |-- FEATURES.md
+|   |-- NEXT_20_FEATURES.md
 |   |-- QA_TOMORROW.md
 |   |-- QUICK_START.md
 |   |-- ROADMAP.md
@@ -174,6 +175,7 @@ pie title ZiggyZag capability mix
 - [Quick start](docs/QUICK_START.md)
 - [Architecture](docs/ARCHITECTURE.md)
 - [Features and roadmap](docs/FEATURES.md)
+- [Next 20 features](docs/NEXT_20_FEATURES.md)
 - [All-Zig terminal direction](docs/ALL_ZIG_TERMINAL.md)
 - [Agent runtime](apps/agentd/README.md)
 - [Product scope](docs/SCOPE.md)
@@ -212,6 +214,7 @@ Ready to build, run, theme, or friend-test it? Use the dedicated [Quick Start](d
 
 The first modern shell sprint is in the codebase now. The next wave is about deepening those features while keeping the code readable:
 
+- Daily-driver execution backlog from the Ghostty/WezTerm reference pass: [docs/NEXT_20_FEATURES.md](docs/NEXT_20_FEATURES.md).
 - Cursor-aware autosuggestion UI on every platform.
 - Hardening the first-party Zig-native desktop terminal host that runs ZiggyZag through Windows ConPTY.
 - Expanding the shared theme and shell-integration protocol between the shell and terminal app.

@@ -4,6 +4,8 @@ This roadmap is based on a quick survey of modern shells, terminal emulators, an
 
 The first sprints implemented MVP versions of the top interactive ideas: autosuggestion hooks, richer completion output, declarative completions, metadata history, fuzzy recall, smart prompt modules, abbreviations, startup config, native simple pipelines, cursor-aware editing, directory history, and project-aware tasks.
 
+The daily-driver terminal backlog now lives in [NEXT_20_FEATURES.md](NEXT_20_FEATURES.md). That list is the current execution order for the Ghostty/WezTerm-inspired terminal, shell, settings, and agent work.
+
 ## Ranked Feature Ideas
 
 | Rank | Feature | Inspiration | Why users care | Size | Fit |

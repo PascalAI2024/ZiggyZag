@@ -90,7 +90,7 @@ quadrantChart
     Local test harness: [0.55, 0.65]
 ```
 
-For the longer research list and source links, see [ROADMAP.md](ROADMAP.md).
+For the longer research list and source links, see [ROADMAP.md](ROADMAP.md). For the current daily-driver execution backlog, see [NEXT_20_FEATURES.md](NEXT_20_FEATURES.md).
 
 ## Open Questions
 
