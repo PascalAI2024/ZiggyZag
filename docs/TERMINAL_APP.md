@@ -2,7 +2,7 @@
 
 ZiggyZag can grow a small desktop terminal app without losing its identity as a Zig project. The app should be a focused Zig-native host for the ZiggyZag executable: fast startup, reliable PTY behavior, modern editing surfaces, and clear hooks for shell-aware UI.
 
-The earlier Tauri/xterm.js direction is now best treated as a spike. Use Terax as a product-shape reference, WezTerm as a quality reference, and Ghostty/libghostty as the closest Zig-native terminal reference. Do not embed WezTerm wholesale; the goal is a ZiggyZag-owned product surface, not a wrapper around another terminal.
+The earlier Tauri/xterm.js direction was explored and dropped. Use Terax as a product-shape reference, WezTerm as a quality reference, and Ghostty/libghostty as the closest Zig-native terminal reference. Do not embed WezTerm wholesale; the goal is a ZiggyZag-owned product surface, not a wrapper around another terminal.
 
 Related docs: [ALL_ZIG_TERMINAL.md](ALL_ZIG_TERMINAL.md) covers the all-Zig architecture lane, [RESEARCH.md](RESEARCH.md) maps Ghostty/WezTerm signals to tasks, [ALPHA_TASKS.md](ALPHA_TASKS.md) tracks remaining alpha work, and [TASK_SYSTEM.md](TASK_SYSTEM.md) explains how work moves between docs.
 
@@ -66,14 +66,7 @@ Not yet complete in the native desktop host: tabs, full process/session restore,
 
 For macOS/Linux alpha artifacts, `ziggyzag-desktop` currently builds and runs as a terminal-attached launcher. It resolves the ZiggyZag shell binary, reports the selected POSIX backend, and starts the shell in the calling terminal. It now prefers ZiggyZag's native POSIX PTY relay, then falls back to `script(1)`, then direct stdio. It does not open a native graphical window yet. The usable POSIX alpha surface is the shell binary, AgentD, smoke script, and this launcher.
 
-The repo also contains a Tauri/xterm.js prototype slice. Treat it as an experiment unless the team explicitly chooses the webview route:
-
-- React, Vite, TypeScript, and xterm.js frontend under `apps/desktop-tauri-spike`.
-- Tauri 2 backend prototype under `apps/desktop-tauri-spike/src-tauri`.
-- PTY commands for create, write, resize, and close.
-- Output stream event `terminal://data`.
-- Optional ZiggyZag OSC 777 integration events from the shell.
-- Frontend parsing for cwd, command lifecycle, exit status, and duration.
+A Tauri 2 + React + xterm.js prototype was previously explored (PTY create/write/resize/close commands, a `terminal://data` output stream, and OSC 777 integration parsing). It has been removed; the all-Zig host is the only desktop route.
 
 The primary path is documented in [ALL_ZIG_TERMINAL.md](ALL_ZIG_TERMINAL.md).
 
@@ -168,7 +161,7 @@ The app should borrow lessons, not implementation. Embedding WezTerm would obscu
 
 ## Suggested Sequence
 
-1. Move or retire the Tauri spike once the all-Zig skeleton exists.
+1. Done: removed the Tauri spike now that the all-Zig skeleton exists.
 2. Harden the Zig PTY host and terminal grid renderer with selection, richer ANSI coverage, and process cleanup tests.
 3. Persist basic settings and add tab management.
 4. Extend app-aware OSC events only where the UI has a real need.

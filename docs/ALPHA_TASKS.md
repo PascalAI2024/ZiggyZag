@@ -76,7 +76,7 @@ Navigation: use [TASK_SYSTEM.md](TASK_SYSTEM.md) for how task status moves, [NEX
 - [ ] Add signed or notarized release packaging when the project is ready to distribute outside trusted testers.
 - [ ] Add config migration/versioning so future desktop and shell config changes do not strand older users.
 - [ ] Add richer docs for contributors: architecture tour, terminal parser guide, AgentD protocol guide, theme authoring guide, and release checklist.
-- [ ] Keep the preserved Tauri/xterm.js spike clearly marked as a reference spike or remove it once the all-Zig host no longer needs comparison material.
+- [x] Removed the Tauri/xterm.js spike; the all-Zig host is the only desktop lane.
 - [ ] Add long-session manual QA notes from friend testers and promote recurring failures into automated tests or explicit known edges.
 
 ## QA Checklist For This Wave

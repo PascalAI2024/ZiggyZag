@@ -2,7 +2,7 @@
 
 ZiggyZag can be a Zig shell inside a Zig-native terminal host. This is the strongest long-term identity for the project: one language, one build story, and terminal behavior that remains visible instead of being hidden behind a webview.
 
-The existing Tauri prototype is useful as a product spike, but the primary direction is the all-Zig desktop terminal.
+An earlier Tauri/xterm.js prototype was explored and has been removed. The all-Zig desktop terminal is the only desktop direction.
 
 Related docs: [TERMINAL_APP.md](TERMINAL_APP.md) describes the product strategy and MVP tester scope, [RESEARCH.md](RESEARCH.md) maps terminal references to tasks, and [ALPHA_TASKS.md](ALPHA_TASKS.md) is the active remaining-work checklist.
 
@@ -64,13 +64,11 @@ flowchart LR
 apps/
 |-- shell/
 |   `-- src/main.zig
-|-- desktop/
-|   `-- src/main.zig
-`-- desktop-tauri-spike/
-    `-- ...
+`-- desktop/
+    `-- src/main.zig
 ```
 
-`apps/desktop` is the all-Zig app lane. The Tauri implementation is preserved under `apps/desktop-tauri-spike` only as a reference spike and is not required for normal desktop testing.
+`apps/desktop` is the all-Zig app lane and the only desktop implementation.
 
 ## Open Technical Decisions
 
@@ -83,7 +81,7 @@ apps/
 ## Near-Term Sequence
 
 1. Done: keep shell integration events in `apps/shell`.
-2. Done: move the Tauri prototype out of the primary `apps/desktop` lane.
+2. Done: removed the Tauri prototype; `apps/desktop` is the only desktop lane.
 3. Done: create a tested Zig desktop foundation with terminal grid, event extraction, themes, and PTY backend selection.
 4. Done: add PTY read/write on Windows.
 5. Done: open a native window and render the terminal grid.

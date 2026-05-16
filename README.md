@@ -45,7 +45,6 @@ ZiggyZag is split into a few deliberately small pieces:
 - [`apps/desktop`](apps/desktop/README.md): the native terminal host. Windows has the full Win32/ConPTY alpha; macOS/Linux currently use a terminal-attached launcher.
 - [`apps/launcher`](apps/launcher): the friendly launcher entry point used by release zips.
 - [`apps/agentd`](apps/agentd/README.md): a slim JSON-lines sidecar for terminal-aware assistance experiments.
-- [`apps/desktop-tauri-spike`](apps/desktop-tauri-spike/README.md): an older Tauri/xterm.js product spike kept for reference.
 
 For installation and command examples, use the dedicated [Quick Start](docs/QUICK_START.md). For the full documentation map, use [docs/README.md](docs/README.md).
 
@@ -55,7 +54,6 @@ The alpha is practical but intentionally honest about platform maturity:
 
 - Windows has the first full native desktop host: a Win32 window, ConPTY shell process, terminal grid, copy/paste, wheel scrollback, status bar, command palette, scrollback search, quick select, live theme switching, and config loading.
 - macOS/Linux build the shell, AgentD, and a terminal-attached desktop launcher. The native graphical host for those platforms is still future work.
-- The Tauri/xterm.js app remains in the repo as a spike, not the primary lane.
 - Split panes and the desktop AgentD side panel are now in the Windows alpha. Tabs, mouse selection, full process session restore, and native macOS/Linux graphical windows remain future hardening work.
 - Unicode support is partial: UTF-8 UI/clipboard conversion paths and printable terminal bytes exist, but full width handling, combining marks, emoji, ligatures, and fallback-font behavior remain terminal hardening work.
 
@@ -154,8 +152,6 @@ pie title ZiggyZag capability mix
 |       |-- src/
 |       |   `-- main.zig
 |       `-- README.md
-|-- apps/desktop-tauri-spike/
-|   `-- README.md
 |-- assets/
 |   `-- ziggyzag-logo.svg
 |-- docs/

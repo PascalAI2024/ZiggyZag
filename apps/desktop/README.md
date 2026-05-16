@@ -8,8 +8,6 @@ See also: [desktop terminal strategy](../../docs/TERMINAL_APP.md), [all-Zig term
 
 On macOS/Linux, the desktop binary is currently a terminal-attached launcher: it resolves the ZiggyZag shell binary, prints the selected POSIX backend, and starts the shell in the calling terminal. It first tries ZiggyZag's slim native POSIX PTY host, including byte relay, raw input, child status polling, and terminal-size propagation. If that fails, it falls back to `script(1)`, then direct stdio. It does not open a native graphical window yet.
 
-The previous Tauri/xterm.js prototype lives in `apps/desktop-tauri-spike` as a product spike.
-
 ## Current Status
 
 This directory contains a buildable Zig executable named `ziggyzag-desktop` plus the desktop core modules:

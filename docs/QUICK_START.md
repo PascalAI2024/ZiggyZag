@@ -267,7 +267,7 @@ On Windows:
 
 ## Friend Testing
 
-For normal desktop testing today, use the all-Zig Windows app. On macOS/Linux, test the shell, AgentD, smoke script, and terminal-attached desktop launcher. The Tauri/xterm.js version is preserved only as a spike under `apps/desktop-tauri-spike`.
+For normal desktop testing today, use the all-Zig Windows app. On macOS/Linux, test the shell, AgentD, smoke script, and terminal-attached desktop launcher.
 
 Track implementation-wave TODOs and acceptance notes in [ALPHA_TASKS.md](ALPHA_TASKS.md).
 

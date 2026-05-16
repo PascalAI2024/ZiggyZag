@@ -45,7 +45,6 @@ ZiggyZag is usable for testing and development, but it is still alpha software. 
 | Shell app | [apps/shell README](../apps/shell/README.md) |
 | Desktop host | [apps/desktop README](../apps/desktop/README.md) |
 | AgentD sidecar | [apps/agentd README](../apps/agentd/README.md) |
-| Historical Tauri spike | [apps/desktop-tauri-spike README](../apps/desktop-tauri-spike/README.md) |
 
 ## Documentation Notes
 

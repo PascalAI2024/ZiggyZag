@@ -47,7 +47,6 @@ For the full docs map, start at [README.md](README.md). For alpha remaining work
 | [`apps/shell`](../apps/shell/README.md) | Zig shell runtime and tests. |
 | [`apps/desktop`](../apps/desktop/README.md) | All-Zig desktop terminal host MVP. |
 | [`apps/agentd`](../apps/agentd/README.md) | Zig-native JSON-lines agent runtime. |
-| `apps/desktop-tauri-spike` | Temporary webview prototype preserved for reference. |
 | `docs` | Architecture, scope, roadmap, and strategy. |
 | `scripts` | Local smoke and verification scripts. |
 | `assets` | Shared branding and visual assets. |
