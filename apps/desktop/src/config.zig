@@ -19,11 +19,17 @@ pub const Profile = struct {
     term: []const u8 = "xterm-256color",
 };
 
+pub const Session = struct {
+    panes: usize = 1,
+    orientation: []const u8 = "vertical",
+};
+
 pub const Config = struct {
     selected_theme: theme.Theme = theme.ziggy,
     font: Font = .{},
     options: Options = .{},
     profile: Profile = .{},
+    session: Session = .{},
 
     pub fn defaults() Config {
         return .{};
@@ -40,6 +46,8 @@ pub const ParseError = error{
     InvalidHexColor,
     InvalidInteger,
     InvalidScrollback,
+    InvalidSessionPanes,
+    InvalidSessionOrientation,
 };
 
 pub fn parse(contents: []const u8) ParseError!Config {
@@ -96,6 +104,15 @@ fn apply(config: *Config, key: []const u8, value: []const u8) ParseError!void {
         const lines = std.fmt.parseInt(usize, value, 10) catch return error.InvalidScrollback;
         if (lines > 250_000) return error.InvalidScrollback;
         config.options.scrollback_lines = lines;
+    } else if (std.ascii.eqlIgnoreCase(key, "session.panes") or std.ascii.eqlIgnoreCase(key, "panes")) {
+        const panes = std.fmt.parseInt(usize, value, 10) catch return error.InvalidSessionPanes;
+        if (panes == 0 or panes > 6) return error.InvalidSessionPanes;
+        config.session.panes = panes;
+    } else if (std.ascii.eqlIgnoreCase(key, "session.orientation") or std.ascii.eqlIgnoreCase(key, "split.orientation")) {
+        if (!std.ascii.eqlIgnoreCase(value, "vertical") and !std.ascii.eqlIgnoreCase(value, "horizontal")) {
+            return error.InvalidSessionOrientation;
+        }
+        config.session.orientation = value;
     } else {
         return error.UnknownKey;
     }
@@ -150,6 +167,8 @@ test "parses key value desktop config" {
         \\profile.shell = "C:\Tools\ziggyzag.exe"
         \\profile.cwd = "C:\dev"
         \\profile.term = xterm-256color
+        \\session.panes = 3
+        \\session.orientation = horizontal
         \\
     );
 
@@ -163,6 +182,8 @@ test "parses key value desktop config" {
     try std.testing.expectEqualStrings("C:\\Tools\\ziggyzag.exe", parsed.profile.shell_path);
     try std.testing.expectEqualStrings("C:\\dev", parsed.profile.startup_directory);
     try std.testing.expectEqualStrings("xterm-256color", parsed.profile.term);
+    try std.testing.expectEqual(@as(usize, 3), parsed.session.panes);
+    try std.testing.expectEqualStrings("horizontal", parsed.session.orientation);
 }
 
 test "parses theme color overrides" {
@@ -191,4 +212,6 @@ test "rejects unknown keys and invalid values" {
     try std.testing.expectError(error.InvalidFontSize, parse("font.size=3\n"));
     try std.testing.expectError(error.InvalidBoolean, parse("bell=maybe\n"));
     try std.testing.expectError(error.InvalidScrollback, parse("scrollback=999999999\n"));
+    try std.testing.expectError(error.InvalidSessionPanes, parse("session.panes=7\n"));
+    try std.testing.expectError(error.InvalidSessionOrientation, parse("session.orientation=diagonal\n"));
 }

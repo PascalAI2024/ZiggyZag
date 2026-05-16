@@ -60,6 +60,14 @@ pub const Session = struct {
     }
 };
 
+pub const PollFd = if (supported) posix.pollfd else void;
+
+pub const PollEvent = struct {
+    pub const input = if (supported) posix.POLL.IN else 0;
+    pub const output = if (supported) posix.POLL.OUT else 0;
+    pub const error_or_hangup = if (supported) posix.POLL.ERR | posix.POLL.HUP | posix.POLL.NVAL else 0;
+};
+
 pub const SpawnOptions = struct {
     shell_path: ?[*:0]const u8 = null,
     argv: ?[*:null]const ?[*:0]const u8 = null,
@@ -75,6 +83,10 @@ pub const Error = posix.OpenError || std.fmt.BufPrintError || error{
     InvalidPtyName,
     InvalidFileDescriptor,
     ForkFailed,
+    ProcessNotFound,
+    WouldBlock,
+    BrokenPipe,
+    InputOutput,
     PermissionDenied,
     SystemResources,
     Unexpected,
@@ -119,6 +131,29 @@ pub fn setWindowSize(fd: Fd, size: Size) Error!void {
     }
 }
 
+pub fn queryWindowSize(fd: Fd) Error!?Size {
+    if (!supported) return error.UnsupportedOperatingSystem;
+    if (!isOpenFd(fd)) return error.InvalidFileDescriptor;
+
+    var ws = posix.winsize{
+        .row = 0,
+        .col = 0,
+        .xpixel = 0,
+        .ypixel = 0,
+    };
+
+    switch (native_os) {
+        .linux => try linuxIoctl(fd, linux.T.IOCGWINSZ, @intFromPtr(&ws)),
+        .macos => try libcIoctlPtr(fd, darwinTtyIoctl.get_window_size, &ws),
+        .freebsd, .netbsd, .openbsd => try libcIoctlPtr(fd, bsdTtyIoctl.get_window_size, &ws),
+        else => return error.UnsupportedOperatingSystem,
+    }
+
+    const size = Size{ .rows = ws.row, .cols = ws.col };
+    if (!size.isValid()) return null;
+    return size;
+}
+
 pub fn spawnShell(options: SpawnOptions) Error!Session {
     if (!supported) return error.UnsupportedOperatingSystem;
 
@@ -140,6 +175,86 @@ pub fn spawnShell(options: SpawnOptions) Error!Session {
         .master_fd = pair.master_fd,
         .child_pid = pid,
     };
+}
+
+pub fn readFd(fd: Fd, buffer: []u8) Error!usize {
+    if (!supported) return error.UnsupportedOperatingSystem;
+    if (!isOpenFd(fd)) return error.InvalidFileDescriptor;
+    if (buffer.len == 0) return 0;
+
+    while (true) {
+        switch (native_os) {
+            .linux => {
+                const rc = linux.read(fd, buffer.ptr, buffer.len);
+                switch (posix.errno(rc)) {
+                    .SUCCESS => return @intCast(rc),
+                    .INTR => continue,
+                    else => |err| return errnoToError(err),
+                }
+            },
+            .macos, .freebsd, .netbsd, .openbsd => {
+                const rc = std.c.read(fd, buffer.ptr, buffer.len);
+                switch (std.c.errno(rc)) {
+                    .SUCCESS => return @intCast(rc),
+                    .INTR => continue,
+                    else => |err| return errnoToError(err),
+                }
+            },
+            else => return error.UnsupportedOperatingSystem,
+        }
+    }
+}
+
+pub fn writeAll(fd: Fd, bytes: []const u8) Error!void {
+    var remaining = bytes;
+    while (remaining.len > 0) {
+        const written = try writeFd(fd, remaining);
+        if (written == 0) return error.Unexpected;
+        remaining = remaining[written..];
+    }
+}
+
+pub fn poll(fds: []PollFd, timeout_ms: i32) Error!usize {
+    if (!supported) return error.UnsupportedOperatingSystem;
+    return posix.poll(fds, timeout_ms) catch |err| switch (err) {
+        error.SystemResources => error.SystemResources,
+        else => error.Unexpected,
+    };
+}
+
+pub fn waitNoHang(pid: Pid) Error!?std.process.Child.Term {
+    if (!supported) return error.UnsupportedOperatingSystem;
+
+    switch (native_os) {
+        .linux => if (!builtin.link_libc) {
+            var status: u32 = 0;
+            while (true) {
+                const rc = linux.waitpid(pid, &status, linux.W.NOHANG);
+                switch (posix.errno(rc)) {
+                    .SUCCESS => {
+                        if (rc == 0) return null;
+                        return statusToTerm(status);
+                    },
+                    .INTR => continue,
+                    else => |err| return errnoToError(err),
+                }
+            }
+        },
+        else => {},
+    }
+
+    var status: c_int = 0;
+    while (true) {
+        const rc = std.c.waitpid(pid, &status, posix.W.NOHANG);
+        switch (std.c.errno(rc)) {
+            .SUCCESS => {
+                if (rc == 0) return null;
+                return statusToTerm(@bitCast(status));
+            },
+            .INTR => continue,
+            else => |err| return errnoToError(err),
+        }
+    }
 }
 
 fn openLinuxPair(size: Size) Error!Pair {
@@ -220,6 +335,34 @@ fn closeFd(fd: Fd) void {
     }
 }
 
+fn writeFd(fd: Fd, bytes: []const u8) Error!usize {
+    if (!supported) return error.UnsupportedOperatingSystem;
+    if (!isOpenFd(fd)) return error.InvalidFileDescriptor;
+    if (bytes.len == 0) return 0;
+
+    while (true) {
+        switch (native_os) {
+            .linux => {
+                const rc = linux.write(fd, bytes.ptr, bytes.len);
+                switch (posix.errno(rc)) {
+                    .SUCCESS => return @intCast(rc),
+                    .INTR => continue,
+                    else => |err| return errnoToError(err),
+                }
+            },
+            .macos, .freebsd, .netbsd, .openbsd => {
+                const rc = std.c.write(fd, bytes.ptr, bytes.len);
+                switch (std.c.errno(rc)) {
+                    .SUCCESS => return @intCast(rc),
+                    .INTR => continue,
+                    else => |err| return errnoToError(err),
+                }
+            },
+            else => return error.UnsupportedOperatingSystem,
+        }
+    }
+}
+
 fn isOpenFd(fd: Fd) bool {
     return fd >= 0;
 }
@@ -230,6 +373,7 @@ fn forkProcess() Error!Pid {
             const rc = linux.fork();
             switch (posix.errno(rc)) {
                 .SUCCESS => return @intCast(rc),
+                .AGAIN => return error.ForkFailed,
                 else => |err| return errnoToError(err),
             }
         },
@@ -237,6 +381,7 @@ fn forkProcess() Error!Pid {
             const rc = std.c.fork();
             switch (std.c.errno(rc)) {
                 .SUCCESS => return @intCast(rc),
+                .AGAIN => return error.ForkFailed,
                 else => |err| return errnoToError(err),
             }
         },
@@ -346,21 +491,37 @@ fn errnoToError(err: anytype) Error {
         .SUCCESS => error.Unexpected,
         .ACCES, .PERM => error.PermissionDenied,
         .BADF => error.InvalidFileDescriptor,
-        .AGAIN => error.ForkFailed,
+        .AGAIN => error.WouldBlock,
+        .PIPE => error.BrokenPipe,
+        .IO => error.InputOutput,
+        .CHILD, .SRCH => error.ProcessNotFound,
         .MFILE, .NFILE, .NOMEM, .NOBUFS => error.SystemResources,
         else => error.Unexpected,
     };
 }
 
 const darwinTtyIoctl = struct {
+    const get_window_size: c_int = @bitCast(@as(c_uint, 0x40087468));
     const set_window_size: c_int = @bitCast(@as(c_uint, 0x80087467));
     const set_controlling_tty: c_int = 0x20007461;
 };
 
 const bsdTtyIoctl = struct {
+    const get_window_size: c_int = @bitCast(@as(c_uint, 0x40087468));
     const set_window_size: c_int = @bitCast(@as(c_uint, 0x80087467));
     const set_controlling_tty: c_int = 0x20007461;
 };
+
+fn statusToTerm(status: u32) std.process.Child.Term {
+    return if (posix.W.IFEXITED(status))
+        .{ .exited = posix.W.EXITSTATUS(status) }
+    else if (posix.W.IFSIGNALED(status))
+        .{ .signal = posix.W.TERMSIG(status) }
+    else if (posix.W.IFSTOPPED(status))
+        .{ .stopped = posix.W.STOPSIG(status) }
+    else
+        .{ .unknown = status };
+}
 
 const libcPty = if (uses_libc_pty) struct {
     extern "c" fn posix_openpt(flags: c_int) c_int;
@@ -431,6 +592,7 @@ test "window size rejects invalid descriptors before ioctl" {
     if (!supported) return error.SkipZigTest;
 
     try std.testing.expectError(error.InvalidFileDescriptor, setWindowSize(invalid_fd, .{}));
+    try std.testing.expectError(error.InvalidFileDescriptor, queryWindowSize(invalid_fd));
 }
 
 test "open flag bit conversion keeps read-write intent" {
@@ -441,6 +603,13 @@ test "open flag bit conversion keeps read-write intent" {
     try std.testing.expect(flags.CLOEXEC);
     try std.testing.expect(flags.ACCMODE == .RDWR);
     try std.testing.expect(openFlagsBits(flags) != 0);
+}
+
+test "wait status maps common POSIX outcomes" {
+    if (!supported) return error.SkipZigTest;
+
+    try std.testing.expectEqual(@as(u8, 7), statusToTerm(7 << 8).exited);
+    try std.testing.expectEqual(posix.SIG.INT, statusToTerm(@intFromEnum(posix.SIG.INT)).signal);
 }
 
 test "public API declarations compile on POSIX targets" {

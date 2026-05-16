@@ -52,14 +52,17 @@ The repo now contains a Windows-native all-Zig alpha under `apps/desktop`:
 
 - Win32 windowing and GDI terminal-grid rendering.
 - Windows ConPTY shell hosting.
+- PTY-backed vertical and horizontal split panes, active-pane focus, active-pane close, and config-restored pane layout.
 - Keyboard input forwarded to the shell process.
 - Resize handling across the window, grid, and pseudoconsole.
 - Status bar and window-title updates from shell integration events, including project and git prompt context.
 - Built-in terminal themes, theme-aware ANSI colors, a settings overlay, live theme cycling, and desktop config loading.
 - Tested terminal grid and OSC 777 event extraction.
-- Slim `ziggyzag-agentd` sidecar under `apps/agentd` for terminal AI panel integration.
+- Slim `ziggyzag-agentd` sidecar under `apps/agentd`, plus a Windows desktop AgentD panel for health/tools/approval previews.
 
-For macOS/Linux alpha artifacts, `ziggyzag-desktop` currently builds and runs as a terminal-attached launcher. It resolves the ZiggyZag shell binary, reports the selected POSIX backend, and starts the shell in the calling terminal. It prefers `script(1)` as a small PTY wrapper and falls back to direct stdio when needed. It does not open a native graphical window yet. The usable POSIX alpha surface is the shell binary, AgentD, smoke script, and this launcher.
+Not yet complete in the native desktop host: tabs, full process/session restore, graphical settings writes, mouse selection, full combining-mark/emoji/grapheme handling, and native macOS/Linux windows.
+
+For macOS/Linux alpha artifacts, `ziggyzag-desktop` currently builds and runs as a terminal-attached launcher. It resolves the ZiggyZag shell binary, reports the selected POSIX backend, and starts the shell in the calling terminal. It now prefers ZiggyZag's native POSIX PTY relay, then falls back to `script(1)`, then direct stdio. It does not open a native graphical window yet. The usable POSIX alpha surface is the shell binary, AgentD, smoke script, and this launcher.
 
 The repo also contains a Tauri/xterm.js prototype slice. Treat it as an experiment unless the team explicitly chooses the webview route:
 
@@ -77,10 +80,10 @@ The primary path is documented in [ALL_ZIG_TERMINAL.md](ALL_ZIG_TERMINAL.md).
 The first hardened version should prove that the app can host ZiggyZag well:
 
 1. Launch ZiggyZag in a real PTY with correct resize, cleanup, paste, Ctrl+C interrupt, Ctrl+Shift+C copy-visible, and wheel scrollback behavior.
-2. Provide one window with tabs, each backed by a separate ZiggyZag process.
+2. Provide one window with split panes, each backed by a separate ZiggyZag process; tabs remain the next navigation surface.
 3. Deepen persisted app settings: shell path, startup directory, scrollback size, keybindings, and a proper settings editor.
-4. Add a command palette for app-level commands such as new tab, close tab, split later placeholder, increase font, decrease font, and open settings.
-5. Add an agent panel backed by `ziggyzag-agentd --stdio`, with explicit approval before terminal writes or build commands.
+4. Add a command palette for app-level commands such as split, close pane, focus pane, theme, search, quick select, AgentD actions, and open settings.
+5. Keep hardening the AgentD panel backed by `ziggyzag-agentd --stdio`, with explicit approval before terminal writes or build commands.
 6. Surface session status: current directory, last command status, running command indicator, and background job count when ZiggyZag exposes them.
 7. Keep packaging Windows native desktop builds while macOS/Linux ship shell, AgentD, and the terminal-attached desktop launcher until POSIX native graphical hosting is ready.
 
@@ -93,13 +96,14 @@ Use the first friend-test pass to answer concrete questions:
 | Area | What to try | Pass signal |
 | --- | --- | --- |
 | Windows launch | `zig build run-desktop` | Window opens and prompt appears. |
-| macOS/Linux desktop launcher | `zig build run-desktop` | Prints `ZiggyZag Desktop (POSIX PTY)`, launches the shell in the current terminal through `script(1)` when available, and exits cleanly after `exit`. |
+| macOS/Linux desktop launcher | `zig build run-desktop` | Prints `ZiggyZag Desktop (POSIX PTY)`, launches the shell in the current terminal through the native POSIX PTY relay when available, and exits cleanly after `exit`. |
 | Input | Type commands, edit with Backspace, press Enter | Text reaches the shell and output returns. |
 | Clipboard | Ctrl+V, Shift+Insert, Ctrl+Shift+C | Paste writes into the PTY; copy places visible text on the clipboard. Ctrl+C remains shell interrupt. |
 | Resize | Drag the window smaller/larger | Grid resizes without losing the running session. |
 | Scrollback | Produce long output and wheel upward | Previous visible rows can be reviewed. |
+| Splits | Press Ctrl+Shift+D, Ctrl+Shift+E, Ctrl+Shift+N, Ctrl+Shift+W | Panes open with independent shells, focus moves, and close only kills the active pane. |
 | Shell events | Run successful and failing commands | Status/title reflects command context. |
-| AgentD | `zig build run-agentd -- --describe-tools` | Tool list is valid JSON and names the expected tools. |
+| AgentD | Press Ctrl+Shift+A, then use palette AgentD health/tools/preview/approve | Panel shows sidecar JSON, preview does not write until approved. |
 | Provider failure | Run `--oneshot` without Ollama | Structured `provider_error`, no crash. |
 
 Clipboard, resize, scrollback, and shell-event checks apply to the Windows native desktop host in this alpha. On macOS/Linux, run the shell directly with `./zig-out/bin/ziggyzag`, AgentD directly with `./zig-out/bin/ziggyzag-agentd`, and the launcher with `zig build run-desktop`.
@@ -170,3 +174,5 @@ The app should borrow lessons, not implementation. Embedding WezTerm would obscu
 6. Revisit sidecar IPC only after the event stream has real pressure.
 
 The guiding rule: keep the PTY path conventional, then layer ZiggyZag-specific intelligence beside it.
+
+For the next-wave task list and acceptance signals, see [ALPHA_TASKS.md](ALPHA_TASKS.md).

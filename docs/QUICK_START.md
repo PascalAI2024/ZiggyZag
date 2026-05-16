@@ -2,6 +2,16 @@
 
 This page is the practical path for building and trying ZiggyZag locally.
 
+Choose the path that matches what you want to test:
+
+| Goal | Start here |
+| --- | --- |
+| Try the shell | Build and run `ziggyzag`. |
+| Try the Windows desktop alpha | Run `ziggyzag-launcher.exe` or `zig build run-desktop` on Windows. |
+| Try macOS/Linux alpha artifacts | Run the shell, AgentD, smoke script, and terminal-attached desktop launcher. Do not expect a native graphical window yet. |
+| Test AgentD | Run `zig build run-agentd -- --describe-tools`, then a JSON-lines health check. |
+| Prepare friend testing | Use [QA_TOMORROW.md](QA_TOMORROW.md), then [DAILY_DRIVER_QA.md](DAILY_DRIVER_QA.md). |
+
 Install [Zig 0.16.0](https://ziglang.org/download/) first. From a fresh checkout:
 
 ```sh
@@ -34,7 +44,11 @@ You can also run the desktop host through the Zig build graph:
 zig build run-desktop
 ```
 
-On macOS/Linux, the desktop command currently launches ZiggyZag in the calling terminal. It prefers `script(1)` as a PTY wrapper and falls back to direct stdio when needed. A separate native window is not expected on those platforms yet.
+Current Windows alpha scope: one terminal session in a native Win32/ConPTY host with settings, themes, command palette, search, quick select, copy-visible, paste, scrollback, resize, alternate-screen handling, and shell status events.
+
+Current TODOs: tabs, mouse selection, deeper process/session restore, native POSIX graphical windows, and deeper Unicode grapheme/font handling. Split panes and the Windows AgentD panel are in the alpha.
+
+On macOS/Linux, the desktop command currently launches ZiggyZag in the calling terminal. It prefers ZiggyZag's native POSIX PTY relay, then falls back to `script(1)`, then direct stdio when needed. A separate native window is not expected on those platforms yet.
 
 ```sh
 zig build
@@ -46,7 +60,7 @@ zig build run-desktop
 
 ## Desktop Themes And Settings
 
-On Windows, press `Ctrl+,` in the native desktop window to open the settings overlay. Press `Ctrl+Shift+P` for the command palette, `Ctrl+Shift+F` for scrollback search, `Ctrl+Shift+O` for quick select, and `Ctrl+Shift+T` to cycle the built-in themes live.
+On Windows, press `Ctrl+,` in the native desktop window to open the settings overlay. Press `Ctrl+Shift+P` for the command palette, `Ctrl+Shift+F` for scrollback search, `Ctrl+Shift+O` for quick select, `Ctrl+Shift+D` or `Ctrl+Shift+E` for vertical/horizontal splits, `Ctrl+Shift+N` for next pane, `Ctrl+Shift+W` to close the active pane, `Ctrl+Shift+A` for the AgentD panel, and `Ctrl+Shift+T` to cycle the built-in themes live.
 
 Built-in theme ids:
 
@@ -83,6 +97,8 @@ scrollback.lines = 10000
 profile.shell = C:\path\to\ziggyzag.exe
 profile.cwd = C:\Users\you\dev
 profile.term = xterm-256color
+session.panes = 1
+session.orientation = vertical
 
 # Optional per-theme overrides
 theme.background = #1e1e2e
@@ -157,6 +173,8 @@ On Windows:
 ```powershell
 '{"id":1,"method":"agent/health"}' | .\zig-out\bin\ziggyzag-agentd.exe --stdio
 ```
+
+AgentD also has a Windows desktop panel in the alpha. Open it with `Ctrl+Shift+A` or from the command palette. The panel can request health/tool data and preview `terminal.write`; it only writes the pending preview into the active pane after explicit approval.
 
 ## CodeCrafters Wrapper
 
@@ -257,6 +275,8 @@ On Windows:
 
 For normal desktop testing today, use the all-Zig Windows app. On macOS/Linux, test the shell, AgentD, smoke script, and terminal-attached desktop launcher. The Tauri/xterm.js version is preserved only as a spike under `apps/desktop-tauri-spike`.
 
+Track implementation-wave TODOs and acceptance notes in [ALPHA_TASKS.md](ALPHA_TASKS.md).
+
 Windows order:
 
 1. Install Zig 0.16.0 and confirm `zig version` prints `0.16.0`.
@@ -264,7 +284,7 @@ Windows order:
 3. Run `.\scripts\qa-tomorrow.ps1`.
 4. Run `.\zig-out\bin\ziggyzag.exe` and try `help`, `doctor`, `history --stats`, `project`, and `exit`.
 5. Run `.\scripts\smoke.ps1`.
-6. Run `.\zig-out\bin\ziggyzag-launcher.exe` and test typing, Enter, Backspace, Ctrl+C interrupt, paste, copy-visible text, resize, scrollback, `Ctrl+,` settings, `Ctrl+Shift+P` palette, `Ctrl+Shift+F` search, `Ctrl+Shift+O` quick select, and `Ctrl+Shift+T` theme cycling.
+6. Run `.\zig-out\bin\ziggyzag-launcher.exe` and test typing, Enter, Backspace, Ctrl+C interrupt, paste, copy-visible text, resize, scrollback, `Ctrl+,` settings, `Ctrl+Shift+P` palette, `Ctrl+Shift+F` search, `Ctrl+Shift+O` quick select, `Ctrl+Shift+D/E/N/W` split-pane controls, `Ctrl+Shift+A` AgentD panel, and `Ctrl+Shift+T` theme cycling.
 7. Run `zig build run-agentd -- --describe-tools`.
 8. Run `zig build run-agentd -- --stdio` and send `{"id":1,"method":"agent/health"}`.
 
@@ -286,6 +306,6 @@ macOS/Linux alpha order:
 | `.\zig-out\bin\ziggyzag.exe` is missing | Run `zig build` from the repo root first. |
 | `.\scripts\smoke.ps1` says the binary is missing | Run `zig build`, then rerun the smoke script from the repo root. |
 | Desktop window opens but shell does not start | Confirm `zig-out\bin\ziggyzag.exe` exists and that antivirus did not quarantine a local build artifact. |
-| macOS/Linux `zig build run-desktop` does not open a window | Expected for this alpha. It should launch ZiggyZag in the current terminal through `script(1)` when available; use `./zig-out/bin/ziggyzag` directly if you do not want the launcher banner. |
+| macOS/Linux `zig build run-desktop` does not open a window | Expected for this alpha. It should launch ZiggyZag in the current terminal through the native POSIX PTY relay when available, then `script(1)` or direct stdio; use `./zig-out/bin/ziggyzag` directly if you do not want the launcher banner. |
 | AgentD returns `provider_error` from `--oneshot` or `agent/run` | This is expected when Ollama or the configured OpenAI-compatible provider is not running. Tool listing, `agent/health`, and local tool calls should still work. |
 | Ollama request fails | Start Ollama, confirm `http://127.0.0.1:11434` is reachable, and set `ZIGGYZAG_AGENT_MODEL` to a local model you have pulled. |

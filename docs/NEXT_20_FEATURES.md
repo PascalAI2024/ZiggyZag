@@ -92,21 +92,22 @@ The conclusion is clear: stay all-Zig, keep ZiggyZag's shell as the source of tr
 
 - [ ] 17. Tabs, split panes, and session restore
   Introduce `Session` objects with one PTY/grid per tab or split, keyboard navigation, close confirmation, persisted titles, startup cwd inheritance, and a minimal restore file for last window layout.
+  Progress: PTY-backed vertical/horizontal split panes, next-pane focus, close-active-pane, per-pane status/scrollback, and config-restored pane count/orientation are implemented. Tabs, close confirmation, persisted titles, cwd inheritance per new pane, and richer restore remain open.
   Primary paths: `apps/desktop/src/windows_app.zig`, `apps/desktop/src/config.zig`.
 
 - [x] 18. Command palette and action registry
   Create a searchable modal for new tab, split, close, copy, paste, search, theme, font size, settings, restart shell, open config, run project task, and agent actions. Track frecency after the first version works.
-  Shipped first version: `Ctrl+Shift+P` searchable palette runs copy, paste, search, quick select, settings, theme cycle, config reload, restart shell, clear scrollback, copy cwd/config path, and AgentD command insertion. Tabs/splits and frecency remain future actions.
+  Shipped first version: `Ctrl+Shift+P` searchable palette runs copy, paste, search, quick select, split right/down, next pane, close pane, AgentD panel/health/tools/preview/approve, settings, theme cycle, config reload, restart shell, clear scrollback, and copy cwd/config path. Tabs and frecency remain future actions.
   Primary paths: `apps/desktop/src/windows_app.zig`, `apps/desktop/src/config.zig`.
 
 - [ ] 19. Profiles, keybindings, settings, and theme sync
   Expand desktop config into profiles for shell path, startup directory, environment, font, scrollback, keybindings, and theme. Add live reload, settings UI editing, light/dark theme pairs, and prompt/terminal color sync.
-  Progress: desktop config now applies profile shell path, startup cwd, TERM, and scrollback lines; `Ctrl+Shift+R` reloads safe settings. Environment arrays, keybindings, settings editing, light/dark pairs, and prompt/theme sync remain open.
+  Progress: desktop config now applies profile shell path, startup cwd, TERM, scrollback lines, and startup pane count/orientation; `Ctrl+Shift+R` reloads safe settings. Environment arrays, keybindings, settings editing, light/dark pairs, and prompt/theme sync remain open.
   Primary paths: `apps/desktop/src/config.zig`, `apps/desktop/src/theme.zig`, `apps/shell/src/main.zig`.
 
-- [ ] 20. Approval-aware agent panel
+- [x] 20. Approval-aware agent panel
   Spawn `ziggyzag-agentd --stdio` from the desktop host, list tools, run read-only tools automatically, require approval for terminal writes/builds, preview exact text before insertion, audit every decision, minimize context, redact secrets, and harden OSC 777 as UI context rather than a trust boundary.
-  Progress: AgentD now exposes richer tool schemas, approval metadata, audit/event host actions, and redacted bounded read/search/git output. The desktop sidecar panel/spawn/approval UI remains open.
+  Shipped first version: AgentD exposes richer tool schemas, approval metadata, audit/event host actions, and redacted bounded read/search/git output; the Windows desktop panel spawns `ziggyzag-agentd --stdio`, shows a bounded transcript, requests health/tools, previews `terminal.write`, and writes only after explicit approval. Read-only browsing, audit export, build-action approval, and provider streaming remain hardening work.
   Primary paths: `apps/agentd/src/main.zig`, `apps/agentd/src/tools.zig`, `apps/desktop/src/integration.zig`, `apps/desktop/src/windows_app.zig`.
 
 ## Execution Waves

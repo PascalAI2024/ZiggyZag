@@ -1,8 +1,12 @@
 const std = @import("std");
 const builtin = @import("builtin");
+const posix = std.posix;
+const posix_pty = @import("posix_pty.zig");
 const theme = @import("theme.zig");
 
 const Allocator = std.mem.Allocator;
+const stdin_fd = posix.STDIN_FILENO;
+const stdout_fd = posix.STDOUT_FILENO;
 
 pub fn run(init_data: std.process.Init) !void {
     const allocator = init_data.gpa;
@@ -35,15 +39,21 @@ pub fn run(init_data: std.process.Init) !void {
     if (!shouldSkipPty(init_data.environ_map)) {
         try printLaunchNote(&stderr.interface, shell_path, true);
         try stderr.interface.flush();
-        const term = runWithScript(init_data.io, init_data.environ_map, allocator, shell_path) catch |err| {
-            try printPtyFallback(&stderr.interface, err, shell_path);
+        const term = runWithNativePty(init_data.environ_map, allocator, shell_path) catch |err| {
+            try printPtyFallback(&stderr.interface, err, shell_path, "native PTY");
             try stderr.interface.flush();
-            const fallback_term = runDirect(init_data.io, init_data.environ_map, shell_path) catch |fallback_err| {
-                try printDirectFailure(&stderr.interface, fallback_err, shell_path);
-                stderr.interface.flush() catch {};
-                std.process.exit(127);
+
+            const script_term = runWithScript(init_data.io, init_data.environ_map, allocator, shell_path) catch |script_err| {
+                try printPtyFallback(&stderr.interface, script_err, shell_path, "script(1) PTY wrapper");
+                try stderr.interface.flush();
+                const fallback_term = runDirect(init_data.io, init_data.environ_map, shell_path) catch |fallback_err| {
+                    try printDirectFailure(&stderr.interface, fallback_err, shell_path);
+                    stderr.interface.flush() catch {};
+                    std.process.exit(127);
+                };
+                std.process.exit(termExitCode(fallback_term));
             };
-            std.process.exit(termExitCode(fallback_term));
+            std.process.exit(termExitCode(script_term));
         };
         std.process.exit(termExitCode(term));
     }
@@ -56,6 +66,35 @@ pub fn run(init_data: std.process.Init) !void {
         std.process.exit(127);
     };
     std.process.exit(termExitCode(term));
+}
+
+fn runWithNativePty(
+    env: *const std.process.Environ.Map,
+    allocator: Allocator,
+    shell_path: []const u8,
+) !std.process.Child.Term {
+    const shell_path_z = try allocator.dupeZ(u8, shell_path);
+    defer allocator.free(shell_path_z);
+
+    const env_block = try env.createPosixBlock(allocator, .{});
+    defer env_block.deinit(allocator);
+
+    var terminal_mode = try TerminalMode.enterRaw(stdin_fd);
+    errdefer terminal_mode.restore();
+
+    const size = initialPtySize();
+    const argv = [_:null]?[*:0]const u8{shell_path_z.ptr};
+    var session = try posix_pty.spawnShell(.{
+        .shell_path = shell_path_z.ptr,
+        .argv = &argv,
+        .envp = env_block.slice.ptr,
+        .size = size,
+    });
+    defer session.closeMaster();
+
+    defer terminal_mode.restore();
+
+    return try relayPty(session, size);
 }
 
 fn runWithScript(
@@ -76,6 +115,94 @@ fn runWithScript(
             return spawnAndWait(io, env, &argv);
         },
         else => return error.UnsupportedPosixHost,
+    }
+}
+
+fn relayPty(session: posix_pty.Session, initial_size: posix_pty.Size) !std.process.Child.Term {
+    var input_open = true;
+    var master_open = true;
+    var sent_pipe_eof = false;
+    var last_size = initial_size;
+    var child_term: ?std.process.Child.Term = null;
+    var buffer: [8192]u8 = undefined;
+
+    while (true) {
+        if (child_term == null) {
+            child_term = try posix_pty.waitNoHang(session.child_pid);
+        }
+        if (child_term != null and !master_open) return child_term.?;
+
+        if (queryInputSize()) |size| {
+            if (size.rows != last_size.rows or size.cols != last_size.cols) {
+                try session.resize(size);
+                last_size = size;
+            }
+        }
+
+        var poll_fds_buf: [2]posix_pty.PollFd = undefined;
+        var poll_len: usize = 0;
+        if (input_open and child_term == null) {
+            poll_fds_buf[poll_len] = .{
+                .fd = stdin_fd,
+                .events = posix_pty.PollEvent.input,
+                .revents = 0,
+            };
+            poll_len += 1;
+        }
+        if (master_open) {
+            poll_fds_buf[poll_len] = .{
+                .fd = session.master_fd,
+                .events = posix_pty.PollEvent.input,
+                .revents = 0,
+            };
+            poll_len += 1;
+        }
+
+        if (poll_len == 0) {
+            if (child_term) |term| return term;
+            continue;
+        }
+
+        const poll_fds = poll_fds_buf[0..poll_len];
+        const ready = try posix_pty.poll(poll_fds, 100);
+        if (ready == 0 and child_term != null) return child_term.?;
+
+        var fd_index: usize = 0;
+        if (input_open and child_term == null) {
+            const revents = poll_fds[fd_index].revents;
+            fd_index += 1;
+            if ((revents & posix_pty.PollEvent.input) != 0) {
+                const read = try posix_pty.readFd(stdin_fd, &buffer);
+                if (read == 0) {
+                    input_open = false;
+                    if (!sent_pipe_eof) {
+                        try posix_pty.writeAll(session.master_fd, "\x04");
+                        sent_pipe_eof = true;
+                    }
+                } else {
+                    try posix_pty.writeAll(session.master_fd, buffer[0..read]);
+                }
+            } else if ((revents & posix_pty.PollEvent.error_or_hangup) != 0) {
+                input_open = false;
+            }
+        }
+
+        if (master_open) {
+            const revents = poll_fds[fd_index].revents;
+            if ((revents & posix_pty.PollEvent.input) != 0) {
+                const read = posix_pty.readFd(session.master_fd, &buffer) catch |err| switch (err) {
+                    error.InputOutput => 0,
+                    else => return err,
+                };
+                if (read == 0) {
+                    master_open = false;
+                } else {
+                    try posix_pty.writeAll(stdout_fd, buffer[0..read]);
+                }
+            } else if ((revents & posix_pty.PollEvent.error_or_hangup) != 0) {
+                master_open = false;
+            }
+        }
     }
 }
 
@@ -195,6 +322,42 @@ fn noPtyValueEnabled(value: ?[]const u8) bool {
     return true;
 }
 
+fn initialPtySize() posix_pty.Size {
+    return queryInputSize() orelse .{};
+}
+
+fn queryInputSize() ?posix_pty.Size {
+    return posix_pty.queryWindowSize(stdin_fd) catch null;
+}
+
+const TerminalMode = struct {
+    fd: posix.fd_t,
+    original: ?posix.termios = null,
+
+    fn enterRaw(fd: posix.fd_t) !TerminalMode {
+        const original = posix.tcgetattr(fd) catch |err| switch (err) {
+            error.NotATerminal => return .{ .fd = fd },
+            else => return err,
+        };
+
+        var raw = original;
+        raw.lflag.ECHO = false;
+        raw.lflag.ICANON = false;
+        raw.lflag.IEXTEN = false;
+        raw.lflag.ISIG = false;
+        try posix.tcsetattr(fd, .FLUSH, raw);
+
+        return .{ .fd = fd, .original = original };
+    }
+
+    fn restore(self: *TerminalMode) void {
+        if (self.original) |original| {
+            posix.tcsetattr(self.fd, .FLUSH, original) catch {};
+            self.original = null;
+        }
+    }
+};
+
 fn printLaunchNote(stderr: *std.Io.Writer, shell_path: []const u8, through_pty: bool) !void {
     try stderr.print(
         \\ZiggyZag Desktop ({s})
@@ -208,13 +371,13 @@ fn printLaunchNote(stderr: *std.Io.Writer, shell_path: []const u8, through_pty: 
     });
 }
 
-fn printPtyFallback(stderr: *std.Io.Writer, err: anyerror, shell_path: []const u8) !void {
+fn printPtyFallback(stderr: *std.Io.Writer, err: anyerror, shell_path: []const u8, backend: []const u8) !void {
     try stderr.print(
-        \\ZiggyZag: POSIX PTY launch failed: {s}
-        \\Falling back to direct stdio for `{s}`.
-        \\Install `script(1)` or run with ZIGGYZAG_DESKTOP_NO_PTY=1 to skip the PTY wrapper.
+        \\ZiggyZag: {s} launch failed: {s}
+        \\Trying the next POSIX fallback for `{s}`.
+        \\Run with ZIGGYZAG_DESKTOP_NO_PTY=1 to skip PTY launch entirely.
         \\
-    , .{ @errorName(err), shell_path });
+    , .{ backend, @errorName(err), shell_path });
 }
 
 fn printDirectFailure(stderr: *std.Io.Writer, err: anyerror, shell_path: []const u8) !void {

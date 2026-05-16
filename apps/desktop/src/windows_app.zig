@@ -46,13 +46,18 @@ const WM_KILLFOCUS = 0x0008;
 const WM_CLOSE = 0x0010;
 const WM_MOUSEWHEEL = 0x020A;
 const WM_APP_OUTPUT_READY = 0x8000;
+const VK_A = 0x41;
 const VK_C = 0x43;
+const VK_D = 0x44;
+const VK_E = 0x45;
 const VK_F = 0x46;
+const VK_N = 0x4E;
 const VK_O = 0x4F;
 const VK_P = 0x50;
 const VK_R = 0x52;
 const VK_T = 0x54;
 const VK_V = 0x56;
+const VK_W = 0x57;
 const VK_INSERT = 0x2D;
 const VK_ESCAPE = 0x1B;
 const VK_RETURN = 0x0D;
@@ -94,9 +99,16 @@ const CF_UNICODETEXT = 13;
 const GMEM_MOVEABLE = 0x0002;
 const WHEEL_DELTA = 120;
 const MAX_PASTE_BYTES = 64 * 1024;
+const AGENT_TRANSCRIPT_BYTES = 12 * 1024;
+const AGENT_PENDING_WRITE_BYTES = 1024;
 const WAIT_TIMEOUT: DWORD = 0x00000102;
 const CHILD_SHUTDOWN_GRACE_MS: DWORD = 750;
 const CHILD_SHUTDOWN_KILL_GRACE_MS: DWORD = 250;
+const MAX_PANES = 6;
+const MIN_PANE_COLS = 20;
+const MIN_PANE_ROWS = 5;
+const PANE_PAD_X: i32 = 10;
+const PANE_PAD_Y: i32 = 8;
 
 const COORD = extern struct {
     X: i16,
@@ -109,6 +121,8 @@ const RECT = extern struct {
     right: LONG,
     bottom: LONG,
 };
+
+const PaneRect = RECT;
 
 const POINT = extern struct {
     x: LONG,
@@ -339,6 +353,15 @@ const PaletteActionKind = enum {
     paste_clipboard,
     search_scrollback,
     quick_select,
+    split_vertical,
+    split_horizontal,
+    focus_next_pane,
+    close_pane,
+    open_agent_panel,
+    agent_health,
+    agent_tools,
+    agent_preview_write,
+    agent_approve_write,
     toggle_settings,
     next_theme,
     reload_config,
@@ -360,6 +383,15 @@ const palette_actions = [_]PaletteAction{
     .{ .title = "Paste clipboard", .detail = "Paste clipboard text into the active shell", .kind = .paste_clipboard },
     .{ .title = "Search scrollback", .detail = "Find text in visible output and bounded history", .kind = .search_scrollback },
     .{ .title = "Quick select", .detail = "Copy URLs, paths, issue keys, and hashes", .kind = .quick_select },
+    .{ .title = "Split pane right", .detail = "Create a vertical split with a fresh shell", .kind = .split_vertical },
+    .{ .title = "Split pane down", .detail = "Create a horizontal split with a fresh shell", .kind = .split_horizontal },
+    .{ .title = "Focus next pane", .detail = "Move keyboard focus to the next terminal pane", .kind = .focus_next_pane },
+    .{ .title = "Close pane", .detail = "Close the active pane and its shell", .kind = .close_pane },
+    .{ .title = "AgentD panel", .detail = "Open the local AgentD sidecar transcript", .kind = .open_agent_panel },
+    .{ .title = "AgentD health", .detail = "Ask AgentD for provider and runtime status", .kind = .agent_health },
+    .{ .title = "AgentD tools", .detail = "List local tools, schemas, and approval policy", .kind = .agent_tools },
+    .{ .title = "AgentD preview write", .detail = "Request a terminal.write host action preview", .kind = .agent_preview_write },
+    .{ .title = "Approve AgentD write", .detail = "Write the pending AgentD preview into the active pane", .kind = .agent_approve_write },
     .{ .title = "Settings", .detail = "Toggle the settings and theme overlay", .kind = .toggle_settings },
     .{ .title = "Next theme", .detail = "Cycle through built-in terminal themes", .kind = .next_theme },
     .{ .title = "Reload config", .detail = "Reload desktop.conf and apply safe settings", .kind = .reload_config },
@@ -376,6 +408,7 @@ const Overlay = enum {
     command_palette,
     search,
     quick_select,
+    agent,
 };
 
 const MouseModeSnapshot = struct {
@@ -384,12 +417,58 @@ const MouseModeSnapshot = struct {
     encoding: terminal.MouseEncoding,
 };
 
+const SplitOrientation = enum {
+    vertical,
+    horizontal,
+};
+
+const Pane = struct {
+    grid: terminal.Grid,
+    input_write: ?HANDLE = null,
+    output_read: ?HANDLE = null,
+    pseudoconsole: ?HPCON = null,
+    process_info: ?win.PROCESS.INFORMATION = null,
+    reader_thread: ?std.Thread = null,
+    status: Status = .{},
+    scroll_offset: usize = 0,
+    wheel_remainder: i32 = 0,
+    startup_error: [96]u8 = undefined,
+    startup_error_len: usize = 0,
+    running: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+
+    fn init(allocator: Allocator, width: usize, height: usize) !Pane {
+        return .{
+            .grid = try terminal.Grid.init(allocator, width, height),
+        };
+    }
+
+    fn deinit(self: *Pane) void {
+        self.grid.deinit();
+    }
+
+    fn setStartupError(self: *Pane, err: anyerror) void {
+        const name = @errorName(err);
+        const len = @min(name.len, self.startup_error.len);
+        @memcpy(self.startup_error[0..len], name[0..len]);
+        self.startup_error_len = len;
+    }
+
+    fn clearRuntimeState(self: *Pane) void {
+        self.status = .{};
+        self.scroll_offset = 0;
+        self.wheel_remainder = 0;
+        self.startup_error_len = 0;
+    }
+};
+
 const App = struct {
     allocator: Allocator,
     io: std.Io,
     env: *std.process.Environ.Map,
     hwnd: HWND = null,
-    grid: terminal.Grid,
+    panes: [MAX_PANES]?*Pane = [_]?*Pane{null} ** MAX_PANES,
+    active_pane: usize = 0,
+    split_orientation: SplitOrientation = .vertical,
     mutex: SpinLock = .{},
     config: desktop_config.Config = .{},
     config_buffer: ?[]u8 = null,
@@ -405,16 +484,6 @@ const App = struct {
     char_width: i32 = 9,
     char_height: i32 = 18,
     status_height: i32 = 28,
-    input_write: ?HANDLE = null,
-    output_read: ?HANDLE = null,
-    pseudoconsole: ?HPCON = null,
-    process_info: ?win.PROCESS.INFORMATION = null,
-    reader_thread: ?std.Thread = null,
-    status: Status = .{},
-    scroll_offset: usize = 0,
-    wheel_remainder: i32 = 0,
-    startup_error: [96]u8 = undefined,
-    startup_error_len: usize = 0,
     focused: bool = false,
     overlay: Overlay = .none,
     palette_query: [128]u8 = undefined,
@@ -427,15 +496,25 @@ const App = struct {
     quick_items: [32]QuickItem = undefined,
     quick_item_count: usize = 0,
     quick_selected: usize = 0,
-    running: std.atomic.Value(bool) = std.atomic.Value(bool).init(true),
+    agent_child: ?std.process.Child = null,
+    agent_reader_thread: ?std.Thread = null,
+    agent_running: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    agent_transcript: [AGENT_TRANSCRIPT_BYTES]u8 = undefined,
+    agent_transcript_len: usize = 0,
+    agent_next_id: u32 = 1,
+    agent_pending_write: [AGENT_PENDING_WRITE_BYTES]u8 = undefined,
+    agent_pending_write_len: usize = 0,
 
     fn init(allocator: Allocator, io: std.Io, env: *std.process.Environ.Map) !App {
-        return .{
+        var app = App{
             .allocator = allocator,
             .io = io,
             .env = env,
-            .grid = try terminal.Grid.init(allocator, 100, 32),
         };
+        errdefer app.deinit();
+        app.panes[0] = try app.createPane(100, 32);
+        app.active_pane = 0;
+        return app;
     }
 
     fn loadDesktopConfig(self: *App) void {
@@ -483,7 +562,7 @@ const App = struct {
         self.config = parsed;
         self.selected_theme = parsed.selected_theme;
         self.status_height = if (parsed.options.show_status_bar) 28 else 0;
-        self.grid.setMaxScrollback(parsed.options.scrollback_lines);
+        self.applyScrollbackLimit();
     }
 
     fn desktopConfigPathAlloc(self: *App) ![]u8 {
@@ -495,12 +574,72 @@ const App = struct {
 
     fn deinit(self: *App) void {
         self.shutdownPty();
+        self.shutdownAgentD();
         if (self.font) |font| _ = DeleteObject(@ptrCast(font));
         if (self.bg_brush) |brush| _ = DeleteObject(@ptrCast(brush));
         if (self.panel_brush) |brush| _ = DeleteObject(@ptrCast(brush));
         if (self.cursor_brush) |brush| _ = DeleteObject(@ptrCast(brush));
         if (self.config_buffer) |buffer| self.allocator.free(buffer);
-        self.grid.deinit();
+        for (&self.panes) |*slot| {
+            if (slot.*) |pane| {
+                pane.deinit();
+                self.allocator.destroy(pane);
+                slot.* = null;
+            }
+        }
+    }
+
+    fn createPane(self: *App, width: usize, height: usize) !*Pane {
+        const pane = try self.allocator.create(Pane);
+        errdefer self.allocator.destroy(pane);
+        pane.* = try Pane.init(self.allocator, width, height);
+        pane.grid.setMaxScrollback(self.config.options.scrollback_lines);
+        return pane;
+    }
+
+    fn paneCount(self: *const App) usize {
+        var count: usize = 0;
+        for (self.panes) |pane| {
+            if (pane != null) count += 1;
+        }
+        return count;
+    }
+
+    fn firstEmptyPaneSlot(self: *const App) ?usize {
+        for (self.panes, 0..) |pane, index| {
+            if (pane == null) return index;
+        }
+        return null;
+    }
+
+    fn activePane(self: *App) *Pane {
+        if (self.active_pane >= self.panes.len or self.panes[self.active_pane] == null) {
+            self.active_pane = self.firstLivePaneSlot() orelse 0;
+        }
+        return self.panes[self.active_pane].?;
+    }
+
+    fn firstLivePaneSlot(self: *const App) ?usize {
+        for (self.panes, 0..) |pane, index| {
+            if (pane != null) return index;
+        }
+        return null;
+    }
+
+    fn applyScrollbackLimit(self: *App) void {
+        for (self.panes) |pane_or_null| {
+            if (pane_or_null) |pane| pane.grid.setMaxScrollback(self.config.options.scrollback_lines);
+        }
+    }
+
+    fn applyConfiguredSessionLayout(self: *App) void {
+        self.split_orientation = if (std.ascii.eqlIgnoreCase(self.config.session.orientation, "horizontal")) .horizontal else .vertical;
+        const target = @min(self.config.session.panes, self.panes.len);
+        while (self.paneCount() < target) {
+            const slot = self.firstEmptyPaneSlot() orelse break;
+            const active = self.activePane();
+            self.panes[slot] = self.createPane(active.grid.width, active.grid.height) catch break;
+        }
     }
 
     fn setConfigPath(self: *App, path: []const u8) void {
@@ -557,6 +696,10 @@ const App = struct {
     }
 
     fn startPty(self: *App) !void {
+        try self.startPtyForPane(self.activePane());
+    }
+
+    fn startPtyForPane(self: *App, pane: *Pane) !void {
         const shell_path = try self.resolveShellPath();
         defer self.allocator.free(shell_path);
 
@@ -573,12 +716,12 @@ const App = struct {
         errdefer _ = CloseHandle(pty_output_write);
 
         var hpc: HPCON = undefined;
-        const size = COORD{ .X = @intCast(@min(self.grid.width, 300)), .Y = @intCast(@min(self.grid.height, 120)) };
+        const size = COORD{ .X = @intCast(@min(pane.grid.width, 300)), .Y = @intCast(@min(pane.grid.height, 120)) };
         if (failed(CreatePseudoConsole(size, pty_input_read, pty_output_write, 0, &hpc))) return error.CreatePseudoConsoleFailed;
-        self.pseudoconsole = hpc;
+        pane.pseudoconsole = hpc;
         errdefer {
             ClosePseudoConsole(hpc);
-            self.pseudoconsole = null;
+            pane.pseudoconsole = null;
         }
 
         const command_line = try std.unicode.utf8ToUtf16LeAllocZ(self.allocator, shell_path);
@@ -635,18 +778,18 @@ const App = struct {
             _ = CloseHandle(process_info.hProcess);
         }
 
-        self.running.store(true, .release);
-        const thread = std.Thread.spawn(.{}, readLoop, .{ self, app_output_read }) catch |err| {
-            self.running.store(false, .release);
+        pane.running.store(true, .release);
+        const thread = std.Thread.spawn(.{}, readLoop, .{ self, pane, app_output_read }) catch |err| {
+            pane.running.store(false, .release);
             return err;
         };
 
         _ = CloseHandle(pty_input_read);
         _ = CloseHandle(pty_output_write);
-        self.input_write = app_input_write;
-        self.output_read = app_output_read;
-        self.process_info = process_info;
-        self.reader_thread = thread;
+        pane.input_write = app_input_write;
+        pane.output_read = app_output_read;
+        pane.process_info = process_info;
+        pane.reader_thread = thread;
     }
 
     fn resolveShellPath(self: *App) ![]u8 {
@@ -671,6 +814,27 @@ const App = struct {
         return error.ShellBinaryNotFound;
     }
 
+    fn resolveAgentPath(self: *App) ![]u8 {
+        if (self.env.get("ZIGGYZAG_AGENTD_PATH")) |path| return try self.allocator.dupe(u8, path);
+
+        const exe_dir = std.process.executableDirPathAlloc(self.io, self.allocator) catch null;
+        if (exe_dir) |dir| {
+            defer self.allocator.free(dir);
+            if (try self.existingJoined(&.{ dir, "bin", "ziggyzag-agentd.exe" })) |path| return path;
+            if (try self.existingJoined(&.{ dir, "ziggyzag-agentd.exe" })) |path| return path;
+        }
+
+        const candidates = [_][]const u8{
+            "zig-out/bin/ziggyzag-agentd.exe",
+            "ziggyzag-agentd.exe",
+        };
+        for (candidates) |candidate| {
+            std.Io.Dir.cwd().access(self.io, candidate, .{}) catch continue;
+            return try self.allocator.dupe(u8, candidate);
+        }
+        return error.AgentBinaryNotFound;
+    }
+
     fn existingJoined(self: *App, parts: []const []const u8) !?[]u8 {
         const candidate = try std.fs.path.join(self.allocator, parts);
         errdefer self.allocator.free(candidate);
@@ -689,51 +853,205 @@ const App = struct {
     }
 
     fn shutdownPty(self: *App) void {
-        self.running.store(false, .release);
-        if (self.input_write) |handle| {
+        for (self.panes) |pane_or_null| {
+            if (pane_or_null) |pane| self.shutdownPane(pane);
+        }
+    }
+
+    fn shutdownPane(self: *App, pane: *Pane) void {
+        _ = self;
+        pane.running.store(false, .release);
+        if (pane.input_write) |handle| {
             _ = CloseHandle(handle);
-            self.input_write = null;
+            pane.input_write = null;
         }
-        if (self.pseudoconsole) |hpc| {
+        if (pane.pseudoconsole) |hpc| {
             ClosePseudoConsole(hpc);
-            self.pseudoconsole = null;
+            pane.pseudoconsole = null;
         }
-        if (self.process_info) |info| {
+        if (pane.process_info) |info| {
             if (WaitForSingleObject(info.hProcess, CHILD_SHUTDOWN_GRACE_MS) == WAIT_TIMEOUT) {
                 _ = TerminateProcess(info.hProcess, 0);
                 _ = WaitForSingleObject(info.hProcess, CHILD_SHUTDOWN_KILL_GRACE_MS);
             }
             _ = CloseHandle(info.hThread);
             _ = CloseHandle(info.hProcess);
-            self.process_info = null;
+            pane.process_info = null;
         }
-        if (self.reader_thread) |thread| {
+        if (pane.reader_thread) |thread| {
             thread.join();
-            self.reader_thread = null;
+            pane.reader_thread = null;
         }
-        if (self.output_read) |handle| {
+        if (pane.output_read) |handle| {
             _ = CloseHandle(handle);
-            self.output_read = null;
+            pane.output_read = null;
+        }
+    }
+
+    fn startAgentD(self: *App) !void {
+        if (self.agent_child != null) return;
+        const agent_path = try self.resolveAgentPath();
+        defer self.allocator.free(agent_path);
+        const argv = [_][]const u8{ agent_path, "--stdio" };
+        var child = try std.process.spawn(self.io, .{
+            .argv = &argv,
+            .environ_map = self.env,
+            .stdin = .pipe,
+            .stdout = .pipe,
+            .stderr = .ignore,
+        });
+        errdefer child.kill(self.io);
+
+        var stdout_file = child.stdout.?;
+        child.stdout = null;
+        self.agent_running.store(true, .release);
+        const thread = std.Thread.spawn(.{}, agentReadLoop, .{ self, stdout_file }) catch |err| {
+            self.agent_running.store(false, .release);
+            stdout_file.close(self.io);
+            return err;
+        };
+        self.agent_child = child;
+        self.agent_reader_thread = thread;
+        self.appendAgentTranscript("agentd started\n");
+    }
+
+    fn shutdownAgentD(self: *App) void {
+        self.agent_running.store(false, .release);
+        if (self.agent_child) |*child| {
+            if (child.stdin) |stdin_file| {
+                var file = stdin_file;
+                file.close(self.io);
+                child.stdin = null;
+            }
+            child.kill(self.io);
+            self.agent_child = null;
+        }
+        if (self.agent_reader_thread) |thread| {
+            thread.join();
+            self.agent_reader_thread = null;
         }
     }
 
     fn writeInput(self: *App, bytes: []const u8) void {
-        const handle = self.input_write orelse return;
+        const handle = self.activePane().input_write orelse return;
         var written: DWORD = 0;
         _ = WriteFile(handle, bytes.ptr, @intCast(bytes.len), &written, null);
     }
 
+    fn writeAgentLine(self: *App, line: []const u8) void {
+        self.startAgentD() catch |err| {
+            var text: [128]u8 = undefined;
+            const message = std.fmt.bufPrint(&text, "agentd start failed: {s}\n", .{@errorName(err)}) catch "agentd start failed\n";
+            self.appendAgentTranscript(message);
+            return;
+        };
+        if (self.agent_child) |*child| {
+            const stdin_file = child.stdin orelse return;
+            var file = stdin_file;
+            file.writeStreamingAll(self.io, line) catch {
+                self.appendAgentTranscript("agentd write failed\n");
+                return;
+            };
+        }
+    }
+
+    fn appendAgentTranscript(self: *App, text: []const u8) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        self.appendAgentTranscriptLocked(text);
+    }
+
+    fn appendAgentTranscriptLocked(self: *App, text: []const u8) void {
+        var incoming = text;
+        if (incoming.len >= self.agent_transcript.len) {
+            incoming = incoming[incoming.len - self.agent_transcript.len ..];
+            @memcpy(self.agent_transcript[0..incoming.len], incoming);
+            self.agent_transcript_len = incoming.len;
+            return;
+        }
+
+        if (self.agent_transcript_len + incoming.len > self.agent_transcript.len) {
+            const remove = self.agent_transcript_len + incoming.len - self.agent_transcript.len;
+            const remaining = self.agent_transcript_len - remove;
+            std.mem.copyForwards(u8, self.agent_transcript[0..remaining], self.agent_transcript[remove..self.agent_transcript_len]);
+            self.agent_transcript_len = remaining;
+        }
+        @memcpy(self.agent_transcript[self.agent_transcript_len .. self.agent_transcript_len + incoming.len], incoming);
+        self.agent_transcript_len += incoming.len;
+    }
+
+    fn nextAgentId(self: *App) u32 {
+        const id = self.agent_next_id;
+        self.agent_next_id +%= 1;
+        if (self.agent_next_id == 0) self.agent_next_id = 1;
+        return id;
+    }
+
+    fn openAgentPanel(self: *App) void {
+        self.overlay = .agent;
+        self.startAgentD() catch |err| {
+            var text: [128]u8 = undefined;
+            const message = std.fmt.bufPrint(&text, "agentd start failed: {s}\n", .{@errorName(err)}) catch "agentd start failed\n";
+            self.appendAgentTranscript(message);
+            return;
+        };
+    }
+
+    fn requestAgentHealth(self: *App) void {
+        self.openAgentPanel();
+        const id = self.nextAgentId();
+        var line: [96]u8 = undefined;
+        const request = std.fmt.bufPrint(&line, "{{\"id\":{d},\"method\":\"agent/health\"}}\n", .{id}) catch return;
+        self.appendAgentTranscript("> agent/health\n");
+        self.writeAgentLine(request);
+    }
+
+    fn requestAgentTools(self: *App) void {
+        self.openAgentPanel();
+        const id = self.nextAgentId();
+        var line: [96]u8 = undefined;
+        const request = std.fmt.bufPrint(&line, "{{\"id\":{d},\"method\":\"tools/list\"}}\n", .{id}) catch return;
+        self.appendAgentTranscript("> tools/list\n");
+        self.writeAgentLine(request);
+    }
+
+    fn requestAgentWritePreview(self: *App) void {
+        self.openAgentPanel();
+        const text = "echo hello-from-agentd\n";
+        const len = @min(text.len, self.agent_pending_write.len);
+        @memcpy(self.agent_pending_write[0..len], text[0..len]);
+        self.agent_pending_write_len = len;
+
+        const id = self.nextAgentId();
+        var line: [256]u8 = undefined;
+        const request = std.fmt.bufPrint(
+            &line,
+            "{{\"id\":{d},\"method\":\"tools/call\",\"tool\":\"terminal.write\",\"text\":\"echo hello-from-agentd\\n\"}}\n",
+            .{id},
+        ) catch return;
+        self.appendAgentTranscript("> terminal.write preview requested\n");
+        self.writeAgentLine(request);
+    }
+
+    fn approveAgentWrite(self: *App) void {
+        if (self.agent_pending_write_len == 0) return;
+        self.writeInput(self.agent_pending_write[0..self.agent_pending_write_len]);
+        self.agent_pending_write_len = 0;
+        self.appendAgentTranscript("> approved pending terminal.write\n");
+    }
+
     fn visibleTextAlloc(self: *App) ![]u8 {
-        if (self.scroll_offset > 0) {
+        const pane = self.activePane();
+        if (pane.scroll_offset > 0) {
             var lines: std.ArrayList([]u8) = .empty;
             defer lines.deinit(self.allocator);
 
-            const history_len = self.grid.historyLen();
-            const height = self.grid.height;
-            const history_start = if (history_len > height + self.scroll_offset) history_len - height - self.scroll_offset else 0;
+            const history_len = pane.grid.historyLen();
+            const height = pane.grid.height;
+            const history_start = if (history_len > height + pane.scroll_offset) history_len - height - pane.scroll_offset else 0;
             var row: usize = 0;
             while (row < height and history_start + row < history_len) : (row += 1) {
-                const line = try self.grid.historyLineTextAlloc(self.allocator, history_start + row);
+                const line = try pane.grid.historyLineTextAlloc(self.allocator, history_start + row);
                 lines.append(self.allocator, line) catch |err| {
                     self.allocator.free(line);
                     return err;
@@ -767,7 +1085,7 @@ const App = struct {
             return text;
         }
 
-        return self.grid.visibleTextAlloc(self.allocator);
+        return pane.grid.visibleTextAlloc(self.allocator);
     }
 
     fn copyVisibleText(self: *App, hwnd: HWND) void {
@@ -800,8 +1118,9 @@ const App = struct {
         }
         if (normalized.items.len == 0) return;
         self.mutex.lock();
-        const bracketed_paste = self.grid.isBracketedPasteEnabled();
-        self.resetScroll();
+        const pane = self.activePane();
+        const bracketed_paste = pane.grid.isBracketedPasteEnabled();
+        self.resetPaneScroll(pane);
         self.mutex.unlock();
         if (bracketed_paste) {
             self.writeInput("\x1b[200~");
@@ -892,6 +1211,7 @@ const App = struct {
                 }
                 self.overlay = .none;
             },
+            .agent => self.approveAgentWrite(),
             else => {},
         }
     }
@@ -902,17 +1222,30 @@ const App = struct {
             .paste_clipboard => self.pasteClipboardText(hwnd),
             .search_scrollback => self.openSearch(),
             .quick_select => self.openQuickSelect(),
+            .split_vertical => self.splitPane(hwnd, .vertical),
+            .split_horizontal => self.splitPane(hwnd, .horizontal),
+            .focus_next_pane => self.focusNextPane(hwnd),
+            .close_pane => self.closeActivePane(hwnd),
+            .open_agent_panel => self.openAgentPanel(),
+            .agent_health => self.requestAgentHealth(),
+            .agent_tools => self.requestAgentTools(),
+            .agent_preview_write => self.requestAgentWritePreview(),
+            .agent_approve_write => self.approveAgentWrite(),
             .toggle_settings => self.overlay = if (self.overlay == .settings) .none else .settings,
             .next_theme => self.cycleTheme(),
             .reload_config => self.reloadDesktopConfig(hwnd),
             .restart_shell => self.restartShell(hwnd),
             .clear_scrollback => {
                 self.mutex.lock();
-                self.grid.feed("\x1b[3J");
-                self.scroll_offset = 0;
+                const pane = self.activePane();
+                pane.grid.feed("\x1b[3J");
+                self.resetPaneScroll(pane);
                 self.mutex.unlock();
             },
-            .copy_cwd => if (self.status.cwd_len > 0) setClipboardText(hwnd, self.allocator, self.status.cwdSlice()) catch {},
+            .copy_cwd => {
+                const pane = self.activePane();
+                if (pane.status.cwd_len > 0) setClipboardText(hwnd, self.allocator, pane.status.cwdSlice()) catch {};
+            },
             .copy_config_path => if (self.config_path_len > 0) setClipboardText(hwnd, self.allocator, self.configPathSlice()) catch {},
             .insert_agent_health => self.writeInput("zig build run-agentd -- --stdio\n"),
         }
@@ -927,26 +1260,106 @@ const App = struct {
 
     fn reloadDesktopConfig(self: *App, hwnd: HWND) void {
         self.loadDesktopConfig();
+        self.applyConfiguredSessionLayout();
         self.rebuildThemeBrushes();
-        if (self.pseudoconsole) |hpc| {
-            _ = ResizePseudoConsole(hpc, .{ .X = @intCast(@min(self.grid.width, 300)), .Y = @intCast(@min(self.grid.height, 120)) });
-        }
+        var rect: RECT = undefined;
+        if (GetClientRect(hwnd, &rect) != 0) self.resizeForClient(rect);
+        self.startConfiguredPanes(hwnd);
         _ = InvalidateRect(hwnd, null, 0);
     }
 
     fn restartShell(self: *App, hwnd: HWND) void {
-        self.shutdownPty();
+        const pane = self.activePane();
+        self.shutdownPane(pane);
         self.mutex.lock();
-        self.grid.feed("\x1b[2J\x1b[HRestarting ZiggyZag shell...\n");
-        self.startup_error_len = 0;
-        self.status = .{};
+        pane.grid.feed("\x1b[2J\x1b[HRestarting ZiggyZag shell...\n");
+        pane.clearRuntimeState();
         self.mutex.unlock();
-        self.startPty() catch |err| {
+        self.startPtyForPane(pane) catch |err| {
             self.mutex.lock();
             defer self.mutex.unlock();
-            self.setStartupError(err);
+            pane.setStartupError(err);
         };
         _ = InvalidateRect(hwnd, null, 0);
+    }
+
+    fn startConfiguredPanes(self: *App, hwnd: HWND) void {
+        for (self.panes) |pane_or_null| {
+            const pane = pane_or_null orelse continue;
+            if (pane.process_info != null) continue;
+            self.startPtyForPane(pane) catch |err| {
+                self.mutex.lock();
+                pane.setStartupError(err);
+                pane.grid.feed("\x1b[2J");
+                pane.grid.feed("ZiggyZag shell could not start.\n");
+                pane.grid.feed("Run `zig build`, or set ZIGGYZAG_SHELL_PATH to a shell executable.\n");
+                pane.grid.feed("Error: ");
+                pane.grid.feed(@errorName(err));
+                pane.grid.feed("\n");
+                self.mutex.unlock();
+            };
+        }
+        self.active_pane = self.firstLivePaneSlot() orelse 0;
+        self.updateTitle();
+        _ = InvalidateRect(hwnd, null, 0);
+    }
+
+    fn splitPane(self: *App, hwnd: HWND, orientation: SplitOrientation) void {
+        const slot = self.firstEmptyPaneSlot() orelse return;
+        const active = self.activePane();
+        const pane = self.createPane(active.grid.width, active.grid.height) catch return;
+        self.panes[slot] = pane;
+        self.active_pane = slot;
+        self.split_orientation = orientation;
+
+        var rect: RECT = undefined;
+        if (GetClientRect(hwnd, &rect) != 0) self.resizeForClient(rect);
+        self.startPtyForPane(pane) catch |err| {
+            self.mutex.lock();
+            pane.setStartupError(err);
+            pane.grid.feed("\x1b[2J\x1b[HNew pane shell could not start.\nError: ");
+            pane.grid.feed(@errorName(err));
+            pane.grid.feed("\n");
+            self.mutex.unlock();
+        };
+        _ = InvalidateRect(hwnd, null, 0);
+    }
+
+    fn focusNextPane(self: *App, hwnd: HWND) void {
+        var offset: usize = 1;
+        while (offset <= self.panes.len) : (offset += 1) {
+            const index = (self.active_pane + offset) % self.panes.len;
+            if (self.panes[index] != null) {
+                self.active_pane = index;
+                self.updateCaret(hwnd);
+                _ = InvalidateRect(hwnd, null, 0);
+                return;
+            }
+        }
+    }
+
+    fn closeActivePane(self: *App, hwnd: HWND) void {
+        if (self.paneCount() <= 1) return;
+        const slot = self.active_pane;
+        const pane = self.panes[slot] orelse return;
+        self.shutdownPane(pane);
+        pane.deinit();
+        self.allocator.destroy(pane);
+        self.panes[slot] = null;
+        self.active_pane = self.nextPaneSlotAfter(slot) orelse 0;
+        var rect: RECT = undefined;
+        if (GetClientRect(hwnd, &rect) != 0) self.resizeForClient(rect);
+        self.updateCaret(hwnd);
+        _ = InvalidateRect(hwnd, null, 0);
+    }
+
+    fn nextPaneSlotAfter(self: *const App, slot: usize) ?usize {
+        var offset: usize = 1;
+        while (offset <= self.panes.len) : (offset += 1) {
+            const index = (slot + self.panes.len - offset) % self.panes.len;
+            if (self.panes[index] != null) return index;
+        }
+        return null;
     }
 
     fn paletteMatchCount(self: *const App) usize {
@@ -977,16 +1390,17 @@ const App = struct {
         errdefer text.deinit(self.allocator);
         self.mutex.lock();
         defer self.mutex.unlock();
+        const pane = self.activePane();
 
-        for (self.grid.history.items) |line| {
+        for (pane.grid.history.items) |line| {
             try appendCellsText(self.allocator, &text, line.cells);
             try text.append(self.allocator, '\n');
         }
         var row: usize = 0;
-        while (row < self.grid.height) : (row += 1) {
-            const line = self.grid.cells[row * self.grid.width .. (row + 1) * self.grid.width];
+        while (row < pane.grid.height) : (row += 1) {
+            const line = pane.grid.cells[row * pane.grid.width .. (row + 1) * pane.grid.width];
             try appendCellsText(self.allocator, &text, line);
-            if (row + 1 < self.grid.height) try text.append(self.allocator, '\n');
+            if (row + 1 < pane.grid.height) try text.append(self.allocator, '\n');
         }
         return text.toOwnedSlice(self.allocator);
     }
@@ -1041,26 +1455,36 @@ const App = struct {
         return false;
     }
 
-    fn resetScroll(self: *App) void {
-        self.scroll_offset = 0;
-        self.wheel_remainder = 0;
+    fn resetPaneScroll(self: *App, pane: *Pane) void {
+        _ = self;
+        pane.scroll_offset = 0;
+        pane.wheel_remainder = 0;
     }
 
-    fn clampScroll(self: *App) void {
-        const history_len = self.grid.historyLen();
-        if (self.scroll_offset > history_len) self.scroll_offset = history_len;
-        if (self.scroll_offset == 0) self.wheel_remainder = 0;
+    fn resetScroll(self: *App) void {
+        self.resetPaneScroll(self.activePane());
+    }
+
+    fn clampPaneScroll(self: *App, pane: *Pane) void {
+        _ = self;
+        const history_len = pane.grid.historyLen();
+        if (pane.scroll_offset > history_len) pane.scroll_offset = history_len;
+        if (pane.scroll_offset == 0) pane.wheel_remainder = 0;
+    }
+
+    fn scrollPaneBy(self: *App, pane: *Pane, lines: i32) void {
+        if (lines > 0) {
+            const amount: usize = @intCast(lines);
+            pane.scroll_offset = @min(pane.scroll_offset + amount, pane.grid.historyLen());
+        } else if (lines < 0) {
+            const amount: usize = @intCast(-lines);
+            pane.scroll_offset = if (amount >= pane.scroll_offset) 0 else pane.scroll_offset - amount;
+        }
+        self.clampPaneScroll(pane);
     }
 
     fn scrollBy(self: *App, lines: i32) void {
-        if (lines > 0) {
-            const amount: usize = @intCast(lines);
-            self.scroll_offset = @min(self.scroll_offset + amount, self.grid.historyLen());
-        } else if (lines < 0) {
-            const amount: usize = @intCast(-lines);
-            self.scroll_offset = if (amount >= self.scroll_offset) 0 else self.scroll_offset - amount;
-        }
-        self.clampScroll();
+        self.scrollPaneBy(self.activePane(), lines);
     }
 
     fn handleMouseWheel(self: *App, hwnd: HWND, wparam: WPARAM) void {
@@ -1070,12 +1494,13 @@ const App = struct {
             self.writeMouseWheel(delta, mouse_mode.encoding);
             return;
         }
-        self.wheel_remainder += delta;
-        const lines = @divTrunc(self.wheel_remainder, WHEEL_DELTA) * 3;
-        self.wheel_remainder = @rem(self.wheel_remainder, WHEEL_DELTA);
+        const pane = self.activePane();
+        pane.wheel_remainder += delta;
+        const lines = @divTrunc(pane.wheel_remainder, WHEEL_DELTA) * 3;
+        pane.wheel_remainder = @rem(pane.wheel_remainder, WHEEL_DELTA);
         if (lines != 0) {
             self.mutex.lock();
-            self.scrollBy(lines);
+            self.scrollPaneBy(pane, lines);
             self.mutex.unlock();
             self.updateCaret(hwnd);
             _ = InvalidateRect(hwnd, null, 0);
@@ -1097,39 +1522,78 @@ const App = struct {
     fn mouseModeSnapshot(self: *App) MouseModeSnapshot {
         self.mutex.lock();
         defer self.mutex.unlock();
+        const pane = self.activePane();
         return .{
-            .alternate_screen = self.grid.isAlternateScreen(),
-            .tracking = self.grid.mouseTrackingMode(),
-            .encoding = self.grid.mouseEncodingMode(),
+            .alternate_screen = pane.grid.isAlternateScreen(),
+            .tracking = pane.grid.mouseTrackingMode(),
+            .encoding = pane.grid.mouseEncodingMode(),
         };
     }
 
     fn applicationCursorEnabled(self: *App) bool {
         self.mutex.lock();
         defer self.mutex.unlock();
-        return self.grid.isApplicationCursorEnabled();
+        return self.activePane().grid.isApplicationCursorEnabled();
     }
 
     fn resizeForClient(self: *App, rect: RECT) void {
-        const width_px = @max(rect.right - rect.left, 1);
-        const height_px = @max(rect.bottom - rect.top - self.status_height, self.char_height);
-        const cols: usize = @intCast(@max(@divTrunc(width_px, @max(self.char_width, 1)), 20));
-        const rows: usize = @intCast(@max(@divTrunc(height_px, @max(self.char_height, 1)), 5));
-
         self.mutex.lock();
         defer self.mutex.unlock();
-        self.grid.resize(cols, rows) catch return;
-        self.resetScroll();
-        if (self.pseudoconsole) |hpc| {
-            _ = ResizePseudoConsole(hpc, .{ .X = @intCast(@min(cols, 300)), .Y = @intCast(@min(rows, 120)) });
+        for (self.panes, 0..) |pane_or_null, index| {
+            const pane = pane_or_null orelse continue;
+            const pane_rect = self.paneRectForSlot(rect, index);
+            const width_px = @max(pane_rect.right - pane_rect.left - PANE_PAD_X * 2, self.char_width);
+            const height_px = @max(pane_rect.bottom - pane_rect.top - PANE_PAD_Y, self.char_height);
+            const cols: usize = @intCast(@max(@divTrunc(width_px, @max(self.char_width, 1)), MIN_PANE_COLS));
+            const rows: usize = @intCast(@max(@divTrunc(height_px, @max(self.char_height, 1)), MIN_PANE_ROWS));
+            pane.grid.resize(cols, rows) catch continue;
+            self.resetPaneScroll(pane);
+            if (pane.pseudoconsole) |hpc| {
+                _ = ResizePseudoConsole(hpc, .{ .X = @intCast(@min(cols, 300)), .Y = @intCast(@min(rows, 120)) });
+            }
         }
     }
 
-    fn setStartupError(self: *App, err: anyerror) void {
-        const name = @errorName(err);
-        const len = @min(name.len, self.startup_error.len);
-        @memcpy(self.startup_error[0..len], name[0..len]);
-        self.startup_error_len = len;
+    fn paneRectForSlot(self: *const App, rect: RECT, slot: usize) PaneRect {
+        const count = @max(self.paneCount(), 1);
+        const ordinal = self.paneOrdinal(slot) orelse 0;
+        var area = RECT{
+            .left = rect.left,
+            .top = rect.top,
+            .right = rect.right,
+            .bottom = @max(rect.top + self.char_height, rect.bottom - self.status_height),
+        };
+        if (count <= 1) return area;
+        if (self.split_orientation == .vertical) {
+            const width = @max(area.right - area.left, 1);
+            const left = area.left + @divTrunc(width * @as(i32, @intCast(ordinal)), @as(i32, @intCast(count)));
+            const right = area.left + @divTrunc(width * @as(i32, @intCast(ordinal + 1)), @as(i32, @intCast(count)));
+            area.left = left;
+            area.right = @max(left + self.char_width * MIN_PANE_COLS, right);
+            area.right = @min(area.right, rect.right);
+        } else {
+            const height = @max(area.bottom - area.top, 1);
+            const top = area.top + @divTrunc(height * @as(i32, @intCast(ordinal)), @as(i32, @intCast(count)));
+            const bottom = area.top + @divTrunc(height * @as(i32, @intCast(ordinal + 1)), @as(i32, @intCast(count)));
+            area.top = top;
+            area.bottom = @max(top + self.char_height * MIN_PANE_ROWS, bottom);
+            area.bottom = @min(area.bottom, rect.bottom - self.status_height);
+        }
+        return area;
+    }
+
+    fn activePaneRect(self: *const App, rect: RECT) PaneRect {
+        return self.paneRectForSlot(rect, self.active_pane);
+    }
+
+    fn paneOrdinal(self: *const App, slot: usize) ?usize {
+        var ordinal: usize = 0;
+        for (self.panes, 0..) |pane, index| {
+            if (pane == null) continue;
+            if (index == slot) return ordinal;
+            ordinal += 1;
+        }
+        return null;
     }
 
     fn paint(self: *App, hdc: HDC, rect: RECT) void {
@@ -1145,65 +1609,91 @@ const App = struct {
         }
 
         self.mutex.lock();
-        const width = self.grid.width;
-        const height = self.grid.height;
-        const cursor_x = self.grid.cursor_x;
-        const cursor_y = self.grid.cursor_y;
-        self.clampScroll();
-        const scroll_offset = self.scroll_offset;
-        const history_len = self.grid.historyLen();
-        const history_start = if (history_len > height + scroll_offset) history_len - height - scroll_offset else 0;
-        var row: usize = 0;
-        while (row < height) : (row += 1) {
-            const y = 8 + @as(i32, @intCast(row)) * self.char_height;
-            if (y >= rect.bottom - self.status_height) break;
-            if (scroll_offset > 0) {
-                const history_index = history_start + row;
-                if (history_index < history_len) {
-                    const line = self.grid.history.items[history_index];
-                    self.paintCellRun(hdc, line.cells[0..@min(line.width, width)], y);
-                }
-            } else {
-                const line = self.grid.cells[row * width .. (row + 1) * width];
-                self.paintCellRun(hdc, line, y);
-            }
+        for (self.panes, 0..) |pane_or_null, index| {
+            const pane = pane_or_null orelse continue;
+            self.paintPane(hdc, rect, pane, index);
         }
-        const status = self.status;
-        const focused = self.focused;
-        const startup_error_len = self.startup_error_len;
-        var startup_error: [96]u8 = undefined;
-        if (startup_error_len > 0) @memcpy(startup_error[0..startup_error_len], self.startup_error[0..startup_error_len]);
+        const active = self.activePane();
+        const status = active.status;
+        const scroll_offset = active.scroll_offset;
+        const history_len = active.grid.historyLen();
         self.mutex.unlock();
 
-        const terminal_bottom = rect.bottom - self.status_height;
-        if (scroll_offset == 0 and focused) {
-            var caret_rect = RECT{
-                .left = 10 + @as(i32, @intCast(cursor_x)) * self.char_width,
-                .top = 8 + @as(i32, @intCast(cursor_y)) * self.char_height,
-                .right = 10 + @as(i32, @intCast(cursor_x + 1)) * self.char_width,
-                .bottom = 8 + @as(i32, @intCast(cursor_y + 1)) * self.char_height,
-            };
-            if (caret_rect.top < terminal_bottom) {
-                caret_rect.bottom = @min(caret_rect.bottom, terminal_bottom);
-                _ = FillRect(hdc, &caret_rect, self.cursor_brush);
-            }
-        }
-
-        if (startup_error_len > 0) {
-            self.paintStartupMessage(hdc, rect, startup_error[0..startup_error_len]);
-        }
-        self.paintScrollIndicator(hdc, rect, scroll_offset, history_len);
         if (self.status_height > 0) self.paintStatus(hdc, rect, status, scroll_offset, history_len);
         switch (self.overlay) {
             .settings => self.paintSettingsOverlay(hdc, rect),
             .command_palette => self.paintCommandPaletteOverlay(hdc, rect),
             .search => self.paintSearchOverlay(hdc, rect),
             .quick_select => self.paintQuickSelectOverlay(hdc, rect),
+            .agent => self.paintAgentOverlay(hdc, rect),
             .none => {},
         }
     }
 
-    fn paintCellRun(self: *App, hdc: HDC, cells: []const terminal.Cell, y: i32) void {
+    fn paintPane(self: *App, hdc: HDC, client_rect: RECT, pane: *Pane, slot: usize) void {
+        const pane_rect = self.paneRectForSlot(client_rect, slot);
+        if (self.paneCount() > 1) {
+            const is_active = slot == self.active_pane;
+            const color = if (is_active) self.selected_theme.accent else scaleColor(self.selected_theme.muted, 65);
+            const brush = CreateSolidBrush(toColorRef(color));
+            if (brush) |b| {
+                var top = RECT{ .left = pane_rect.left, .top = pane_rect.top, .right = pane_rect.right, .bottom = pane_rect.top + 2 };
+                _ = FillRect(hdc, &top, b);
+                if (pane_rect.left > client_rect.left) {
+                    var left = RECT{ .left = pane_rect.left, .top = pane_rect.top, .right = pane_rect.left + 1, .bottom = pane_rect.bottom };
+                    _ = FillRect(hdc, &left, b);
+                }
+                _ = DeleteObject(@ptrCast(b));
+            }
+        }
+
+        const width = pane.grid.width;
+        const height = pane.grid.height;
+        self.clampPaneScroll(pane);
+        const scroll_offset = pane.scroll_offset;
+        const history_len = pane.grid.historyLen();
+        const history_start = if (history_len > height + scroll_offset) history_len - height - scroll_offset else 0;
+        const origin_x = pane_rect.left + PANE_PAD_X;
+        var row: usize = 0;
+        while (row < height) : (row += 1) {
+            const y = pane_rect.top + PANE_PAD_Y + @as(i32, @intCast(row)) * self.char_height;
+            if (y >= pane_rect.bottom) break;
+            if (scroll_offset > 0) {
+                const history_index = history_start + row;
+                if (history_index < history_len) {
+                    const line = pane.grid.history.items[history_index];
+                    self.paintCellRun(hdc, origin_x, line.cells[0..@min(line.width, width)], y);
+                }
+            } else {
+                const line = pane.grid.cells[row * width .. (row + 1) * width];
+                self.paintCellRun(hdc, origin_x, line, y);
+            }
+        }
+
+        if (scroll_offset == 0 and self.focused and slot == self.active_pane) {
+            const cursor_x = pane.grid.cursor_x;
+            const cursor_y = pane.grid.cursor_y;
+            var caret_rect = RECT{
+                .left = origin_x + @as(i32, @intCast(cursor_x)) * self.char_width,
+                .top = pane_rect.top + PANE_PAD_Y + @as(i32, @intCast(cursor_y)) * self.char_height,
+                .right = origin_x + @as(i32, @intCast(cursor_x + 1)) * self.char_width,
+                .bottom = pane_rect.top + PANE_PAD_Y + @as(i32, @intCast(cursor_y + 1)) * self.char_height,
+            };
+            if (caret_rect.top < pane_rect.bottom) {
+                caret_rect.bottom = @min(caret_rect.bottom, pane_rect.bottom);
+                _ = FillRect(hdc, &caret_rect, self.cursor_brush);
+            }
+        }
+
+        if (pane.startup_error_len > 0) {
+            var startup_error: [96]u8 = undefined;
+            @memcpy(startup_error[0..pane.startup_error_len], pane.startup_error[0..pane.startup_error_len]);
+            self.paintStartupMessage(hdc, pane_rect, startup_error[0..pane.startup_error_len]);
+        }
+        self.paintScrollIndicator(hdc, pane_rect, scroll_offset, history_len);
+    }
+
+    fn paintCellRun(self: *App, hdc: HDC, origin_x: i32, cells: []const terminal.Cell, y: i32) void {
         const end = visibleCellEnd(cells);
         var col: usize = 0;
         while (col < end) {
@@ -1213,9 +1703,9 @@ const App = struct {
 
             const background = styleBackground(self.selected_theme, style);
             var run_rect = RECT{
-                .left = 10 + @as(i32, @intCast(col)) * self.char_width,
+                .left = origin_x + @as(i32, @intCast(col)) * self.char_width,
                 .top = y,
-                .right = 10 + @as(i32, @intCast(run_end)) * self.char_width,
+                .right = origin_x + @as(i32, @intCast(run_end)) * self.char_width,
                 .bottom = y + self.char_height,
             };
             const run_brush = CreateSolidBrush(toColorRef(background));
@@ -1229,20 +1719,21 @@ const App = struct {
 
             var offset = col;
             while (offset < run_end) {
-                var wide: [512]WCHAR = undefined;
-                const chunk = @min(run_end - offset, wide.len);
-                var index: usize = 0;
-                while (index < chunk) : (index += 1) {
-                    wide[index] = cells[offset + index].ch;
+                const cell = cells[offset];
+                if (!cell.isContinuation()) {
+                    var wide: [2]WCHAR = undefined;
+                    const len = cellCodepointToWide(cell.codepoint, &wide);
+                    if (len > 0) {
+                        _ = TextOutW(
+                            hdc,
+                            origin_x + @as(i32, @intCast(offset)) * self.char_width,
+                            y,
+                            &wide,
+                            @intCast(len),
+                        );
+                    }
                 }
-                _ = TextOutW(
-                    hdc,
-                    10 + @as(i32, @intCast(offset)) * self.char_width,
-                    y,
-                    &wide,
-                    @intCast(chunk),
-                );
-                offset += chunk;
+                offset += 1;
             }
             col = run_end;
         }
@@ -1250,8 +1741,8 @@ const App = struct {
     }
 
     fn paintStartupMessage(self: *App, hdc: HDC, rect: RECT, error_name: []const u8) void {
-        const x = 20;
-        const terminal_bottom = rect.bottom - self.status_height;
+        const x = rect.left + 20;
+        const terminal_bottom = rect.bottom;
         const block_height = self.char_height * 3 + 16;
         const preferred_y = @max(@divTrunc(rect.bottom - rect.top, 3), 48);
         const max_y = @max(12, terminal_bottom - block_height - 10);
@@ -1272,7 +1763,7 @@ const App = struct {
     fn paintScrollIndicator(self: *App, hdc: HDC, rect: RECT, scroll_offset: usize, history_len: usize) void {
         if (history_len == 0) return;
         const top = rect.top + 8;
-        const bottom = rect.bottom - self.status_height - 8;
+        const bottom = rect.bottom - 8;
         const track_height = bottom - top;
         if (track_height < 32) return;
 
@@ -1312,10 +1803,14 @@ const App = struct {
         const cwd = if (status.cwd_len > 0) status.cwdSlice() else "starting shell";
         const duration = if (status.last_duration_ms) |ms| std.fmt.bufPrint(&duration_text, "{d}ms", .{ms}) catch "n/a" else "n/a";
         const wide_layout = rect.right - rect.left > 920;
-        const shortcuts = "Ctrl+C int | Ctrl+Shift+C copy | Ctrl+V paste | Ctrl+, settings | Ctrl+Shift+T theme";
+        const shortcuts = "Ctrl+Shift+D split | Ctrl+Shift+E down | Ctrl+Shift+N pane | Ctrl+Shift+W close";
         const context = statusContext(context_text[0..], status);
+        const pane_count = self.paneCount();
+        const active_display = (self.paneOrdinal(self.active_pane) orelse 0) + 1;
         const text = if (wide_layout)
-            (std.fmt.bufPrint(&status_text, "ZiggyZag  |  {s}{s}  |  commands:{d}  |  status:{s}  |  last:{s}{s}  |  {s}", .{
+            (std.fmt.bufPrint(&status_text, "ZiggyZag  |  pane:{d}/{d}  |  {s}{s}  |  commands:{d}  |  status:{s}  |  last:{s}{s}  |  {s}", .{
+                active_display,
+                pane_count,
                 cwd,
                 context,
                 status.commands,
@@ -1325,10 +1820,12 @@ const App = struct {
                 shortcuts,
             }) catch "ZiggyZag")
         else
-            (std.fmt.bufPrint(&status_text, "ZiggyZag  |  status:{s}{s}  |  {s}{s}", .{
+            (std.fmt.bufPrint(&status_text, "ZiggyZag  |  pane:{d}/{d}  |  status:{s}{s}  |  {s}{s}", .{
+                active_display,
+                pane_count,
                 if (status.last_status) |value| statusName(value) else "waiting",
                 shortGitContext(context_text[0..], status),
-                "Ctrl+Shift+C copy | Ctrl+V paste",
+                "Ctrl+Shift+D split | Ctrl+Shift+N pane",
                 if (scroll_offset > 0) "  |  scrollback" else "",
             }) catch "ZiggyZag");
         drawUtf8TextFitted(hdc, 10, rect.bottom - self.status_height + 7, text, rect.right - rect.left - 20, self.char_width);
@@ -1530,6 +2027,64 @@ const App = struct {
         drawUtf8TextFitted(hdc, x, bottom - self.char_height - 8, "Enter copies selection. Escape closes.", max_width, self.char_width);
     }
 
+    fn paintAgentOverlay(self: *App, hdc: HDC, rect: RECT) void {
+        const panel_width = @min(@max(rect.right - rect.left - 80, 420), 860);
+        const left = @divTrunc(rect.right - rect.left - panel_width, 2);
+        const top: i32 = 42;
+        const bottom = @min(rect.bottom - self.status_height - 24, top + self.char_height * 20 + 56);
+        if (bottom <= top + self.char_height * 6) return;
+        var panel = RECT{ .left = left, .top = top, .right = left + panel_width, .bottom = bottom };
+        _ = FillRect(hdc, &panel, self.panel_brush);
+
+        const x = panel.left + 14;
+        var y = panel.top + 12;
+        const max_width = panel.right - x - 14;
+        _ = SetBkMode(hdc, TRANSPARENT);
+        _ = SetTextColor(hdc, toColorRef(self.selected_theme.accent));
+        drawUtf8TextFitted(hdc, x, y, "AgentD", max_width, self.char_width);
+        y += self.char_height + 8;
+
+        var snapshot: [AGENT_TRANSCRIPT_BYTES]u8 = undefined;
+        self.mutex.lock();
+        const transcript_len = self.agent_transcript_len;
+        if (transcript_len > 0) @memcpy(snapshot[0..transcript_len], self.agent_transcript[0..transcript_len]);
+        const pending_len = self.agent_pending_write_len;
+        var pending: [AGENT_PENDING_WRITE_BYTES]u8 = undefined;
+        if (pending_len > 0) @memcpy(pending[0..pending_len], self.agent_pending_write[0..pending_len]);
+        self.mutex.unlock();
+
+        _ = SetTextColor(hdc, toColorRef(self.selected_theme.muted));
+        const status = if (self.agent_child != null) "running" else "stopped";
+        var status_line: [192]u8 = undefined;
+        const status_text = std.fmt.bufPrint(&status_line, "Sidecar: {s}  |  Palette: health, tools, preview write, approve write", .{status}) catch "Sidecar";
+        drawUtf8TextFitted(hdc, x, y, status_text, max_width, self.char_width);
+        y += self.char_height + 8;
+
+        if (pending_len > 0) {
+            _ = SetTextColor(hdc, toColorRef(self.selected_theme.accent));
+            var pending_line: [256]u8 = undefined;
+            const preview = std.fmt.bufPrint(&pending_line, "Pending write: {s}", .{pending[0..pending_len]}) catch "Pending write";
+            drawUtf8TextFitted(hdc, x, y, preview, max_width, self.char_width);
+            y += self.char_height + 6;
+        }
+
+        _ = SetTextColor(hdc, toColorRef(self.selected_theme.foreground));
+        if (transcript_len == 0) {
+            drawUtf8TextFitted(hdc, x, y, "Open the palette and run AgentD health or tools.", max_width, self.char_width);
+        } else {
+            var iter = std.mem.splitScalar(u8, snapshot[0..transcript_len], '\n');
+            while (iter.next()) |line| {
+                if (line.len == 0) continue;
+                if (y + self.char_height >= bottom - self.char_height - 10) break;
+                drawUtf8TextFitted(hdc, x, y, line, max_width, self.char_width);
+                y += self.char_height + 2;
+            }
+        }
+
+        _ = SetTextColor(hdc, toColorRef(self.selected_theme.muted));
+        drawUtf8TextFitted(hdc, x, bottom - self.char_height - 8, "Enter approves pending write. Escape closes. Ctrl+Shift+A opens this panel.", max_width, self.char_width);
+    }
+
     fn paintThemeOption(self: *App, hdc: HDC, preset: theme.Theme, x: i32, y: i32, max_width: i32) void {
         const swatch_size = @max(@min(self.char_height - 3, 14), 8);
         var bg = RECT{ .left = x, .top = y + 2, .right = x + swatch_size, .bottom = y + 2 + swatch_size };
@@ -1553,49 +2108,55 @@ const App = struct {
 
     fn updateCaret(self: *App, hwnd: HWND) void {
         if (!self.focused) return;
+        var rect: RECT = undefined;
+        if (GetClientRect(hwnd, &rect) == 0) return;
+
         self.mutex.lock();
-        const cursor_x = self.grid.cursor_x;
-        const cursor_y = self.grid.cursor_y;
-        const scroll_offset = self.scroll_offset;
+        const pane = self.activePane();
+        const cursor_x = pane.grid.cursor_x;
+        const cursor_y = pane.grid.cursor_y;
+        const scroll_offset = pane.scroll_offset;
+        const pane_rect = self.activePaneRect(rect);
         self.mutex.unlock();
 
         if (scroll_offset > 0) {
             _ = HideCaret(hwnd);
             return;
         }
-        const x = 10 + @as(i32, @intCast(cursor_x)) * self.char_width;
-        const y = @max(0, 8 + @as(i32, @intCast(cursor_y)) * self.char_height);
+        const x = pane_rect.left + PANE_PAD_X + @as(i32, @intCast(cursor_x)) * self.char_width;
+        const y = @max(0, pane_rect.top + PANE_PAD_Y + @as(i32, @intCast(cursor_y)) * self.char_height);
         _ = SetCaretPos(x, y);
         _ = ShowCaret(hwnd);
     }
 
-    fn handleEvents(self: *App, events: []const integration.Event) void {
+    fn handleEvents(self: *App, pane: *Pane, events: []const integration.Event) void {
+        _ = self;
         for (events) |event| {
             switch (event.kind) {
-                .session_ready => self.status.ready = true,
+                .session_ready => pane.status.ready = true,
                 .prompt_rendered => {
-                    if (integration.jsonStringValue(event.payload, "cwd")) |cwd| self.status.setCwd(cwd);
-                    self.status.clearPromptContext();
-                    if (integration.jsonStringValue(event.payload, "project_kind")) |project_kind| self.status.setProjectKind(project_kind);
-                    if (integration.jsonStringValue(event.payload, "branch")) |branch| self.status.setGitBranch(branch);
-                    if (integration.jsonIntValue(u8, event.payload, "last_status")) |value| self.status.last_status = value;
-                    if (integration.jsonIntValue(i64, event.payload, "last_duration_ms")) |value| self.status.last_duration_ms = value;
-                    if (integration.jsonIntValue(usize, event.payload, "jobs")) |value| self.status.jobs = value;
-                    if (integration.jsonIntValue(usize, event.payload, "staged")) |value| self.status.git_staged = value;
-                    if (integration.jsonIntValue(usize, event.payload, "changed")) |value| self.status.git_changed = value;
-                    if (integration.jsonIntValue(usize, event.payload, "untracked")) |value| self.status.git_untracked = value;
-                    if (integration.jsonIntValue(usize, event.payload, "conflicts")) |value| self.status.git_conflicts = value;
-                    if (integration.jsonIntValue(usize, event.payload, "ahead")) |value| self.status.git_ahead = value;
-                    if (integration.jsonIntValue(usize, event.payload, "behind")) |value| self.status.git_behind = value;
+                    if (integration.jsonStringValue(event.payload, "cwd")) |cwd| pane.status.setCwd(cwd);
+                    pane.status.clearPromptContext();
+                    if (integration.jsonStringValue(event.payload, "project_kind")) |project_kind| pane.status.setProjectKind(project_kind);
+                    if (integration.jsonStringValue(event.payload, "branch")) |branch| pane.status.setGitBranch(branch);
+                    if (integration.jsonIntValue(u8, event.payload, "last_status")) |value| pane.status.last_status = value;
+                    if (integration.jsonIntValue(i64, event.payload, "last_duration_ms")) |value| pane.status.last_duration_ms = value;
+                    if (integration.jsonIntValue(usize, event.payload, "jobs")) |value| pane.status.jobs = value;
+                    if (integration.jsonIntValue(usize, event.payload, "staged")) |value| pane.status.git_staged = value;
+                    if (integration.jsonIntValue(usize, event.payload, "changed")) |value| pane.status.git_changed = value;
+                    if (integration.jsonIntValue(usize, event.payload, "untracked")) |value| pane.status.git_untracked = value;
+                    if (integration.jsonIntValue(usize, event.payload, "conflicts")) |value| pane.status.git_conflicts = value;
+                    if (integration.jsonIntValue(usize, event.payload, "ahead")) |value| pane.status.git_ahead = value;
+                    if (integration.jsonIntValue(usize, event.payload, "behind")) |value| pane.status.git_behind = value;
                 },
                 .command_started => {
-                    self.status.commands += 1;
-                    if (integration.jsonStringValue(event.payload, "cwd")) |cwd| self.status.setCwd(cwd);
+                    pane.status.commands += 1;
+                    if (integration.jsonStringValue(event.payload, "cwd")) |cwd| pane.status.setCwd(cwd);
                 },
                 .command_finished => {
-                    if (integration.jsonStringValue(event.payload, "cwd")) |cwd| self.status.setCwd(cwd);
-                    if (integration.jsonIntValue(u8, event.payload, "status")) |value| self.status.last_status = value;
-                    if (integration.jsonIntValue(i64, event.payload, "duration_ms")) |value| self.status.last_duration_ms = value;
+                    if (integration.jsonStringValue(event.payload, "cwd")) |cwd| pane.status.setCwd(cwd);
+                    if (integration.jsonIntValue(u8, event.payload, "status")) |value| pane.status.last_status = value;
+                    if (integration.jsonIntValue(i64, event.payload, "duration_ms")) |value| pane.status.last_duration_ms = value;
                 },
                 .unknown => {},
             }
@@ -1604,9 +2165,10 @@ const App = struct {
 
     fn updateTitle(self: *App) void {
         const hwnd = self.hwnd orelse return;
+        const pane = self.activePane();
         var title: [512]u8 = undefined;
-        const cwd = if (self.status.cwd_len > 0) self.status.cwdSlice() else "starting";
-        const state = if (self.startup_error_len > 0) "needs setup" else if (!self.status.ready) "starting" else if (self.status.last_status) |value| statusName(value) else "ready";
+        const cwd = if (pane.status.cwd_len > 0) pane.status.cwdSlice() else "starting";
+        const state = if (pane.startup_error_len > 0) "needs setup" else if (!pane.status.ready) "starting" else if (pane.status.last_status) |value| statusName(value) else "ready";
         const text = std.fmt.bufPrint(&title, "ZiggyZag - {s} - {s}", .{ cwd, state }) catch "ZiggyZag";
         var wide: [512]WCHAR = undefined;
         const len = utf8ToWide(text, &wide);
@@ -1629,6 +2191,7 @@ pub fn run(init_data: std.process.Init) !void {
         allocator.destroy(app);
     }
     app.loadDesktopConfig();
+    app.applyConfiguredSessionLayout();
     try app.setupGdi();
     global_app = app;
     defer global_app = null;
@@ -1672,19 +2235,7 @@ pub fn run(init_data: std.process.Init) !void {
 
     var rect: RECT = undefined;
     if (GetClientRect(hwnd, &rect) != 0) app.resizeForClient(rect);
-    app.startPty() catch |err| {
-        app.mutex.lock();
-        defer app.mutex.unlock();
-        app.setStartupError(err);
-        app.grid.feed("\x1b[2J");
-        app.grid.feed("ZiggyZag shell could not start.\n");
-        app.grid.feed("Run `zig build`, or set ZIGGYZAG_SHELL_PATH to a shell executable.\n");
-        app.grid.feed("Error: ");
-        app.grid.feed(@errorName(err));
-        app.grid.feed("\n");
-        app.updateTitle();
-        _ = InvalidateRect(hwnd, null, 0);
-    };
+    app.startConfiguredPanes(hwnd);
 
     var msg: MSG = undefined;
     while (GetMessageW(&msg, null, 0, 0) > 0) {
@@ -1693,12 +2244,12 @@ pub fn run(init_data: std.process.Init) !void {
     }
 }
 
-fn readLoop(app: *App, output_read: HANDLE) void {
+fn readLoop(app: *App, pane: *Pane, output_read: HANDLE) void {
     var parser = integration.Parser.init(std.heap.page_allocator);
     defer parser.deinit();
 
     var buffer: [8192]u8 = undefined;
-    while (app.running.load(.acquire)) {
+    while (pane.running.load(.acquire)) {
         var available: DWORD = 0;
         if (PeekNamedPipe(output_read, null, 0, null, &available, null) == 0) break;
         if (available == 0) {
@@ -1714,9 +2265,9 @@ fn readLoop(app: *App, output_read: HANDLE) void {
         defer extracted.deinit(std.heap.page_allocator);
 
         app.mutex.lock();
-        app.resetScroll();
-        app.grid.feed(extracted.display);
-        app.handleEvents(extracted.events.items);
+        app.resetPaneScroll(pane);
+        pane.grid.feed(extracted.display);
+        app.handleEvents(pane, extracted.events.items);
         app.mutex.unlock();
 
         app.requestUiRefresh();
@@ -1726,13 +2277,28 @@ fn readLoop(app: *App, output_read: HANDLE) void {
     defer extracted.deinit(std.heap.page_allocator);
     if (extracted.display.len > 0 or extracted.events.items.len > 0) {
         app.mutex.lock();
-        app.resetScroll();
-        app.grid.feed(extracted.display);
-        app.handleEvents(extracted.events.items);
+        app.resetPaneScroll(pane);
+        pane.grid.feed(extracted.display);
+        app.handleEvents(pane, extracted.events.items);
         app.mutex.unlock();
 
         app.requestUiRefresh();
     }
+}
+
+fn agentReadLoop(app: *App, stdout_file: std.Io.File) void {
+    var file = stdout_file;
+    defer file.close(app.io);
+
+    var buffer: [2048]u8 = undefined;
+    var reader = file.readerStreaming(app.io, &buffer);
+    while (app.agent_running.load(.acquire)) {
+        const chunk = reader.interface.take(1) catch break;
+        if (chunk.len == 0) break;
+        app.appendAgentTranscript(chunk);
+        if (chunk[0] == '\n') app.requestUiRefresh();
+    }
+    app.requestUiRefresh();
 }
 
 fn windowProc(hwnd: HWND, msg: UINT, wparam: WPARAM, lparam: LPARAM) callconv(.winapi) LRESULT {
@@ -1862,9 +2428,29 @@ fn handleKey(app: *App, hwnd: HWND, wparam: WPARAM) bool {
         _ = InvalidateRect(hwnd, null, 0);
         return true;
     }
+    if (keyDown(VK_CONTROL) and keyDown(VK_SHIFT) and wparam == VK_A) {
+        app.dispatchAction(hwnd, .open_agent_panel);
+        return true;
+    }
     if (keyDown(VK_CONTROL) and keyDown(VK_SHIFT) and wparam == VK_F) {
         app.openSearch();
         _ = InvalidateRect(hwnd, null, 0);
+        return true;
+    }
+    if (keyDown(VK_CONTROL) and keyDown(VK_SHIFT) and wparam == VK_D) {
+        app.dispatchAction(hwnd, .split_vertical);
+        return true;
+    }
+    if (keyDown(VK_CONTROL) and keyDown(VK_SHIFT) and wparam == VK_E) {
+        app.dispatchAction(hwnd, .split_horizontal);
+        return true;
+    }
+    if (keyDown(VK_CONTROL) and keyDown(VK_SHIFT) and wparam == VK_N) {
+        app.dispatchAction(hwnd, .focus_next_pane);
+        return true;
+    }
+    if (keyDown(VK_CONTROL) and keyDown(VK_SHIFT) and wparam == VK_W) {
+        app.dispatchAction(hwnd, .close_pane);
         return true;
     }
     if (keyDown(VK_CONTROL) and keyDown(VK_SHIFT) and wparam == VK_O) {
@@ -1993,7 +2579,7 @@ fn visibleCellEnd(cells: []const terminal.Cell) usize {
     var end = cells.len;
     while (end > 0) : (end -= 1) {
         const cell = cells[end - 1];
-        if (cell.ch != ' ' or !styleIsDefault(cell.style)) break;
+        if (cell.codepoint != ' ' or !styleIsDefault(cell.style)) break;
     }
     return end;
 }
@@ -2124,6 +2710,19 @@ fn utf8ToWide(text: []const u8, out: []WCHAR) usize {
     return written;
 }
 
+fn cellCodepointToWide(codepoint: u21, out: []WCHAR) usize {
+    if (codepoint <= 0xffff) {
+        if (out.len == 0) return 0;
+        out[0] = @intCast(codepoint);
+        return 1;
+    }
+    if (out.len < 2) return 0;
+    const value = codepoint - 0x10000;
+    out[0] = @intCast(0xd800 + (value >> 10));
+    out[1] = @intCast(0xdc00 + (value & 0x3ff));
+    return 2;
+}
+
 fn statusName(status: u8) []const u8 {
     return if (status == 0) "ok" else "failed";
 }
@@ -2189,7 +2788,9 @@ fn copyBounded(buffer: []u8, value: []const u8) usize {
 
 fn appendCellsText(allocator: Allocator, out: *std.ArrayList(u8), cells: []const terminal.Cell) !void {
     const end = visibleCellEnd(cells);
-    for (cells[0..end]) |cell| try out.append(allocator, cell.ch);
+    const text = try terminal.cellsTextAlloc(allocator, cells[0..end]);
+    defer allocator.free(text);
+    try out.appendSlice(allocator, text);
 }
 
 fn containsIgnoreCase(haystack: []const u8, needle: []const u8) bool {

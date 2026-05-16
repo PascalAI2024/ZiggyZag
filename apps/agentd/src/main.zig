@@ -105,10 +105,12 @@ fn runStdio(
     var stdin = std.Io.File.stdin().readerStreaming(io, &stdin_buffer);
     while (true) {
         const line = (try stdin.interface.takeDelimiter('\n')) orelse break;
-        var request = agentd.protocol.parseRequestAlloc(allocator, line) catch |err| {
+        const request_line = std.mem.trim(u8, line, " \t\r");
+        if (request_line.len == 0) continue;
+        var request = agentd.protocol.parseRequestAlloc(allocator, request_line) catch |err| {
             const json = try agentd.protocol.writeErrorEnvelope(
                 allocator,
-                agentd.protocol.bestEffortId(line),
+                agentd.protocol.bestEffortId(request_line),
                 agentd.protocol.parseErrorCode(err),
                 agentd.protocol.parseErrorMessage(err),
             );

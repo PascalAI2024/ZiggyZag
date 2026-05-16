@@ -125,6 +125,11 @@ const PipelineStageResult = struct {
     }
 };
 
+const PipelineInputFile = struct {
+    path: []u8,
+    file: std.Io.File,
+};
+
 const Shell = struct {
     allocator: Allocator,
     io: std.Io,
@@ -3967,13 +3972,6 @@ const Shell = struct {
                     status = 1;
                     continue;
                 },
-                error.PipelineInputTooLarge => {
-                    try appendFmt(self.allocator, &stderr_output, "{s}: pipeline input exceeded safe native stage limit ({d} bytes)\n", .{ parsed.argv.items[0], max_pipeline_stage_input_bytes });
-                    self.allocator.free(input);
-                    input = try self.allocator.dupe(u8, "");
-                    status = 1;
-                    continue;
-                },
                 else => |e| return e,
             };
             defer result.deinit(self.allocator);
@@ -4020,17 +4018,27 @@ const Shell = struct {
         defer argv.deinit(self.allocator);
         for (parsed.argv.items) |arg| try argv.append(self.allocator, arg);
 
+        var temp_input: ?PipelineInputFile = null;
+        defer if (temp_input) |temp| {
+            temp.file.close(self.io);
+            std.Io.Dir.cwd().deleteFile(self.io, temp.path) catch {};
+            self.allocator.free(temp.path);
+        };
+
+        if (input.len > max_pipeline_stage_input_bytes) {
+            temp_input = try self.createPipelineInputFile(input);
+        }
+
         var child = try std.process.spawn(self.io, .{
             .argv = argv.items,
             .environ_map = self.env,
-            .stdin = if (input.len > 0) .pipe else .ignore,
+            .stdin = if (temp_input) |temp| .{ .file = temp.file } else if (input.len > 0) .pipe else .ignore,
             .stdout = .pipe,
             .stderr = .pipe,
         });
         defer child.kill(self.io);
 
-        if (input.len > 0) {
-            if (input.len > max_pipeline_stage_input_bytes) return error.PipelineInputTooLarge;
+        if (temp_input == null and input.len > 0) {
             var stdin_file = child.stdin.?;
             try stdin_file.writeStreamingAll(self.io, input);
             stdin_file.close(self.io);
@@ -4069,6 +4077,44 @@ const Shell = struct {
             .stderr = stderr_bytes,
             .status = termExitCode(term),
         };
+    }
+
+    fn createPipelineInputFile(self: *Shell, input: []const u8) !PipelineInputFile {
+        const root = pipelineTempRoot(self.env);
+        var attempts: usize = 0;
+        while (attempts < 16) : (attempts += 1) {
+            var random_bytes: [12]u8 = undefined;
+            self.io.random(&random_bytes);
+            const hex = std.fmt.bytesToHex(random_bytes, .lower);
+            const name = try std.fmt.allocPrint(self.allocator, "ziggyzag-pipe-{s}.tmp", .{hex[0..]});
+            defer self.allocator.free(name);
+
+            const path = try std.fs.path.join(self.allocator, &.{ root, name });
+            errdefer self.allocator.free(path);
+
+            var write_file = std.Io.Dir.cwd().createFile(self.io, path, .{ .exclusive = true }) catch |err| switch (err) {
+                error.PathAlreadyExists => {
+                    self.allocator.free(path);
+                    continue;
+                },
+                else => |e| return e,
+            };
+            var write_file_closed = false;
+            defer if (!write_file_closed) write_file.close(self.io);
+            errdefer std.Io.Dir.cwd().deleteFile(self.io, path) catch {};
+
+            try write_file.writeStreamingAll(self.io, input);
+            write_file.close(self.io);
+            write_file_closed = true;
+
+            const read_file = try std.Io.Dir.cwd().openFile(self.io, path, .{ .allow_directory = false });
+            return .{
+                .path = path,
+                .file = read_file,
+            };
+        }
+
+        return error.PathAlreadyExists;
     }
 
     fn spawnSystemShell(self: *Shell, line: []const u8) !std.process.Child {
@@ -4910,6 +4956,14 @@ fn isComplexPipelineSyntax(line: []const u8) bool {
     return false;
 }
 
+fn pipelineTempRoot(env: *const std.process.Environ.Map) []const u8 {
+    if (env.get("ZIGGYZAG_PIPE_TMPDIR")) |path| return path;
+    if (env.get("TMPDIR")) |path| return path;
+    if (env.get("TEMP")) |path| return path;
+    if (env.get("TMP")) |path| return path;
+    return ".";
+}
+
 fn splitUnquotedPipes(allocator: Allocator, line: []const u8, segments: *std.ArrayList([]u8)) !void {
     var quote: ?u8 = null;
     var start: usize = 0;
@@ -5157,6 +5211,40 @@ test "split unquoted pipes" {
     try std.testing.expectEqual(@as(usize, 2), segments.items.len);
     try std.testing.expectEqualStrings("echo 'a | b'", segments.items[0]);
     try std.testing.expectEqualStrings("findstr a", segments.items[1]);
+}
+
+test "large pipeline handoff spools through temp file" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const temp_root = try std.fmt.allocPrint(std.testing.allocator, ".zig-cache/tmp/{s}", .{tmp.sub_path[0..]});
+    defer std.testing.allocator.free(temp_root);
+
+    var env = std.process.Environ.Map.init(std.testing.allocator);
+    defer env.deinit();
+    try env.put("ZIGGYZAG_PIPE_TMPDIR", temp_root);
+
+    var shell = Shell.init(std.testing.allocator, std.testing.io, &env);
+    defer shell.deinit();
+
+    const input = try std.testing.allocator.alloc(u8, max_pipeline_stage_input_bytes + 4096);
+    defer std.testing.allocator.free(input);
+    for (input, 0..) |*byte, index| byte.* = @intCast('a' + (index % 26));
+
+    const temp = try shell.createPipelineInputFile(input);
+    defer {
+        temp.file.close(std.testing.io);
+        std.Io.Dir.cwd().deleteFile(std.testing.io, temp.path) catch {};
+        std.testing.allocator.free(temp.path);
+    }
+
+    const read_back = try std.testing.allocator.alloc(u8, input.len);
+    defer std.testing.allocator.free(read_back);
+    const read_len = try temp.file.readPositionalAll(std.testing.io, read_back, 0);
+
+    try std.testing.expectEqual(input.len, read_len);
+    try std.testing.expectEqualSlices(u8, input, read_back);
+    try std.testing.expect(std.mem.startsWith(u8, temp.path, temp_root));
 }
 
 test "fuzzy score and slash command helpers" {

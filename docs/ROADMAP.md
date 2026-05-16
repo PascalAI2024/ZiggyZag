@@ -59,4 +59,4 @@ That suggests the next five implementation targets should be:
 2. Streaming native pipelines with redirection support.
 3. Completion option schemas for flags, file filters, and dynamic descriptions.
 4. Hardening the versioned shell integration event stream for prompt and command lifecycle metadata.
-5. Wiring `apps/agentd` into the desktop host as an approval-aware side panel.
+5. Hardening the new desktop AgentD side panel with richer tool browsing, audit export, and provider streaming.

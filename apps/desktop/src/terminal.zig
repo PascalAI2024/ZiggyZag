@@ -62,7 +62,19 @@ pub const Style = struct {
 
 pub const Cell = struct {
     ch: u8 = ' ',
+    codepoint: u21 = ' ',
+    width: CellWidth = .narrow,
     style: Style = .{},
+
+    pub fn isContinuation(self: Cell) bool {
+        return self.width == .continuation;
+    }
+};
+
+pub const CellWidth = enum(u8) {
+    narrow,
+    wide,
+    continuation,
 };
 
 pub const HistoryLine = struct {
@@ -178,8 +190,13 @@ pub const Grid = struct {
                     index = self.consumeEscape(bytes, index);
                 },
                 else => {
-                    if (byte >= 0x20) self.put(byte);
-                    index += 1;
+                    if (byte >= 0x20) {
+                        const decoded = decodeUtf8Scalar(bytes[index..]);
+                        self.putCodepoint(decoded.codepoint);
+                        index += decoded.len;
+                    } else {
+                        index += 1;
+                    }
                 },
             }
         }
@@ -249,7 +266,7 @@ pub const Grid = struct {
         var row: usize = 0;
         while (row < self.height) : (row += 1) {
             const line = self.cells[row * self.width .. (row + 1) * self.width];
-            len += trimmedCellLen(line);
+            len += cellsTextLen(line[0..trimmedCellLen(line)]);
             if (row + 1 < self.height) len += 1;
         }
 
@@ -259,10 +276,7 @@ pub const Grid = struct {
         while (row < self.height) : (row += 1) {
             const line = self.cells[row * self.width .. (row + 1) * self.width];
             const trimmed_len = trimmedCellLen(line);
-            for (line[0..trimmed_len]) |cell| {
-                text[out] = cell.ch;
-                out += 1;
-            }
+            out += encodeCellsText(line[0..trimmed_len], text[out..]);
             if (row + 1 < self.height) {
                 text[out] = '\n';
                 out += 1;
@@ -297,7 +311,10 @@ pub const Grid = struct {
         while (row <= last_row) : (row += 1) {
             const line_start = if (row == first_row) @min(first_col, self.width) else 0;
             const line_end = if (row == last_row) @min(last_col, self.width) else self.width;
-            if (line_end > line_start) len += line_end - line_start;
+            if (line_end > line_start) {
+                const line = self.cells[row * self.width .. (row + 1) * self.width];
+                len += cellsTextLen(line[line_start..line_end]);
+            }
             if (row < last_row) len += 1;
         }
 
@@ -308,11 +325,7 @@ pub const Grid = struct {
             const line_start = if (row == first_row) @min(first_col, self.width) else 0;
             const line_end = if (row == last_row) @min(last_col, self.width) else self.width;
             const line = self.cells[row * self.width .. (row + 1) * self.width];
-            var col = line_start;
-            while (col < line_end) : (col += 1) {
-                text[out] = line[col].ch;
-                out += 1;
-            }
+            out += encodeCellsText(line[line_start..line_end], text[out..]);
             if (row < last_row) {
                 text[out] = '\n';
                 out += 1;
@@ -543,20 +556,68 @@ pub const Grid = struct {
     }
 
     fn put(self: *Grid, byte: u8) void {
+        self.putCodepoint(byte);
+    }
+
+    fn putCodepoint(self: *Grid, codepoint: u21) void {
         if (self.wrap_pending) {
             self.cursor_x = 0;
             self.newline();
             self.wrap_pending = false;
         }
-        self.cells[self.cursor_y * self.width + self.cursor_x] = .{
-            .ch = byte,
+
+        var display_width = cellDisplayWidth(codepoint);
+        if (display_width == 2 and self.width == 1) display_width = 1;
+        if (display_width == 2 and self.cursor_x + 1 >= self.width) {
+            self.cursor_x = 0;
+            self.newline();
+        }
+
+        const cell_index = self.cursor_y * self.width + self.cursor_x;
+        self.clearWideAt(cell_index);
+        if (display_width == 2) self.clearWideAt(cell_index + 1);
+
+        self.cells[cell_index] = .{
+            .ch = legacyCellByte(codepoint),
+            .codepoint = codepoint,
+            .width = if (display_width == 2) .wide else .narrow,
             .style = self.current_style,
         };
-        if (self.cursor_x + 1 >= self.width) {
+        if (display_width == 2) {
+            self.cells[cell_index + 1] = .{
+                .ch = ' ',
+                .codepoint = ' ',
+                .width = .continuation,
+                .style = self.current_style,
+            };
+        }
+
+        if (self.cursor_x + display_width >= self.width) {
             self.cursor_x = self.width - 1;
             self.wrap_pending = true;
         } else {
-            self.cursor_x += 1;
+            self.cursor_x += display_width;
+        }
+    }
+
+    fn clearWideAt(self: *Grid, cell_index: usize) void {
+        if (cell_index >= self.cells.len) return;
+        const blank = Cell{ .style = self.current_style };
+        const col = cell_index % self.width;
+        switch (self.cells[cell_index].width) {
+            .wide => {
+                self.cells[cell_index] = blank;
+                if (col + 1 < self.width and cell_index + 1 < self.cells.len and self.cells[cell_index + 1].width == .continuation) {
+                    self.cells[cell_index + 1] = blank;
+                }
+            },
+            .continuation => {
+                self.cells[cell_index] = blank;
+                if (col > 0 and self.cells[cell_index - 1].width == .wide) {
+                    self.cells[cell_index - 1] = blank;
+                }
+            },
+            .narrow => {},
         }
     }
 
@@ -907,19 +968,151 @@ fn nextSgrParam(params: []const u8, index: *usize) ?u16 {
     return std.fmt.parseInt(u16, params[start..end], 10) catch 0;
 }
 
+const replacement_codepoint: u21 = 0xfffd;
+
+const DecodedScalar = struct {
+    codepoint: u21,
+    len: usize,
+};
+
+fn decodeUtf8Scalar(bytes: []const u8) DecodedScalar {
+    if (bytes.len == 0) return .{ .codepoint = replacement_codepoint, .len = 0 };
+
+    const first = bytes[0];
+    if (first < 0x80) return .{ .codepoint = first, .len = 1 };
+
+    const needed: usize = if (first >= 0xc2 and first <= 0xdf)
+        2
+    else if (first >= 0xe0 and first <= 0xef)
+        3
+    else if (first >= 0xf0 and first <= 0xf4)
+        4
+    else
+        return .{ .codepoint = replacement_codepoint, .len = 1 };
+
+    if (bytes.len < needed) return .{ .codepoint = replacement_codepoint, .len = 1 };
+
+    var codepoint: u21 = first & switch (needed) {
+        2 => @as(u8, 0x1f),
+        3 => @as(u8, 0x0f),
+        4 => @as(u8, 0x07),
+        else => unreachable,
+    };
+    var index: usize = 1;
+    while (index < needed) : (index += 1) {
+        const byte = bytes[index];
+        if (byte < 0x80 or byte > 0xbf) {
+            return .{ .codepoint = replacement_codepoint, .len = 1 };
+        }
+        codepoint = (codepoint << 6) | @as(u21, byte & 0x3f);
+    }
+
+    if (!isValidScalarForUtf8(codepoint, needed)) {
+        return .{ .codepoint = replacement_codepoint, .len = 1 };
+    }
+    return .{ .codepoint = codepoint, .len = needed };
+}
+
+fn isValidScalarForUtf8(codepoint: u21, len: usize) bool {
+    if (codepoint > 0x10ffff) return false;
+    if (codepoint >= 0xd800 and codepoint <= 0xdfff) return false;
+    return switch (len) {
+        2 => codepoint >= 0x80,
+        3 => codepoint >= 0x800,
+        4 => codepoint >= 0x10000,
+        else => codepoint < 0x80,
+    };
+}
+
+fn legacyCellByte(codepoint: u21) u8 {
+    if (codepoint >= 0x20 and codepoint <= 0x7e) return @intCast(codepoint);
+    return '?';
+}
+
+fn cellDisplayWidth(codepoint: u21) usize {
+    return if (isWideCodepoint(codepoint)) 2 else 1;
+}
+
+fn isWideCodepoint(codepoint: u21) bool {
+    return (codepoint >= 0x1100 and codepoint <= 0x115f) or
+        (codepoint >= 0x2329 and codepoint <= 0x232a) or
+        (codepoint >= 0x2e80 and codepoint <= 0xa4cf) or
+        (codepoint >= 0xac00 and codepoint <= 0xd7a3) or
+        (codepoint >= 0xf900 and codepoint <= 0xfaff) or
+        (codepoint >= 0xfe10 and codepoint <= 0xfe19) or
+        (codepoint >= 0xfe30 and codepoint <= 0xfe6f) or
+        (codepoint >= 0xff00 and codepoint <= 0xff60) or
+        (codepoint >= 0xffe0 and codepoint <= 0xffe6) or
+        (codepoint >= 0x1f300 and codepoint <= 0x1faff) or
+        (codepoint >= 0x20000 and codepoint <= 0x3fffd);
+}
+
 fn trimmedCellLen(cells: []const Cell) usize {
     var len = cells.len;
-    while (len > 0 and cells[len - 1].ch == ' ') : (len -= 1) {}
+    while (len > 0 and cells[len - 1].codepoint == ' ') : (len -= 1) {}
     return len;
 }
 
-fn cellsTextAlloc(allocator: Allocator, cells: []const Cell) ![]u8 {
+pub fn cellUtf8Len(cell: Cell) usize {
+    if (cell.width == .continuation) return 0;
+    const codepoint = cell.codepoint;
+    if (codepoint < 0x80) return 1;
+    if (codepoint < 0x800) return 2;
+    if (codepoint < 0x10000) return 3;
+    return 4;
+}
+
+pub fn encodeCellUtf8(cell: Cell, out: []u8) ![]u8 {
+    const len = cellUtf8Len(cell);
+    if (out.len < len) return error.NoSpaceLeft;
+    _ = encodeCellUtf8Into(cell, out);
+    return out[0..len];
+}
+
+pub fn cellsTextLen(cells: []const Cell) usize {
+    var len: usize = 0;
+    for (cells) |cell| len += cellUtf8Len(cell);
+    return len;
+}
+
+pub fn cellsTextAlloc(allocator: Allocator, cells: []const Cell) ![]u8 {
     const trimmed_len = trimmedCellLen(cells);
-    const text = try allocator.alloc(u8, trimmed_len);
-    for (text, 0..) |*out, index| {
-        out.* = cells[index].ch;
-    }
+    const text = try allocator.alloc(u8, cellsTextLen(cells[0..trimmed_len]));
+    _ = encodeCellsText(cells[0..trimmed_len], text);
     return text;
+}
+
+fn encodeCellsText(cells: []const Cell, out: []u8) usize {
+    var written: usize = 0;
+    for (cells) |cell| {
+        written += encodeCellUtf8Into(cell, out[written..]);
+    }
+    return written;
+}
+
+fn encodeCellUtf8Into(cell: Cell, out: []u8) usize {
+    if (cell.width == .continuation) return 0;
+    const codepoint = cell.codepoint;
+    if (codepoint < 0x80) {
+        out[0] = @intCast(codepoint);
+        return 1;
+    }
+    if (codepoint < 0x800) {
+        out[0] = @intCast(0xc0 | (codepoint >> 6));
+        out[1] = @intCast(0x80 | (codepoint & 0x3f));
+        return 2;
+    }
+    if (codepoint < 0x10000) {
+        out[0] = @intCast(0xe0 | (codepoint >> 12));
+        out[1] = @intCast(0x80 | ((codepoint >> 6) & 0x3f));
+        out[2] = @intCast(0x80 | (codepoint & 0x3f));
+        return 3;
+    }
+    out[0] = @intCast(0xf0 | (codepoint >> 18));
+    out[1] = @intCast(0x80 | ((codepoint >> 12) & 0x3f));
+    out[2] = @intCast(0x80 | ((codepoint >> 6) & 0x3f));
+    out[3] = @intCast(0x80 | (codepoint & 0x3f));
+    return 4;
 }
 
 fn csiParam(params: []const u8, target_index: usize, default_value: usize) usize {
@@ -942,6 +1135,48 @@ test "writes printable bytes to the grid" {
     const line = try grid.lineAlloc(std.testing.allocator, 0);
     defer std.testing.allocator.free(line);
     try std.testing.expectEqualStrings("hello   ", line);
+}
+
+test "decodes UTF-8 text into cell scalars" {
+    var grid = try Grid.init(std.testing.allocator, 8, 1);
+    defer grid.deinit();
+    grid.feed("caf\xc3\xa9");
+
+    try std.testing.expectEqual(@as(u21, 0x00e9), grid.cells[3].codepoint);
+    try std.testing.expectEqual(@as(u8, '?'), grid.cells[3].ch);
+
+    const line = try grid.lineTextAlloc(std.testing.allocator, 0);
+    defer std.testing.allocator.free(line);
+    try std.testing.expectEqualStrings("caf\xc3\xa9", line);
+}
+
+test "replaces invalid UTF-8 bytes" {
+    var grid = try Grid.init(std.testing.allocator, 8, 1);
+    defer grid.deinit();
+    grid.feed("a\xc0\xafz");
+
+    try std.testing.expectEqual(@as(u21, replacement_codepoint), grid.cells[1].codepoint);
+    try std.testing.expectEqual(@as(u21, replacement_codepoint), grid.cells[2].codepoint);
+
+    const line = try grid.lineTextAlloc(std.testing.allocator, 0);
+    defer std.testing.allocator.free(line);
+    try std.testing.expectEqualStrings("a\xef\xbf\xbd\xef\xbf\xbdz", line);
+}
+
+test "tracks wide UTF-8 cell continuations" {
+    var grid = try Grid.init(std.testing.allocator, 8, 1);
+    defer grid.deinit();
+    grid.feed("A\xe4\xb8\xadB");
+
+    try std.testing.expectEqual(@as(u21, 0x4e2d), grid.cells[1].codepoint);
+    try std.testing.expectEqual(CellWidth.wide, grid.cells[1].width);
+    try std.testing.expectEqual(CellWidth.continuation, grid.cells[2].width);
+    try std.testing.expect(grid.cells[2].isContinuation());
+    try std.testing.expectEqual(@as(usize, 4), grid.cursor_x);
+
+    const line = try grid.lineTextAlloc(std.testing.allocator, 0);
+    defer std.testing.allocator.free(line);
+    try std.testing.expectEqualStrings("A\xe4\xb8\xadB", line);
 }
 
 test "handles carriage return and clear line" {
