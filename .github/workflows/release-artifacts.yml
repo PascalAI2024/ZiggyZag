@@ -1,0 +1,46 @@
+name: Release Artifacts
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Release version, for example v0.1.0-alpha.2
+        required: true
+        default: v0.1.0-alpha.1
+      optimize:
+        description: Zig optimize mode
+        required: true
+        default: ReleaseSafe
+        type: choice
+        options:
+          - ReleaseSafe
+          - ReleaseFast
+          - ReleaseSmall
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    name: Build release zips
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: Package all targets
+        shell: pwsh
+        run: .\scripts\build-release.ps1 -Version "${{ inputs.version }}" -Optimize "${{ inputs.optimize }}"
+
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ZiggyZag-${{ inputs.version }}-release-artifacts
+          path: |
+            dist/${{ inputs.version }}/*.zip
+            dist/${{ inputs.version }}/checksums.sha256
+            dist/${{ inputs.version }}/release-manifest.json
+          if-no-files-found: error

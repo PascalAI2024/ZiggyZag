@@ -35,6 +35,13 @@ On Windows PowerShell:
 .\zig-out\bin\ziggyzag-agentd.exe --describe-tools
 ```
 
+On macOS/Linux:
+
+```sh
+./zig-out/bin/ziggyzag-agentd --describe-tools
+printf '%s\n' '{"id":1,"method":"agent/health"}' | ./zig-out/bin/ziggyzag-agentd --stdio
+```
+
 ## Provider Environment
 
 Ollama is the friendliest local default:
@@ -68,7 +75,7 @@ The `zig.build` tool resolves Zig conservatively:
 3. `zig` on `PATH`
 4. known Windows install locations for Winget, Scoop, Chocolatey, and `C:\Program Files\Zig`
 
-If Zig cannot be found, AgentD returns a structured tool error instead of crashing.
+If Zig cannot be found, AgentD returns a structured tool error instead of crashing. On macOS/Linux, keep `zig` on `PATH` or set `ZIGGYZAG_ZIG_PATH`/`ZIG_EXE` to the absolute Zig executable path.
 
 ## Protocol
 

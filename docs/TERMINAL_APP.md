@@ -46,9 +46,9 @@ Root-level `zig build` must keep producing `zig-out/bin/ziggyzag` for local deve
 
 Do not let the desktop app depend on an accidental working-tree `zig-out` location in production packaging.
 
-## Scaffolded Scope
+## Current Alpha Scope
 
-The repo now contains a Windows-native all-Zig MVP under `apps/desktop`:
+The repo now contains a Windows-native all-Zig alpha under `apps/desktop`:
 
 - Win32 windowing and GDI terminal-grid rendering.
 - Windows ConPTY shell hosting.
@@ -58,10 +58,12 @@ The repo now contains a Windows-native all-Zig MVP under `apps/desktop`:
 - Tested terminal grid and OSC 777 event extraction.
 - Slim `ziggyzag-agentd` sidecar under `apps/agentd` for terminal AI panel integration.
 
-The repo also contains a Tauri/xterm.js scaffolded slice. Treat it as an experiment unless the team explicitly chooses the webview route:
+For macOS/Linux alpha artifacts, `ziggyzag-desktop` currently builds and runs as a terminal-attached launcher. It resolves the ZiggyZag shell binary, reports the selected POSIX backend, and starts the shell in the calling terminal. It does not open a native window or allocate a dedicated desktop PTY yet. The usable POSIX alpha surface is the shell binary, AgentD, smoke script, and this launcher.
+
+The repo also contains a Tauri/xterm.js prototype slice. Treat it as an experiment unless the team explicitly chooses the webview route:
 
 - React, Vite, TypeScript, and xterm.js frontend under `apps/desktop-tauri-spike`.
-- Tauri 2 backend scaffold under `apps/desktop-tauri-spike/src-tauri`.
+- Tauri 2 backend prototype under `apps/desktop-tauri-spike/src-tauri`.
 - PTY commands for create, write, resize, and close.
 - Output stream event `terminal://data`.
 - Optional ZiggyZag OSC 777 integration events from the shell.
@@ -79,7 +81,7 @@ The first hardened version should prove that the app can host ZiggyZag well:
 4. Add a command palette for app-level commands such as new tab, close tab, split later placeholder, increase font, decrease font, and open settings.
 5. Add an agent panel backed by `ziggyzag-agentd --stdio`, with explicit approval before terminal writes or build commands.
 6. Surface session status: current directory, last command status, running command indicator, and background job count when ZiggyZag exposes them.
-7. Package development builds for local Windows first, then add macOS/Linux once the PTY path is stable.
+7. Keep packaging Windows native desktop builds while macOS/Linux ship shell, AgentD, and the terminal-attached desktop launcher until POSIX native hosting is ready.
 
 MVP success is not visual novelty. It is confidence that ZiggyZag behaves like a real interactive shell inside a desktop host.
 
@@ -89,7 +91,8 @@ Use the first friend-test pass to answer concrete questions:
 
 | Area | What to try | Pass signal |
 | --- | --- | --- |
-| Launch | `zig build run-desktop` | Window opens and prompt appears. |
+| Windows launch | `zig build run-desktop` | Window opens and prompt appears. |
+| macOS/Linux desktop launcher | `zig build run-desktop` | Prints `ZiggyZag Desktop (POSIX PTY)`, launches the shell in the current terminal, and exits cleanly after `exit`. |
 | Input | Type commands, edit with Backspace, press Enter | Text reaches the shell and output returns. |
 | Clipboard | Ctrl+V, Shift+Insert, Ctrl+Shift+C | Paste writes into the PTY; copy places visible text on the clipboard. Ctrl+C remains shell interrupt. |
 | Resize | Drag the window smaller/larger | Grid resizes without losing the running session. |
@@ -97,6 +100,8 @@ Use the first friend-test pass to answer concrete questions:
 | Shell events | Run successful and failing commands | Status/title reflects command context. |
 | AgentD | `zig build run-agentd -- --describe-tools` | Tool list is valid JSON and names the expected tools. |
 | Provider failure | Run `--oneshot` without Ollama | Structured `provider_error`, no crash. |
+
+Clipboard, resize, scrollback, and shell-event checks apply to the Windows native desktop host in this alpha. On macOS/Linux, run the shell directly with `./zig-out/bin/ziggyzag`, AgentD directly with `./zig-out/bin/ziggyzag-agentd`, and the launcher with `zig build run-desktop`.
 
 ## Integration Protocol Ideas
 

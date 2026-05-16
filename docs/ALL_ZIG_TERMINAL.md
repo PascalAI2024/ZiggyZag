@@ -2,7 +2,7 @@
 
 ZiggyZag can be a Zig shell inside a Zig-native terminal host. This is the strongest long-term identity for the project: one language, one build story, and terminal behavior that remains visible instead of being hidden behind a webview.
 
-The existing Tauri scaffold is useful as a product spike, but the primary direction is the all-Zig desktop terminal.
+The existing Tauri prototype is useful as a product spike, but the primary direction is the all-Zig desktop terminal.
 
 ## Why Pivot
 
@@ -40,7 +40,7 @@ flowchart LR
 
 | Component | First Step | Long-Term Shape |
 | --- | --- | --- |
-| PTY | Done on Windows with ConPTY. POSIX PTY second. | Shared Zig abstraction for spawning shells, resizing, reading, writing, and process cleanup. |
+| PTY | Done on Windows with ConPTY. POSIX launcher builds today and starts the shell in the calling terminal. | Shared Zig abstraction for spawning shells, resizing, reading, writing, and process cleanup. |
 | Terminal parser | Minimal ANSI/xterm subset implemented for MVP, including SGR style state for the local grid. | Use or integrate `libghostty-vt` when versioning and packaging are understood. |
 | Renderer | Native Win32 + GDI grid renderer implemented for MVP. | GPU renderer with Unicode width, selections, cursor styles, ligatures, and image protocol decisions. |
 | UI | One native window, status bar, copy/paste, and wheel scrollback implemented. | Command palette, tabs, split panes, themes, search, selection copy, profile management. |
@@ -54,6 +54,7 @@ flowchart LR
 4. Done: send keyboard input back to the PTY.
 5. Partial: resize, themes, paste, Ctrl+C interrupt, Ctrl+Shift+C copy-visible, and wheel scrollback are in; mouse selection and deeper terminal correctness remain.
 6. Done: parse ZiggyZag OSC 777 events for cwd, command status, duration, and shell readiness.
+7. POSIX alpha: `ziggyzag-desktop` builds, resolves the shell binary, and launches ZiggyZag in the calling terminal, but native macOS/Linux window+PTY hosting is not implemented yet.
 
 ## Repo Plan
 
@@ -74,15 +75,15 @@ apps/
 - Windowing/rendering: direct Win32/GDI is the current MVP; Mach, SDL, GLFW, or a GPU path remain later options.
 - Terminal core: incremental local parser first or `libghostty-vt` first.
 - Font stack: platform text APIs first or bundled FreeType/HarfBuzz-style stack.
-- Windows-first vs cross-platform from day one.
+- How much native macOS/Linux desktop hosting belongs in the alpha line after the terminal-attached POSIX launcher.
 - Whether the desktop binary links shell code directly or launches the shell executable through a PTY. The PTY process boundary is preferred for correctness and compatibility.
 
 ## Near-Term Sequence
 
 1. Done: keep shell integration events in `apps/shell`.
-2. Done: move the Tauri scaffold out of the primary `apps/desktop` lane.
+2. Done: move the Tauri prototype out of the primary `apps/desktop` lane.
 3. Done: create a tested Zig desktop foundation with terminal grid, event extraction, themes, and PTY backend selection.
 4. Done: add PTY read/write on Windows.
 5. Done: open a native window and render the terminal grid.
-6. Next: harden user-facing details for testers: selection, config loading, ANSI coverage, lifecycle cleanup, and an agent side panel.
+6. Next: harden user-facing details for testers: selection, config loading, ANSI coverage, lifecycle cleanup, POSIX native hosting, and an agent side panel.
 7. Decide whether to pull in `libghostty-vt` once the local MVP proves the app boundary.

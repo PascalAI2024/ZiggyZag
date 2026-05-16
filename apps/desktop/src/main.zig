@@ -7,6 +7,10 @@ pub fn main(init_data: std.process.Init) !void {
         try desktop.windows_app.run(init_data);
         return;
     }
+    if (builtin.os.tag == .linux or builtin.os.tag == .macos or builtin.os.tag == .freebsd or builtin.os.tag == .netbsd or builtin.os.tag == .openbsd) {
+        try desktop.posix_app.run(init_data);
+        return;
+    }
 
     var stdout = std.Io.File.stdout().writer(init_data.io, &.{});
     const selected_theme = desktop.theme.ziggy;
@@ -21,11 +25,10 @@ pub fn main(init_data: std.process.Init) !void {
         \\- Terminal grid core: ready
         \\- OSC 777 integration parser: ready
         \\
-        \\Next step: connect {s} to a native window and PTY process.
+        \\This platform is not supported by the desktop host yet.
         \\
     , .{
         desktop.pty.backendName(backend),
         selected_theme.name,
-        desktop.pty.backendName(backend),
     });
 }
