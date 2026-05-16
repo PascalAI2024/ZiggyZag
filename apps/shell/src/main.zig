@@ -186,6 +186,8 @@ const Shell = struct {
         defer if (histfile) |path| self.writeHistoryFile(path, false, 0) catch {};
         defer if (history_meta_file) |path| self.writeHistoryMetaFile(path) catch {};
 
+        try self.writeIntegrationSessionReady(&stdout.interface);
+
         while (true) {
             try self.reapAndPrintDoneJobs();
             try self.writePrompt(&stdout.interface);
@@ -199,10 +201,13 @@ const Shell = struct {
             const submitted_line = expanded_abbreviation_line orelse owned_line;
 
             try self.history.append(self.allocator, try self.allocator.dupe(u8, submitted_line));
+            const command_id = self.history.items.len;
             const started_at = std.Io.Clock.real.now(self.io).toMilliseconds();
+            try self.writeIntegrationCommandStarted(&stdout.interface, command_id, submitted_line, started_at);
             const keep_running = try self.execute(submitted_line);
             self.last_duration_ms = std.Io.Clock.real.now(self.io).toMilliseconds() - started_at;
             try self.recordHistoryMeta(submitted_line, started_at, self.last_duration_ms, self.last_status);
+            try self.writeIntegrationCommandFinished(&stdout.interface, command_id, self.last_status, self.last_duration_ms);
             if (!keep_running) break;
         }
     }
@@ -487,6 +492,83 @@ const Shell = struct {
         const host = self.env.get("HOSTNAME") orelse self.env.get("COMPUTERNAME") orelse "localhost";
         try stdout.print("\x1b]7;file://{s}", .{host});
         try self.writeFileUriPath(stdout, cwd);
+        try stdout.writeByte(0x07);
+        try self.writeIntegrationPromptRendered(stdout, cwd);
+    }
+
+    fn integrationEnabled(self: *Shell) bool {
+        return isTruthyEnv(self.env.get("ZIGGYZAG_APP")) or isTruthyEnv(self.env.get("ZIGGYZAG_INTEGRATION"));
+    }
+
+    fn writeIntegrationSessionReady(self: *Shell, stdout: *std.Io.Writer) !void {
+        if (!self.integrationEnabled()) return;
+
+        var payload: std.ArrayList(u8) = .empty;
+        defer payload.deinit(self.allocator);
+        try payload.appendSlice(self.allocator, "{\"type\":\"session.ready\",\"protocol\":1,\"shell\":\"ziggyzag\",\"version\":\"0.1.0\",\"prompt_mode\":");
+        try appendJsonString(self.allocator, &payload, @tagName(self.prompt_mode));
+        try payload.append(self.allocator, '}');
+        try self.writeIntegrationEvent(stdout, payload.items);
+    }
+
+    fn writeIntegrationPromptRendered(self: *Shell, stdout: *std.Io.Writer, cwd: []const u8) !void {
+        if (!self.integrationEnabled()) return;
+
+        var payload: std.ArrayList(u8) = .empty;
+        defer payload.deinit(self.allocator);
+        try payload.appendSlice(self.allocator, "{\"type\":\"prompt.rendered\",\"cwd\":");
+        try appendJsonString(self.allocator, &payload, cwd);
+        try payload.appendSlice(self.allocator, ",\"prompt_mode\":");
+        try appendJsonString(self.allocator, &payload, @tagName(self.prompt_mode));
+        try appendFmt(self.allocator, &payload, ",\"last_status\":{d},\"last_duration_ms\":{d},\"jobs\":{d}}}", .{
+            self.last_status,
+            self.last_duration_ms,
+            self.background_jobs.items.len,
+        });
+        try self.writeIntegrationEvent(stdout, payload.items);
+    }
+
+    fn writeIntegrationCommandStarted(self: *Shell, stdout: *std.Io.Writer, command_id: usize, command: []const u8, timestamp: i64) !void {
+        if (!self.integrationEnabled()) return;
+
+        const cwd = std.process.currentPathAlloc(self.io, self.allocator) catch null;
+        defer if (cwd) |path| self.allocator.free(path);
+
+        var payload: std.ArrayList(u8) = .empty;
+        defer payload.deinit(self.allocator);
+        try appendFmt(self.allocator, &payload, "{{\"type\":\"command.started\",\"id\":{d},\"timestamp\":{d},\"cwd\":", .{
+            command_id,
+            timestamp,
+        });
+        try appendJsonString(self.allocator, &payload, cwd orelse "");
+        try payload.appendSlice(self.allocator, ",\"command\":");
+        try appendJsonString(self.allocator, &payload, command);
+        try payload.append(self.allocator, '}');
+        try self.writeIntegrationEvent(stdout, payload.items);
+    }
+
+    fn writeIntegrationCommandFinished(self: *Shell, stdout: *std.Io.Writer, command_id: usize, status: u8, duration_ms: i64) !void {
+        if (!self.integrationEnabled()) return;
+
+        const cwd = std.process.currentPathAlloc(self.io, self.allocator) catch null;
+        defer if (cwd) |path| self.allocator.free(path);
+
+        var payload: std.ArrayList(u8) = .empty;
+        defer payload.deinit(self.allocator);
+        try appendFmt(self.allocator, &payload, "{{\"type\":\"command.finished\",\"id\":{d},\"status\":{d},\"duration_ms\":{d},\"cwd\":", .{
+            command_id,
+            status,
+            duration_ms,
+        });
+        try appendJsonString(self.allocator, &payload, cwd orelse "");
+        try payload.append(self.allocator, '}');
+        try self.writeIntegrationEvent(stdout, payload.items);
+    }
+
+    fn writeIntegrationEvent(self: *Shell, stdout: *std.Io.Writer, payload: []const u8) !void {
+        _ = self;
+        try stdout.writeAll("\x1b]777;ziggyzag:event:");
+        try stdout.writeAll(payload);
         try stdout.writeByte(0x07);
     }
 
@@ -2611,7 +2693,7 @@ const Shell = struct {
                 if (std.mem.eql(u8, task, "build")) return try self.allocator.dupe(u8, "zig build");
                 if (std.mem.eql(u8, task, "test")) return try self.allocator.dupe(u8, "zig build test");
                 if (std.mem.eql(u8, task, "run")) return try self.allocator.dupe(u8, "zig build run");
-                if (std.mem.eql(u8, task, "fmt")) return try self.allocator.dupe(u8, "zig fmt src/main.zig build.zig");
+                if (std.mem.eql(u8, task, "fmt")) return try self.allocator.dupe(u8, "zig fmt apps/shell/src/main.zig build.zig");
             },
             .node => {
                 if (std.mem.eql(u8, task, "install")) return try self.allocator.dupe(u8, "npm install");
@@ -3911,6 +3993,14 @@ fn isConfigDirective(command: []const u8) bool {
         std.mem.eql(u8, command, "export") or
         std.mem.eql(u8, command, "complete") or
         std.mem.eql(u8, command, "prompt");
+}
+
+fn isTruthyEnv(value: ?[]const u8) bool {
+    const text = value orelse return false;
+    return std.mem.eql(u8, text, "1") or
+        std.ascii.eqlIgnoreCase(text, "true") or
+        std.ascii.eqlIgnoreCase(text, "yes") or
+        std.ascii.eqlIgnoreCase(text, "on");
 }
 
 fn slashCommandReplacement(command: []const u8) ?[]const u8 {

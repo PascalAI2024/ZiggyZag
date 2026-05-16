@@ -1,8 +1,13 @@
 $ErrorActionPreference = "Stop"
 
 $root = Split-Path -Parent $PSScriptRoot
+$bin = Join-Path $root "zig-out\bin\ziggyzag.exe"
 $tmp = Join-Path $env:TEMP "ziggyzag-smoke"
 New-Item -ItemType Directory -Force $tmp | Out-Null
+
+if (!(Test-Path $bin)) {
+    throw "Missing $bin. Run 'zig build' from the repository root before running scripts\smoke.ps1."
+}
 
 $config = Join-Path $tmp ".ziggyzagrc"
 $meta = Join-Path $tmp "history.tsv"
@@ -80,7 +85,7 @@ history --cwd
 history --stats
 echo hello | findstr hello
 exit
-'@.Replace("SOURCE_FILE_PLACEHOLDER", $sourceShellPath).Replace("NAV_DIR_PLACEHOLDER", $navShellPath).Replace("MISSING_SOURCE_PLACEHOLDER", $missingSourcePath).Replace("FAIL_FILE_PLACEHOLDER", $failShellPath) | & (Join-Path $root "zig-out\bin\ziggyzag.exe") *> $out
+'@.Replace("SOURCE_FILE_PLACEHOLDER", $sourceShellPath).Replace("NAV_DIR_PLACEHOLDER", $navShellPath).Replace("MISSING_SOURCE_PLACEHOLDER", $missingSourcePath).Replace("FAIL_FILE_PLACEHOLDER", $failShellPath) | & $bin *> $out
 
 $output = Get-Content $out -Raw
 if ($output -notmatch "hello world") { throw "alias smoke failed" }

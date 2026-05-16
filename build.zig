@@ -2,11 +2,15 @@ const std = @import("std");
 
 // Learn more about this file here: https://ziglang.org/learn/build-system
 pub fn build(b: *std.Build) void {
+    const target = b.standardTargetOptions(.{});
+    const optimize = b.standardOptimizeOption(.{});
+
     const exe = b.addExecutable(.{
         .name = "ziggyzag",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/main.zig"),
-            .target = b.graph.host,
+            .root_source_file = b.path("apps/shell/src/main.zig"),
+            .target = target,
+            .optimize = optimize,
         }),
     });
 
@@ -14,6 +18,32 @@ pub fn build(b: *std.Build) void {
     // standard location when the user invokes the "install" step (the default
     // step when running `zig build`).
     b.installArtifact(exe);
+
+    const desktop_module = b.createModule(.{
+        .root_source_file = b.path("apps/desktop/src/main.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const desktop_exe = b.addExecutable(.{
+        .name = "ziggyzag-desktop",
+        .root_module = desktop_module,
+    });
+    if (target.result.os.tag == .windows) {
+        desktop_module.linkSystemLibrary("user32", .{});
+        desktop_module.linkSystemLibrary("gdi32", .{});
+        desktop_module.linkSystemLibrary("kernel32", .{});
+    }
+    b.installArtifact(desktop_exe);
+
+    const agentd_exe = b.addExecutable(.{
+        .name = "ziggyzag-agentd",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("apps/agentd/src/main.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    b.installArtifact(agentd_exe);
 
     // This *creates* a Run step in the build graph, to be executed when another
     // step is evaluated that depends on it. The next line below will establish
@@ -32,13 +62,43 @@ pub fn build(b: *std.Build) void {
         run_cmd.addArgs(args);
     }
 
-    const tests = b.addTest(.{
+    const run_desktop_cmd = b.addRunArtifact(desktop_exe);
+    const run_desktop_step = b.step("run-desktop", "Run the all-Zig desktop host scaffold");
+    run_desktop_step.dependOn(&run_desktop_cmd.step);
+
+    const run_agentd_cmd = b.addRunArtifact(agentd_exe);
+    const run_agentd_step = b.step("run-agentd", "Run the Zig-native agent runtime");
+    run_agentd_step.dependOn(&run_agentd_cmd.step);
+    if (b.args) |args| {
+        run_agentd_cmd.addArgs(args);
+    }
+
+    const shell_tests = b.addTest(.{
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/main.zig"),
-            .target = b.graph.host,
+            .root_source_file = b.path("apps/shell/src/main.zig"),
+            .target = target,
+            .optimize = optimize,
         }),
     });
-    const run_tests = b.addRunArtifact(tests);
+    const run_shell_tests = b.addRunArtifact(shell_tests);
+    const desktop_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("apps/desktop/src/lib.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const run_desktop_tests = b.addRunArtifact(desktop_tests);
+    const agentd_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("apps/agentd/src/lib.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const run_agentd_tests = b.addRunArtifact(agentd_tests);
     const test_step = b.step("test", "Run unit tests");
-    test_step.dependOn(&run_tests.step);
+    test_step.dependOn(&run_shell_tests.step);
+    test_step.dependOn(&run_desktop_tests.step);
+    test_step.dependOn(&run_agentd_tests.step);
 }

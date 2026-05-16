@@ -8,4 +8,11 @@
 
 set -e # Exit on failure
 
-exec "$(dirname "$0")"/zig-out/bin/ziggyzag "$@"
+BIN="$(dirname "$0")"/../zig-out/bin/ziggyzag
+
+if [ ! -x "$BIN" ]; then
+  printf '%s\n' "Missing $BIN. CodeCrafters should run .codecrafters/compile.sh before this script." >&2
+  exit 1
+fi
+
+exec "$BIN" "$@"

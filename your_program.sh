@@ -8,6 +8,11 @@
 
 set -e # Exit early if any commands fail
 
+if ! command -v zig >/dev/null 2>&1; then
+  printf '%s\n' "Missing zig. Install Zig 0.16.0 and make sure 'zig' is on PATH." >&2
+  exit 1
+fi
+
 # Copied from .codecrafters/compile.sh
 #
 # - Edit this to change how your program compiles locally
@@ -21,4 +26,11 @@ set -e # Exit early if any commands fail
 #
 # - Edit this to change how your program runs locally
 # - Edit .codecrafters/run.sh to change how your program runs remotely
-exec "$(dirname "$0")"/zig-out/bin/ziggyzag "$@"
+BIN="$(dirname "$0")"/zig-out/bin/ziggyzag
+
+if [ ! -x "$BIN" ]; then
+  printf '%s\n' "Missing $BIN after build. Check the 'zig build' output above." >&2
+  exit 1
+fi
+
+exec "$BIN" "$@"

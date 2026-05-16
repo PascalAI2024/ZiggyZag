@@ -2,6 +2,7 @@
 set -eu
 
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+BIN="$ROOT/zig-out/bin/ziggyzag"
 TMPDIR="${TMPDIR:-/tmp}/ziggyzag-smoke"
 CONFIG="$TMPDIR/.ziggyzagrc"
 META="$TMPDIR/history.tsv"
@@ -11,6 +12,11 @@ COMMANDS="$TMPDIR/commands.txt"
 NAV_DIR="$TMPDIR/ziggyzag-smoke-nav"
 MISSING_SOURCE="$TMPDIR/missing-source.zz"
 FAIL_FILE="$TMPDIR/failed.txt"
+
+if [ ! -x "$BIN" ]; then
+  printf '%s\n' "Missing $BIN. Run 'zig build' from the repository root before running scripts/smoke.sh." >&2
+  exit 1
+fi
 
 mkdir -p "$TMPDIR"
 rm -f "$META" "$OUT" "$SOURCE_FILE" "$COMMANDS" "$FAIL_FILE"
@@ -74,7 +80,7 @@ history --stats
 echo hello | grep hello
 exit
 EOF
-sed -e "s|SOURCE_FILE_PLACEHOLDER|$SOURCE_FILE|g" -e "s|NAV_DIR_PLACEHOLDER|$NAV_DIR|g" -e "s|MISSING_SOURCE_PLACEHOLDER|$MISSING_SOURCE|g" -e "s|FAIL_FILE_PLACEHOLDER|$FAIL_FILE|g" "$COMMANDS" | "$ROOT/zig-out/bin/ziggyzag" > "$OUT" 2>&1
+sed -e "s|SOURCE_FILE_PLACEHOLDER|$SOURCE_FILE|g" -e "s|NAV_DIR_PLACEHOLDER|$NAV_DIR|g" -e "s|MISSING_SOURCE_PLACEHOLDER|$MISSING_SOURCE|g" -e "s|FAIL_FILE_PLACEHOLDER|$FAIL_FILE|g" "$COMMANDS" | "$BIN" > "$OUT" 2>&1
 
 grep -q "hello world" "$OUT"
 grep -q "expanded now" "$OUT"

@@ -1,0 +1,166 @@
+# Built-In Terminal App Strategy
+
+ZiggyZag can grow a small desktop terminal app without losing its identity as a Zig project. The app should be a focused Zig-native host for the ZiggyZag executable: fast startup, reliable PTY behavior, modern editing surfaces, and clear hooks for shell-aware UI.
+
+The earlier Tauri/xterm.js direction is now best treated as a spike. Use Terax as a product-shape reference, WezTerm as a quality reference, and Ghostty/libghostty as the closest Zig-native terminal reference. Do not embed WezTerm wholesale; the goal is a ZiggyZag-owned product surface, not a wrapper around another terminal.
+
+## Product Thesis
+
+The terminal app should make ZiggyZag easier to try, demo, and use daily while preserving the existing CLI as the source of truth. The desktop layer is valuable when it can expose shell-native context that generic terminals cannot easily know: command metadata, completions, history search, directory context, project tasks, background jobs, and structured command events.
+
+The product should stay learning-friendly:
+
+- Keep the CLI fully usable outside the app.
+- Treat app features as progressive enhancements over a normal PTY session.
+- Prefer explicit protocols over screen scraping.
+- Keep terminal fundamentals boring and dependable.
+
+## Reference Architecture
+
+```mermaid
+flowchart LR
+    ui["Zig-native app"] --> term["terminal grid renderer"]
+    ui --> panels["shell-aware panels"]
+    ui --> agentd["agentd sidecar"]
+    term --> pty["Zig PTY host"]
+    pty --> ziggy["ZiggyZag process"]
+    ziggy --> protocol["optional integration protocol"]
+    protocol --> panels
+    agentd --> panels
+```
+
+## Core Components
+
+| Layer | Suggested choice | Responsibility |
+| --- | --- | --- |
+| Desktop shell | Zig-native windowing layer | Native windowing, menus, file dialogs, app packaging, and input routing. |
+| Backend bridge | Zig PTY abstraction | PTY lifecycle, process spawning, environment setup, stream fanout, app protocol parsing. |
+| Terminal UI | Zig renderer | Terminal viewport, tabs, keybinding routing, status surfaces, command palette. |
+| Agent sidecar | `ziggyzag-agentd` | JSON-lines tool protocol, approval-aware host actions, local search/file/git/build tools, and Ollama/OpenAI-compatible provider calls. |
+| Shell runtime | Existing ZiggyZag binary | Parsing, execution, history, completions, prompt, shell state. |
+| Integration channel | stdout escape sequences or sidecar IPC | Structured shell events that enrich the UI without breaking normal terminal use. |
+
+## Binary Contract
+
+Root-level `zig build` must keep producing `zig-out/bin/ziggyzag` for local development, CI, CodeCrafters, and early desktop experiments. The desktop app can use that path during development, but packaged builds should copy or build a deliberate `ziggyzag` binary into the app bundle and launch that known artifact.
+
+Do not let the desktop app depend on an accidental working-tree `zig-out` location in production packaging.
+
+## Scaffolded Scope
+
+The repo now contains a Windows-native all-Zig MVP under `apps/desktop`:
+
+- Win32 windowing and GDI terminal-grid rendering.
+- Windows ConPTY shell hosting.
+- Keyboard input forwarded to the shell process.
+- Resize handling across the window, grid, and pseudoconsole.
+- Status bar and window-title updates from shell integration events.
+- Tested terminal grid and OSC 777 event extraction.
+- Slim `ziggyzag-agentd` sidecar under `apps/agentd` for terminal AI panel integration.
+
+The repo also contains a Tauri/xterm.js scaffolded slice. Treat it as an experiment unless the team explicitly chooses the webview route:
+
+- React, Vite, TypeScript, and xterm.js frontend under `apps/desktop-tauri-spike`.
+- Tauri 2 backend scaffold under `apps/desktop-tauri-spike/src-tauri`.
+- PTY commands for create, write, resize, and close.
+- Output stream event `terminal://data`.
+- Optional ZiggyZag OSC 777 integration events from the shell.
+- Frontend parsing for cwd, command lifecycle, exit status, and duration.
+
+The primary path is documented in [ALL_ZIG_TERMINAL.md](ALL_ZIG_TERMINAL.md).
+
+## Tester-Facing MVP Scope
+
+The first hardened version should prove that the app can host ZiggyZag well:
+
+1. Launch ZiggyZag in a real PTY with correct resize, cleanup, paste, Ctrl+C interrupt, Ctrl+Shift+C copy-visible, and wheel scrollback behavior.
+2. Provide one window with tabs, each backed by a separate ZiggyZag process.
+3. Persist basic app settings: font family, font size, theme, shell path, startup directory, scrollback size.
+4. Add a command palette for app-level commands such as new tab, close tab, split later placeholder, increase font, decrease font, and open settings.
+5. Add an agent panel backed by `ziggyzag-agentd --stdio`, with explicit approval before terminal writes or build commands.
+6. Surface session status: current directory, last command status, running command indicator, and background job count when ZiggyZag exposes them.
+7. Package development builds for local Windows first, then add macOS/Linux once the PTY path is stable.
+
+MVP success is not visual novelty. It is confidence that ZiggyZag behaves like a real interactive shell inside a desktop host.
+
+## Tomorrow Test Pass
+
+Use the first friend-test pass to answer concrete questions:
+
+| Area | What to try | Pass signal |
+| --- | --- | --- |
+| Launch | `zig build run-desktop` | Window opens and prompt appears. |
+| Input | Type commands, edit with Backspace, press Enter | Text reaches the shell and output returns. |
+| Clipboard | Ctrl+V, Shift+Insert, Ctrl+Shift+C | Paste writes into the PTY; copy places visible text on the clipboard. Ctrl+C remains shell interrupt. |
+| Resize | Drag the window smaller/larger | Grid resizes without losing the running session. |
+| Scrollback | Produce long output and wheel upward | Previous visible rows can be reviewed. |
+| Shell events | Run successful and failing commands | Status/title reflects command context. |
+| AgentD | `zig build run-agentd -- --describe-tools` | Tool list is valid JSON and names the expected tools. |
+| Provider failure | Run `--oneshot` without Ollama | Structured `provider_error`, no crash. |
+
+## Integration Protocol Ideas
+
+Start with a minimal protocol that is optional, versioned, and safe to ignore. The shell should continue to work in any terminal if the app is absent.
+
+### Escape Sequence Events
+
+ZiggyZag can emit OSC-style messages for app-aware clients:
+
+```text
+OSC 777 ; ziggyzag:event:{json} BEL
+```
+
+Potential event types:
+
+- `session.ready`: shell version, protocol version, capabilities.
+- `prompt.rendered`: current directory, prompt mode, git/project summary when available.
+- `command.started`: command id, cwd, argv preview, timestamp.
+- `command.finished`: command id, exit status, duration, cwd.
+- `history.updated`: command id and metadata pointer, not full sensitive command text by default.
+- `jobs.changed`: background job count and short statuses.
+- `completion.candidates`: optional rich completions for app-side display experiments.
+
+This keeps the PTY path simple and lets non-ZiggyZag terminals ignore unknown OSC sequences.
+
+### Sidecar IPC Later
+
+If escape sequences become too cramped, add a local sidecar channel negotiated through environment variables:
+
+- `ZIGGYZAG_APP=1`
+- `ZIGGYZAG_PROTOCOL_VERSION=1`
+- `ZIGGYZAG_IPC_PATH=<local socket or named pipe>`
+
+Use sidecar IPC for larger payloads such as history search responses, structured command output previews, settings sync, or long-running background task updates. Keep command execution itself in the PTY so terminal semantics remain understandable.
+
+## WezTerm-Inspired Quality Bar
+
+WezTerm is useful as a north star for fit and finish:
+
+- Tabs and panes should feel predictable and keyboard-first.
+- Font rendering, ligatures, Unicode width, mouse selection, and clipboard behavior must be tested seriously.
+- Config should be explicit, portable, and inspectable.
+- Performance should stay smooth with large scrollback and noisy command output.
+- Advanced features should not compromise terminal compatibility.
+
+The app should borrow lessons, not implementation. Embedding WezTerm would obscure the product boundary and make ZiggyZag's shell-aware UI harder to own.
+
+## Non-Goals
+
+- Replacing the standalone ZiggyZag CLI.
+- Implementing a complete terminal emulator from scratch.
+- Embedding WezTerm or depending on WezTerm internals.
+- Building SSH, multiplexing, remote workspaces, or synchronized cloud settings in the MVP.
+- Making the desktop app responsible for shell parsing or command execution.
+- Requiring app-only behavior for core ZiggyZag features.
+- Capturing or storing command text outside existing history rules without explicit user control.
+
+## Suggested Sequence
+
+1. Move or retire the Tauri spike once the all-Zig skeleton exists.
+2. Harden the Zig PTY host and terminal grid renderer with selection, richer ANSI coverage, and process cleanup tests.
+3. Persist basic settings and add tab management.
+4. Extend app-aware OSC events only where the UI has a real need.
+5. Use those events for status UI and command palette actions.
+6. Revisit sidecar IPC only after the event stream has real pressure.
+
+The guiding rule: keep the PTY path conventional, then layer ZiggyZag-specific intelligence beside it.

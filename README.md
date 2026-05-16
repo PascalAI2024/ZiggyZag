@@ -5,7 +5,7 @@
 <h1 align="center">ZiggyZag</h1>
 
 <p align="center">
-  A Zig-powered shell playground with real parsing, history, completions, jobs, aliases, abbreviations, smart prompts, and modern shell UX experiments.
+  A Zig-powered shell workspace with real parsing, history, completions, jobs, aliases, abbreviations, smart prompts, a Windows-native terminal host, and a slim AI agent sidecar.
 </p>
 
 <p align="center">
@@ -20,6 +20,8 @@
 
 ZiggyZag started as a completed CodeCrafters "Build Your Own Shell" project and is now being shaped into a small, readable, hackable shell for people who want to learn how shells work without getting buried in decades of compatibility code.
 
+The repo is now scoped as a workspace: the Zig shell remains the working core, the Windows-native desktop terminal MVP hosts it through ConPTY, and `ziggyzag-agentd` provides a small JSON-lines agent process for terminal-aware assistance experiments.
+
 It is intentionally compact, but it already covers the fundamentals: a REPL, token parsing, quotes, redirection, native simple pipelines, completion, history persistence, metadata history, background jobs, shell variables, parameter expansion, project-aware tasks, directory navigation, and a few quality-of-life commands for real use.
 
 ## Why It Exists
@@ -32,6 +34,8 @@ Most shells are either mature production tools with a lot of historical surface 
 - Written in Zig so memory ownership, process spawning, and terminal behavior stay visible.
 
 ## Quick Start
+
+Install [Zig 0.16.0](https://ziglang.org/download/) first. Then build and run from the repository root.
 
 ```sh
 git clone https://github.com/PascalAI2024/ZiggyZag.git
@@ -47,6 +51,18 @@ git clone https://github.com/PascalAI2024/ZiggyZag.git
 cd ZiggyZag
 zig build
 .\zig-out\bin\ziggyzag.exe
+```
+
+Run the Windows desktop terminal MVP:
+
+```powershell
+zig build run-desktop
+```
+
+Run the agent sidecar tool list:
+
+```powershell
+zig build run-agentd -- --describe-tools
 ```
 
 You can also run the CodeCrafters-compatible wrapper:
@@ -102,7 +118,7 @@ export ZIGGYZAG_HISTORY_DB=~/.ziggyzag-history.tsv
 
 | Area | Status | Notes |
 | --- | --- | --- |
-| REPL prompt | Done | Interactive command loop, smart prompt, Ghostty-friendly title/CWD hints, and manual terminal echo support where raw mode is available. |
+| REPL prompt | Done | Interactive command loop, smart prompt, terminal title/CWD hints, and manual terminal echo support where raw mode is available. |
 | Builtins | Done | `about`, `abbr`, `alias`, `back`, `cd`, `complete`, `config`, `declare`, `dirs`, `doctor`, `echo`, `env`, `exit`, `export`, `forward`, `help`, `history`, `inspect`, `jobs`, `jump`, `mkcd`, `path`, `project`, `prompt`, `pwd`, `repeat`, `run`, `source`, `timeit`, `type`, `unalias`, `unabbr`, `unset`, `up`, `vars`, `which`. |
 | External programs | Done | PATH lookup and process spawning. |
 | Quoting | Done | Single quotes, double quotes, and backslash behavior. |
@@ -116,6 +132,8 @@ export ZIGGYZAG_HISTORY_DB=~/.ziggyzag-history.tsv
 | Introspection | Done | `about`, `doctor`, `inspect`, `which`, `path`, `project`, slash shortcuts, JSON output for jobs/history/prompt/env/doctor/project/dirs, and config validation/reload. |
 | Convenience commands | Done | `mkcd`, `up`, `back`, `forward`, `jump`, `repeat`, `timeit`, `source`, `env`, `vars`, and project-aware `run`. |
 | Developer polish | Done | Repo docs, diagrams, refactors, smoke script, and user-facing enhancements. |
+| Desktop terminal host | MVP | Windows-native all-Zig app with Win32 windowing, GDI terminal rendering, ConPTY shell hosting, keyboard input, copy/paste, wheel scrollback, status bar, themes, desktop config parsing, and OSC 777 shell-event parsing. |
+| Agent runtime | MVP | Slim `ziggyzag-agentd` binary with JSON-lines protocol, tool descriptions/calls, terminal host actions, and OpenAI-compatible/Ollama request shaping. |
 
 ## Architecture
 
@@ -164,17 +182,34 @@ pie title ZiggyZag capability mix
 
 ```text
 .
+|-- apps/
+|   |-- agentd/
+|   |   |-- src/
+|   |   |   `-- main.zig
+|   |   `-- README.md
+|   |-- shell/
+|   |   `-- src/
+|   |       `-- main.zig
+|   `-- desktop/
+|       |-- src/
+|       |   `-- main.zig
+|       `-- README.md
+|-- apps/desktop-tauri-spike/
+|   `-- README_SPIKE.md
 |-- assets/
 |   `-- ziggyzag-logo.svg
 |-- docs/
+|   |-- ALL_ZIG_TERMINAL.md
 |   |-- ARCHITECTURE.md
 |   |-- FEATURES.md
-|   `-- ROADMAP.md
+|   |-- QA_TOMORROW.md
+|   |-- ROADMAP.md
+|   |-- SCOPE.md
+|   `-- TERMINAL_APP.md
 |-- scripts/
+|   |-- qa-tomorrow.ps1
 |   |-- smoke.sh
 |   `-- smoke.ps1
-|-- src/
-|   `-- main.zig
 |-- build.zig
 |-- build.zig.zon
 |-- your_program.sh
@@ -185,6 +220,11 @@ pie title ZiggyZag capability mix
 
 - [Architecture](docs/ARCHITECTURE.md)
 - [Features and roadmap](docs/FEATURES.md)
+- [All-Zig terminal direction](docs/ALL_ZIG_TERMINAL.md)
+- [Agent runtime](apps/agentd/README.md)
+- [Product scope](docs/SCOPE.md)
+- [Desktop terminal strategy](docs/TERMINAL_APP.md)
+- [Tomorrow QA checklist](docs/QA_TOMORROW.md)
 - [Research-backed roadmap](docs/ROADMAP.md)
 - [Contributing](CONTRIBUTING.md)
 
@@ -202,10 +242,23 @@ Run:
 zig build run
 ```
 
+Run the all-Zig desktop MVP:
+
+```sh
+zig build run-desktop
+```
+
+Run the Zig-native agent runtime:
+
+```sh
+zig build run-agentd -- --describe-tools
+zig build run-agentd -- --stdio
+```
+
 Format:
 
 ```sh
-zig fmt src/main.zig
+zig fmt apps/shell/src/main.zig apps/desktop/src/main.zig apps/desktop/src/lib.zig apps/desktop/src/integration.zig apps/desktop/src/terminal.zig apps/desktop/src/theme.zig apps/desktop/src/config.zig apps/desktop/src/pty.zig apps/desktop/src/windows_app.zig apps/agentd/src/main.zig apps/agentd/src/lib.zig apps/agentd/src/protocol.zig apps/agentd/src/provider.zig apps/agentd/src/tools.zig build.zig
 ```
 
 Unit tests:
@@ -232,11 +285,40 @@ On Windows:
 .\scripts\smoke.ps1
 ```
 
+For normal desktop testing, use the all-Zig Windows app. The Tauri/xterm.js version is preserved only as a spike under `apps/desktop-tauri-spike`. See [docs/ALL_ZIG_TERMINAL.md](docs/ALL_ZIG_TERMINAL.md).
+
+## Friend Test Checklist
+
+For a quick test session tomorrow, use this order:
+
+1. Install Zig 0.16.0 and confirm `zig version` prints `0.16.0`.
+2. Run `zig build`.
+3. Run `.\scripts\qa-tomorrow.ps1` on Windows for the full scripted pass.
+4. Run `.\zig-out\bin\ziggyzag.exe` and try `help`, `doctor`, `history --stats`, `project`, and `exit`.
+5. Run `.\scripts\smoke.ps1` on Windows, or `./scripts/smoke.sh` on Linux/macOS.
+6. Run `zig build run-desktop` on Windows and test typing, Enter, Backspace, Ctrl+C interrupt, Ctrl+V paste, Shift+Insert paste, Ctrl+Shift+C copy-visible text, window resize, and mouse-wheel scrollback.
+7. Run `zig build run-agentd -- --describe-tools` and confirm the JSON tool list includes `project.info`, `file.read`, `rg.search`, `git.diff`, `zig.build`, and `terminal.write`.
+8. Run `zig build run-agentd -- --stdio` and send `{"id":1,"method":"agent/health"}` to confirm AgentD reports provider readiness.
+9. If Ollama is installed, start it separately and try `zig build run-agentd -- --oneshot "summarize this workspace"`.
+
+## Troubleshooting
+
+| Symptom | Fix |
+| --- | --- |
+| `zig` is not recognized | Install Zig 0.16.0 and open a fresh terminal, or add the Zig folder to `PATH`. On Windows, `winget install zig.zig` is usually enough. |
+| `.\zig-out\bin\ziggyzag.exe` is missing | Run `zig build` from the repo root first. |
+| `.\scripts\smoke.ps1` says the binary is missing | Run `zig build`, then rerun the smoke script from the repo root. |
+| Desktop window opens but shell does not start | Confirm `zig-out\bin\ziggyzag.exe` exists and that antivirus did not quarantine a local build artifact. |
+| AgentD returns `provider_error` from `--oneshot` or `agent/run` | This is expected when Ollama or the configured OpenAI-compatible provider is not running. Tool listing, `agent/health`, and local tool calls should still work. |
+| Ollama request fails | Start Ollama, confirm `http://127.0.0.1:11434` is reachable, and set `ZIGGYZAG_AGENT_MODEL` to a local model you have pulled. |
+
 ## Roadmap
 
 The first modern shell sprint is in the codebase now. The next wave is about deepening those features while keeping the code readable:
 
 - Cursor-aware autosuggestion UI on every platform.
+- Hardening the first-party Zig-native desktop terminal host that runs ZiggyZag through Windows ConPTY.
+- Expanding the shared theme and shell-integration protocol between the shell and terminal app.
 - Full-screen fuzzy Ctrl-R picker.
 - More completion spec shapes for options, files, and dynamic values.
 - Real SQLite backend behind the current metadata history format.

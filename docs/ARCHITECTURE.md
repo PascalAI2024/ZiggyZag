@@ -1,6 +1,8 @@
 # Architecture
 
-ZiggyZag is intentionally compact: most behavior lives in `src/main.zig`, with small structs for shell state, parsed commands, completion specs, aliases, abbreviations, history metadata, and background jobs. That makes the project easy to step through while still showing real shell concerns.
+ZiggyZag is intentionally compact: the working shell lives in `apps/shell/src/main.zig`, with small structs for shell state, parsed commands, completion specs, aliases, abbreviations, history metadata, and background jobs. That makes the project easy to step through while still showing real shell concerns.
+
+The repository is organized as a workspace. `apps/shell` is the shell runtime, `apps/desktop` is the Windows-native terminal host MVP that launches the shell through a PTY, and `apps/agentd` is the slim JSON-lines agent sidecar.
 
 ## Runtime Schematic
 
@@ -29,6 +31,24 @@ flowchart LR
     emit --> terminal
     emit --> files["redirected files"]
 ```
+
+## Workspace Shape
+
+```mermaid
+flowchart TD
+    root["repo root"] --> build["build.zig"]
+    build --> shell["apps/shell"]
+    shell --> binary["zig-out/bin/ziggyzag"]
+    root --> desktop["apps/desktop"]
+    desktop --> pty["Windows ConPTY host"]
+    pty --> binary
+    root --> agentd["apps/agentd"]
+    agentd --> agentbin["zig-out/bin/ziggyzag-agentd"]
+    root --> docs["docs"]
+    root --> scripts["scripts"]
+```
+
+Root-level `zig build`, `zig build run`, and `zig build test` remain stable entry points. `zig build run-desktop` launches the native terminal MVP, and `zig build run-agentd -- --describe-tools` exercises the agent sidecar.
 
 ## Command Lifecycle
 
@@ -114,6 +134,12 @@ classDiagram
 ## Why Some Work Is Delegated
 
 Simple pipelines now have a native Zig path. Complex syntax still uses `/bin/sh -c` on POSIX and `cmd /C` on Windows. That keeps the project small while leaving room for a deeper streaming pipeline engine later.
+
+## Desktop Host Boundary
+
+The desktop terminal app should own windowing, tabs, settings, terminal rendering, PTY lifecycle, and app-level commands. The Zig shell should continue to own parsing, execution, history, completions, prompt behavior, and shell state.
+
+Optional shell integration should be explicit and ignorable by other terminals. The first shape should be OSC-style events for session readiness, prompt context, command start, command finish, and job changes. Larger payloads can move to sidecar IPC later if the event stream becomes too cramped.
 
 ## Design Rules
 
