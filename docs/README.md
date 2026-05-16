@@ -46,6 +46,16 @@ ZiggyZag is usable for testing and development, but it is still alpha software. 
 | Desktop host | [apps/desktop README](../apps/desktop/README.md) |
 | AgentD sidecar | [apps/agentd README](../apps/agentd/README.md) |
 
+## Contributor Guides
+
+| Topic | Read |
+| --- | --- |
+| Architecture tour for new contributors | [Contributing Tour](CONTRIBUTING_TOUR.md) |
+| VT parser and grid internals | [Terminal Parser Guide](TERMINAL_PARSER_GUIDE.md) |
+| AgentD JSON-lines protocol | [AgentD Protocol Guide](AGENTD_PROTOCOL.md) |
+| Desktop theme authoring | [Theme Authoring Guide](THEME_AUTHORING.md) |
+| Release build and QA checklist | [Release Checklist](RELEASE_CHECKLIST.md) |
+
 ## Documentation Notes
 
 - Planning documents are intentionally honest about alpha gaps, incomplete platform parity, and areas still under research.

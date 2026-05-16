@@ -371,3 +371,49 @@ test "escapes JSON strings" {
     try appendJsonString(std.testing.allocator, &out, "a\"b\\c\n");
     try std.testing.expectEqualStrings("\"a\\\"b\\\\c\\n\"", out.items);
 }
+
+test "error envelope has consistent shape with ok false and snake_case code" {
+    const envelope = try writeErrorEnvelope(std.testing.allocator, "42", "unknown_method", "no such method");
+    defer std.testing.allocator.free(envelope);
+    // Must contain the required shape fields.
+    try std.testing.expect(std.mem.indexOf(u8, envelope, "\"id\":42") != null);
+    try std.testing.expect(std.mem.indexOf(u8, envelope, "\"ok\":false") != null);
+    try std.testing.expect(std.mem.indexOf(u8, envelope, "\"error\":{") != null);
+    try std.testing.expect(std.mem.indexOf(u8, envelope, "\"code\":\"unknown_method\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, envelope, "\"message\":\"no such method\"") != null);
+    // Must NOT contain ok:true or result.
+    try std.testing.expect(std.mem.indexOf(u8, envelope, "\"ok\":true") == null);
+    try std.testing.expect(std.mem.indexOf(u8, envelope, "\"result\"") == null);
+}
+
+test "ok envelope has consistent shape with ok true and result" {
+    const envelope = try writeOkEnvelope(std.testing.allocator, "\"abc\"", "{\"answer\":42}");
+    defer std.testing.allocator.free(envelope);
+    try std.testing.expect(std.mem.indexOf(u8, envelope, "\"id\":\"abc\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, envelope, "\"ok\":true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, envelope, "\"result\":{\"answer\":42}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, envelope, "\"ok\":false") == null);
+    try std.testing.expect(std.mem.indexOf(u8, envelope, "\"error\"") == null);
+}
+
+test "parse error codes are snake_case" {
+    // Confirm all parse error codes are snake_case (no CamelCase).
+    const all_errors = [_]ParseRequestError{
+        error.EmptyRequest,
+        error.InvalidJson,
+        error.RequestMustBeObject,
+        error.MissingMethod,
+        error.MethodMustBeString,
+        error.FieldMustBeString,
+        error.IdMustBeStringNumberOrNull,
+    };
+    for (all_errors) |err| {
+        const code = parseErrorCode(err);
+        // snake_case: no uppercase letters allowed.
+        for (code) |c| {
+            try std.testing.expect(c != 'A' and !(c >= 'B' and c <= 'Z'));
+        }
+        // Must be non-empty.
+        try std.testing.expect(code.len > 0);
+    }
+}

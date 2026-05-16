@@ -74,7 +74,7 @@ The shell has prompt themes too: `classic`, `smart`, `compact`, `dev`, and `dash
 | REPL prompt | Done | Interactive command loop, smart prompt, terminal title/CWD hints, and manual terminal echo support where raw mode is available. |
 | Builtins | Done | `about`, `abbr`, `alias`, `back`, `bg`, `cd`, `complete`, `config`, `declare`, `dirs`, `disown`, `doctor`, `echo`, `env`, `exit`, `export`, `fg`, `forward`, `help`, `history`, `inspect`, `jobs`, `jump`, `kill`, `mkcd`, `path`, `project`, `prompt`, `pwd`, `repeat`, `run`, `source`, `timeit`, `type`, `unalias`, `unabbr`, `unset`, `up`, `vars`, `wait`, `which`. |
 | External programs | Done | PATH lookup and process spawning. |
-| Quoting | Done | Single quotes, double quotes, and backslash behavior. |
+| Quoting | Done | Single quotes, double quotes, and backslash behavior, including explicitly empty quoted arguments and quoted empty expansions. |
 | Redirection | Done | stdout/stderr redirect and append forms. |
 | Pipelines | Alpha | Native simple pipelines with concurrent stdout/stderr draining per stage, temp-file handoff for large stage output, and fallback to the system shell for complex syntax. A true streaming pipe-chain engine remains future work. |
 | Completion | Done | Builtin, executable, path, programmable, and declarative completion with descriptions. |
@@ -85,9 +85,9 @@ The shell has prompt themes too: `classic`, `smart`, `compact`, `dev`, and `dash
 | Introspection | Done | `about`, `doctor`, `inspect`, `which`, `path`, `project`, slash shortcuts, JSON output for jobs/history/prompt/env/doctor/project/dirs, and config validation/reload. |
 | Convenience commands | Done | `mkcd`, `up`, `back`, `forward`, `jump`, `repeat`, `timeit`, `source`, `env`, `vars`, and project-aware `run`. |
 | Developer polish | Done | Repo docs, diagrams, refactors, smoke script, and user-facing enhancements. |
-| Desktop terminal host | Alpha | Windows-native all-Zig app with Win32 windowing, GDI terminal rendering, ConPTY shell hosting, split panes, keyboard input, bracketed paste, app-cursor mode, mouse-wheel reporting for alternate-screen apps, bounded scrollback, scrollback search, quick select, command palette, AgentD panel, shell-aware status bar, themes, profile/session config loading, alternate screen, 256/RGB color rendering, and OSC 777 shell-event parsing. Tabs, mouse selection, and full process session restore remain TODO. macOS/Linux currently build a PTY-first terminal-attached launcher; native POSIX graphical hosting is still in progress. |
-| Unicode terminal | Alpha | Terminal cells store Unicode scalars, decode UTF-8 with replacement for invalid bytes, emit UTF-8 for copy/search/visible text, and track wide-cell continuations. Combining marks, grapheme clusters, fallback fonts, ligatures, and exhaustive TUI compatibility remain TODO. |
-| Agent runtime | Alpha | Slim `ziggyzag-agentd` binary with JSON-lines protocol, tool schemas, approval metadata, audit/event host actions, redacted bounded read/search/git output, and OpenAI-compatible/Ollama request shaping on Windows, macOS, and Linux. |
+| Desktop terminal host | Alpha | Windows-native all-Zig app with Win32 windowing, GDI terminal rendering, ConPTY shell hosting, a resumable escape parser that survives sequences split across PTY reads, OSC string consumption (window title / OSC 8 / clipboard no longer corrupt the grid), DECSTBM scroll regions, ESC RI/IND/NEL/RIS, split panes, keyboard input, bracketed paste, app-cursor mode, mouse-wheel reporting for alternate-screen apps, bounded scrollback, scrollback search, quick select, command palette, AgentD panel, shell-aware status bar, themes, profile/session config loading, alternate screen, 256/RGB color rendering, and OSC 777 shell-event parsing. Tabs, mouse selection, origin mode, resize reflow, and full process session restore remain TODO. macOS/Linux currently build a PTY-first terminal-attached launcher; native POSIX graphical hosting is still in progress. |
+| Unicode terminal | Alpha | Terminal cells store Unicode scalars, decode UTF-8 with replacement for invalid bytes (a multi-byte scalar split across PTY reads now resumes correctly), emit UTF-8 for copy/search/visible text, and track wide-cell continuations. Combining marks, grapheme clusters, fallback fonts, ligatures, and exhaustive TUI compatibility remain TODO. |
+| Agent runtime | Alpha | Slim `ziggyzag-agentd` binary with JSON-lines protocol, tool schemas, approval metadata, audit/event host actions, redacted bounded read/search/git output, OpenAI-compatible/Ollama request shaping, and a hardened `file.read` sandbox (lexical filter, final-component symlink lstat, and a canonicalizing realpath workspace-containment guard) on Windows, macOS, and Linux. |
 | AgentD desktop panel | Alpha | The Windows desktop spawns `ziggyzag-agentd --stdio`, renders a bounded transcript, requests health/tool data, previews `terminal.write`, and applies the pending write only after explicit approval. |
 
 ## Architecture
@@ -200,6 +200,11 @@ pie title ZiggyZag capability mix
 - [Tomorrow QA checklist](docs/QA_TOMORROW.md)
 - [Research-backed roadmap](docs/ROADMAP.md)
 - [Contributing](CONTRIBUTING.md)
+- [Contributing tour](docs/CONTRIBUTING_TOUR.md)
+- [Terminal parser guide](docs/TERMINAL_PARSER_GUIDE.md)
+- [AgentD protocol guide](docs/AGENTD_PROTOCOL.md)
+- [Theme authoring guide](docs/THEME_AUTHORING.md)
+- [Release checklist](docs/RELEASE_CHECKLIST.md)
 
 ## Release Artifacts
 

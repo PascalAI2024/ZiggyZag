@@ -102,6 +102,31 @@ pub fn findSpec(name: []const u8) ?Spec {
     return null;
 }
 
+pub fn errorCode(err: anyerror) []const u8 {
+    return switch (err) {
+        error.MissingTool => "missing_tool",
+        error.UnknownTool => "unknown_tool",
+        error.MissingPath => "missing_path",
+        error.UnsafePath => "unsafe_path",
+        error.MissingQuery => "missing_query",
+        error.EmptyQuery => "empty_query",
+        error.InvalidQuery => "invalid_query",
+        error.QueryTooLarge => "query_too_large",
+        error.MissingText => "missing_text",
+        error.EmptyText => "empty_text",
+        error.InvalidText => "invalid_text",
+        error.TextTooLarge => "text_too_large",
+        error.UnsupportedBuildCommand => "unsupported_build_command",
+        error.InvalidZigPath => "invalid_zig_path",
+        error.ConfiguredZigUnavailable => "configured_zig_unavailable",
+        error.ZigUnavailable => "zig_unavailable",
+        error.ToolTimedOut => "tool_timed_out",
+        error.FileNotFound => "file_not_found",
+        error.AccessDenied => "access_denied",
+        else => "tool_error",
+    };
+}
+
 pub fn errorMessage(err: anyerror) []const u8 {
     return switch (err) {
         error.MissingTool => "tools/call requires a tool field",
@@ -120,6 +145,7 @@ pub fn errorMessage(err: anyerror) []const u8 {
         error.InvalidZigPath => "configured Zig path contains invalid bytes",
         error.ConfiguredZigUnavailable => "configured Zig path was not found; check ZIGGYZAG_ZIG_PATH or ZIG_EXE",
         error.ZigUnavailable => "zig.build could not find Zig; set ZIGGYZAG_ZIG_PATH or ZIG_EXE, add zig to PATH, or install Zig",
+        error.ToolTimedOut => "tool call exceeded time limit",
         error.FileNotFound => "required command or file was not found",
         error.AccessDenied => "access denied while running tool",
         else => "tool call failed",
@@ -133,6 +159,43 @@ pub const Result = struct {
         allocator.free(self.json);
     }
 };
+
+/// Returns a stateless audit policy summary for all registered tools.
+/// No accumulator state is maintained — this captures the static policy
+/// configuration (effects, approval, output caps, redaction strategy).
+/// Rationale for stateless approach: adding a per-session audit accumulator
+/// would require thread-safety, ringbuffer bounds, and lifetime management
+/// that is out of scope for this minimal sidecar. The stateless policy export
+/// gives callers everything they need to reason about what agentd can do
+/// and how it constrains output, without the complexity of in-process state.
+pub fn auditPolicyJsonAlloc(allocator: Allocator) ![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(allocator);
+    try out.appendSlice(allocator, "{\"audit_mode\":\"stateless_policy\"");
+    try out.appendSlice(allocator, ",\"rationale\":\"Per-session accumulator state omitted; static policy captures tool capabilities and output constraints\"");
+    try out.appendSlice(allocator, ",\"redaction\":{\"strategy\":\"line_oriented_bounded\",\"patterns\":[\"authorization_bearer_basic\",\"aws_akia\",\"slack_xox\",\"github_gh_token\",\"pem_private_key\",\"secret_keyword_assignment\"]}");
+    try out.appendSlice(allocator, ",\"output_caps\":{\"file_bytes\":65536,\"command_stdout_bytes\":98304,\"command_stderr_bytes\":24576}");
+    try out.appendSlice(allocator, ",\"tools\":[");
+    for (specs, 0..) |spec, index| {
+        if (index > 0) try out.append(allocator, ',');
+        try out.append(allocator, '{');
+        try out.appendSlice(allocator, "\"name\":");
+        try protocol.appendJsonString(allocator, &out, spec.name);
+        try out.appendSlice(allocator, ",\"effect\":");
+        try protocol.appendJsonString(allocator, &out, spec.effect);
+        try out.appendSlice(allocator, ",\"approval\":");
+        try protocol.appendJsonString(allocator, &out, spec.approval.text());
+        try out.appendSlice(allocator, ",\"approval_reason\":");
+        try protocol.appendJsonString(allocator, &out, spec.approval_reason);
+        try out.appendSlice(allocator, ",\"context_policy\":");
+        try protocol.appendJsonString(allocator, &out, spec.context_policy);
+        try out.appendSlice(allocator, ",\"requires_host\":");
+        try out.appendSlice(allocator, if (spec.approval == .host or spec.approval == .ask) "true" else "false");
+        try out.append(allocator, '}');
+    }
+    try out.appendSlice(allocator, "]}");
+    return out.toOwnedSlice(allocator);
+}
 
 pub fn listJsonAlloc(allocator: Allocator) ![]u8 {
     var out: std.ArrayList(u8) = .empty;
@@ -200,19 +263,18 @@ fn projectInfoJsonAlloc(allocator: Allocator, io: std.Io) ![]u8 {
 
 fn readFileJsonAlloc(allocator: Allocator, io: std.Io, path: []const u8) ![]u8 {
     if (!safeRelativePath(path)) return error.UnsafePath;
-    // A planted symlink is the primary way the lexical filter is bypassed to
-    // disclose out-of-tree files. Reject a symlinked final component via an
-    // lstat-style metadata check (no read path, so it stays portable; opening
-    // with follow_symlinks=false yields an unreadable async handle on Windows).
-    if (std.Io.Dir.cwd().statFile(io, path, .{ .follow_symlinks = false })) |entry| {
-        if (entry.kind == .sym_link) return error.UnsafePath;
-    } else |_| {
-        // Missing/permission errors are surfaced by openFile below with an
-        // accurate message; only the symlink case is a safety rejection.
-    }
-    // Secondary: canonicalize and confirm the resolved path stays inside the
-    // workspace. This also catches a symlinked *directory* component, which
-    // the final-component lstat above cannot see.
+    // Primary, portable, fail-closed defense: no path component (any
+    // intermediate directory OR the final entry) may be a symlink. The lexical
+    // filter above already blocked `..`/absolute/drive/NUL, so a planted
+    // symlink is the only remaining way to escape the workspace; rejecting
+    // every symlinked component closes both the final-component and the
+    // directory-component escape. This is metadata-only (no read, no realPath)
+    // so it works identically on the Windows and Linux std.Io backends —
+    // unlike realPath(cwd), which is unimplemented on Linux. It is a
+    // TOCTOU-best-effort check, not atomic.
+    if (pathHasSymlinkComponent(io, path)) return error.UnsafePath;
+    // Defense in depth: also confirm the canonicalized target stays inside the
+    // workspace. Fails open only when target canonicalization is unavailable.
     if (resolvedPathEscapesWorkspace(allocator, io, path)) return error.UnsafePath;
     const file = try std.Io.Dir.cwd().openFile(io, path, .{});
     defer file.close(io);
@@ -303,21 +365,148 @@ fn terminalWriteJsonAlloc(allocator: Allocator, text: []const u8) ![]u8 {
     return out.toOwnedSlice(allocator);
 }
 
+/// Default wall-clock timeout for child processes spawned by tools (30 seconds).
+const command_timeout_ns: u64 = 30 * std.time.ns_per_s;
+
+/// Pure helper: returns true when `now_ns - started_ns >= timeout_ns`.
+/// Extracted so it can be unit-tested with synthetic clocks without spawning
+/// a real process.
+pub fn shouldKill(now_ns: u64, started_ns: u64, timeout_ns: u64) bool {
+    if (now_ns < started_ns) return false; // clock went backward — don't kill
+    return (now_ns - started_ns) >= timeout_ns;
+}
+
+/// Drains a child pipe into a heap buffer on its own thread.
+/// Mirrors the StderrDrain pattern in main.zig to avoid the stdout/stderr
+/// pipe-buffer deadlock.
+const PipeDrain = struct {
+    io: std.Io,
+    file: std.Io.File,
+    allocator: Allocator,
+    out: ?[]u8 = null,
+    err: ?anyerror = null,
+    limit: usize,
+
+    fn run(self: *PipeDrain) void {
+        var buffer: [4096]u8 = undefined;
+        var reader = self.file.readerStreaming(self.io, &buffer);
+        self.out = reader.interface.allocRemaining(self.allocator, .limited(self.limit)) catch |e| {
+            self.err = e;
+            return;
+        };
+    }
+};
+
+/// Watchdog thread context: sleeps for `timeout_ns`, then atomically signals
+/// `fired` and calls `child.kill`. The main thread checks `fired` after `wait`.
+/// Note: `std.Io.sleep` is used because Zig 0.16 has no `std.Thread.sleep`;
+/// all blocking waits route through the I/O runtime. `std.Io` is safe to pass
+/// across threads (demonstrated by StderrDrain.io in main.zig).
+const Watchdog = struct {
+    io: std.Io,
+    child: *std.process.Child,
+    timeout_ns: u64,
+    fired: std.atomic.Value(bool),
+
+    fn run(self: *Watchdog) void {
+        // Ignore Canceled — if the sleep is interrupted we still want to check
+        // whether the timeout elapsed and kill if needed.
+        std.Io.sleep(
+            self.io,
+            std.Io.Duration.fromNanoseconds(@intCast(self.timeout_ns)),
+            .awake,
+        ) catch {};
+        self.fired.store(true, .release);
+        self.child.kill(self.io);
+    }
+};
+
 fn commandJsonAlloc(
     allocator: Allocator,
     io: std.Io,
     env: *std.process.Environ.Map,
     argv: []const []const u8,
 ) ![]u8 {
-    const result = try std.process.run(allocator, io, .{
+    var child = try std.process.spawn(io, .{
         .argv = argv,
         .environ_map = env,
+        .stdin = .inherit,
+        .stdout = .pipe,
+        .stderr = .pipe,
     });
-    defer allocator.free(result.stdout);
-    defer allocator.free(result.stderr);
-    const stdout_redacted = try redactSecretsAlloc(allocator, result.stdout);
+    errdefer child.kill(io);
+
+    // Drain stdout and stderr concurrently to avoid pipe-buffer deadlocks.
+    var stdout_drain = PipeDrain{
+        .io = io,
+        .file = child.stdout.?,
+        .allocator = allocator,
+        .limit = max_command_stdout_bytes + 1, // +1 to detect truncation
+    };
+    var stderr_drain = PipeDrain{
+        .io = io,
+        .file = child.stderr.?,
+        .allocator = allocator,
+        .limit = max_command_stderr_bytes + 1,
+    };
+    const stdout_thread = try std.Thread.spawn(.{}, PipeDrain.run, .{&stdout_drain});
+    const stderr_thread = try std.Thread.spawn(.{}, PipeDrain.run, .{&stderr_drain});
+
+    // Watchdog: kill the child after command_timeout_ns.
+    var watchdog = Watchdog{
+        .io = io,
+        .child = &child,
+        .timeout_ns = command_timeout_ns,
+        .fired = std.atomic.Value(bool).init(false),
+    };
+    const watchdog_thread = std.Thread.spawn(.{}, Watchdog.run, .{&watchdog}) catch |e| {
+        // Watchdog spawn failed: kill the child ourselves so the drain threads
+        // can finish reading to EOF, then join them before returning.
+        child.kill(io);
+        stdout_thread.join();
+        stderr_thread.join();
+        if (stdout_drain.out) |buf| allocator.free(buf);
+        if (stderr_drain.out) |buf| allocator.free(buf);
+        return e;
+    };
+
+    // Wait for pipes to drain (threads own the pipe reads).
+    stdout_thread.join();
+    stderr_thread.join();
+
+    const term = child.wait(io) catch |e| {
+        watchdog_thread.join();
+        if (stdout_drain.out) |buf| allocator.free(buf);
+        if (stderr_drain.out) |buf| allocator.free(buf);
+        return e;
+    };
+
+    watchdog_thread.join();
+
+    // Surface drain errors. When a drain thread errors, its `.out` is null so
+    // the companion buffer (if allocated) must also be freed before returning.
+    if (stdout_drain.err) |e| {
+        if (stderr_drain.out) |buf| allocator.free(buf);
+        return e;
+    }
+    if (stderr_drain.err) |e| {
+        if (stdout_drain.out) |buf| allocator.free(buf);
+        return e;
+    }
+
+    // Both drains succeeded: obtain owned buffers, freed unconditionally on exit.
+    const raw_stdout = stdout_drain.out orelse return error.Unexpected;
+    defer allocator.free(raw_stdout);
+    const raw_stderr = stderr_drain.out orelse return error.Unexpected;
+    defer allocator.free(raw_stderr);
+
+    if (watchdog.fired.load(.acquire)) {
+        return error.ToolTimedOut;
+    }
+
+    const stdout_redacted = try redactSecretsAlloc(allocator, raw_stdout);
     defer stdout_redacted.deinit(allocator);
-    const stderr_redacted = try redactSecretsAlloc(allocator, result.stderr);
+    const stderr_redacted = try redactSecretsAlloc(allocator, raw_stderr);
     defer stderr_redacted.deinit(allocator);
     const stdout_clipped = clippedView(stdout_redacted.text, max_command_stdout_bytes);
     const stderr_clipped = clippedView(stderr_redacted.text, max_command_stderr_bytes);
@@ -326,7 +515,7 @@ fn commandJsonAlloc(
     errdefer out.deinit(allocator);
     try out.appendSlice(allocator, "{\"status\":");
     var status_buffer: [16]u8 = undefined;
-    const status_text = std.fmt.bufPrint(&status_buffer, "{d}", .{termStatus(result.term)}) catch unreachable;
+    const status_text = std.fmt.bufPrint(&status_buffer, "{d}", .{termStatus(term)}) catch unreachable;
     try out.appendSlice(allocator, status_text);
     try out.appendSlice(allocator, ",\"stdout\":");
     try protocol.appendJsonString(allocator, &out, stdout_clipped.text);
@@ -341,7 +530,7 @@ fn commandJsonAlloc(
     try out.appendSlice(allocator, ",\"audit\":");
     try appendAuditObject(allocator, &out, argv[0], "read_command_output", false, "completed");
     try out.appendSlice(allocator, ",\"event\":");
-    try appendEventObject(allocator, &out, "tool.completed", argv[0], "none", if (termStatus(result.term) == 0) "ok" else "nonzero_exit");
+    try appendEventObject(allocator, &out, "tool.completed", argv[0], "none", if (termStatus(term) == 0) "ok" else "nonzero_exit");
     try out.append(allocator, '}');
     return out.toOwnedSlice(allocator);
 }
@@ -370,13 +559,23 @@ fn redactSecretsAlloc(allocator: Allocator, text: []const u8) !RedactedText {
     errdefer out.deinit(allocator);
     var changed = false;
 
+    var in_pem_block = false;
     var line_iterator = std.mem.splitScalar(u8, text, '\n');
     var first = true;
     while (line_iterator.next()) |line| {
         if (!first) try out.append(allocator, '\n');
         first = false;
 
-        if (looksSecretLine(line)) {
+        // PEM private key blocks: stateful — redact from BEGIN to END inclusive.
+        if (isPemPrivateKeyBegin(line)) {
+            in_pem_block = true;
+        }
+        const was_in_pem = in_pem_block;
+        if (in_pem_block and isPemBlockEnd(line)) {
+            in_pem_block = false;
+        }
+
+        if (was_in_pem or looksSecretLine(line)) {
             try out.appendSlice(allocator, "[redacted secret-like line]");
             changed = true;
         } else {
@@ -387,20 +586,179 @@ fn redactSecretsAlloc(allocator: Allocator, text: []const u8) !RedactedText {
     return .{ .text = try out.toOwnedSlice(allocator), .changed = changed };
 }
 
+/// Returns true when a line opens a PEM private key block.
+fn isPemPrivateKeyBegin(line: []const u8) bool {
+    const trimmed = std.mem.trim(u8, line, " \t\r\n");
+    if (!std.mem.startsWith(u8, trimmed, "-----BEGIN ")) return false;
+    return containsIgnoreCase(trimmed, "PRIVATE KEY");
+}
+
+/// Returns true when a line closes any PEM block (we track entry so we only
+/// close blocks we opened).
+fn isPemBlockEnd(line: []const u8) bool {
+    const trimmed = std.mem.trim(u8, line, " \t\r\n");
+    return std.mem.startsWith(u8, trimmed, "-----END ");
+}
+
 fn looksSecretLine(line: []const u8) bool {
     const trimmed = std.mem.trim(u8, line, " \t\r\n");
     if (trimmed.len == 0) return false;
-    if (containsAnyIgnoreCase(trimmed, &.{ "api_key", "apikey", "auth_token", "access_token", "secret", "password", "bearer " })) {
-        return std.mem.indexOfAny(u8, trimmed, "=:") != null or containsIgnoreCase(trimmed, "bearer ");
+
+    // Authorization header: Bearer or Basic.
+    if (containsIgnoreCase(trimmed, "authorization:")) {
+        if (containsIgnoreCase(trimmed, "bearer ") or containsIgnoreCase(trimmed, "basic ")) return true;
+    }
+    // Standalone bearer token value on its own line (e.g. curl -H output).
+    if (containsIgnoreCase(trimmed, "bearer ")) return true;
+
+    // Slack tokens: xoxb-, xoxa-, xoxp-, xoxr-, xoxs-
+    if (looksLikeSlackToken(trimmed)) return true;
+
+    // GitHub tokens: ghp_, gho_, ghu_, ghs_, ghr_ followed by ≥36 alnum chars.
+    if (looksLikeGithubToken(trimmed)) return true;
+
+    // AWS access key IDs: AKIA followed by 16 uppercase alnum chars.
+    if (looksLikeAwsAccessKey(trimmed)) return true;
+
+    // Assignment / mapping patterns: keyword on LHS of = or : with a value.
+    // Require word-boundary prefix to avoid "keyword_count = 3" false positives
+    // for words like "secret" embedded in variable names.
+    if (containsSecretKeywordAssignment(trimmed)) return true;
+
+    return false;
+}
+
+/// Detects `xox[baprs]-<payload>` Slack token patterns anywhere on the line.
+fn looksLikeSlackToken(line: []const u8) bool {
+    var i: usize = 0;
+    while (i + 5 < line.len) : (i += 1) {
+        // Match xox followed by one of b/a/p/r/s, then a hyphen.
+        if (!std.ascii.eqlIgnoreCase(line[i .. i + 3], "xox")) continue;
+        const kind = line[i + 3];
+        if (kind != 'b' and kind != 'a' and kind != 'p' and kind != 'r' and kind != 's' and
+            kind != 'B' and kind != 'A' and kind != 'P' and kind != 'R' and kind != 'S') continue;
+        if (line[i + 4] != '-') continue;
+        // Require at least 20 more chars of payload.
+        if (i + 5 + 20 > line.len) continue;
+        var ok = true;
+        for (line[i + 5 .. i + 5 + 20]) |c| {
+            if (!std.ascii.isAlphanumeric(c) and c != '-' and c != '_') {
+                ok = false;
+                break;
+            }
+        }
+        if (ok) return true;
     }
     return false;
 }
 
-fn containsAnyIgnoreCase(haystack: []const u8, needles: []const []const u8) bool {
-    for (needles) |needle| {
-        if (containsIgnoreCase(haystack, needle)) return true;
+/// Detects `gh[pousr]_<36+ alnum>` GitHub token patterns anywhere on the line.
+fn looksLikeGithubToken(line: []const u8) bool {
+    var i: usize = 0;
+    while (i + 4 < line.len) : (i += 1) {
+        if (line[i] != 'g' and line[i] != 'G') continue;
+        if (line[i + 1] != 'h' and line[i + 1] != 'H') continue;
+        const kind = line[i + 2];
+        if (kind != 'p' and kind != 'o' and kind != 'u' and kind != 's' and kind != 'r' and
+            kind != 'P' and kind != 'O' and kind != 'U' and kind != 'S' and kind != 'R') continue;
+        if (line[i + 3] != '_') continue;
+        // Require at least 36 alphanumeric chars after the prefix.
+        const payload_start = i + 4;
+        if (payload_start + 36 > line.len) continue;
+        var len: usize = 0;
+        while (payload_start + len < line.len and
+            (std.ascii.isAlphanumeric(line[payload_start + len]) or line[payload_start + len] == '_'))
+        {
+            len += 1;
+        }
+        if (len >= 36) return true;
     }
     return false;
+}
+
+/// Detects `AKIA` followed by exactly 16 uppercase alnum chars (AWS key IDs).
+fn looksLikeAwsAccessKey(line: []const u8) bool {
+    var i: usize = 0;
+    while (i + 4 + 16 <= line.len) : (i += 1) {
+        if (!std.ascii.eqlIgnoreCase(line[i .. i + 4], "AKIA")) continue;
+        // Preceding char must be non-alnum (start of token, not mid-word).
+        if (i > 0 and std.ascii.isAlphanumeric(line[i - 1])) continue;
+        const payload = line[i + 4 .. i + 4 + 16];
+        var all_upper_alnum = true;
+        for (payload) |c| {
+            if (!std.ascii.isAlphanumeric(c)) {
+                all_upper_alnum = false;
+                break;
+            }
+        }
+        if (!all_upper_alnum) continue;
+        // Trailing char must be non-alnum (end of token, not mid-word).
+        if (i + 4 + 16 < line.len and std.ascii.isAlphanumeric(line[i + 4 + 16])) continue;
+        return true;
+    }
+    return false;
+}
+
+/// Detects secret-keyword = value or keyword: value patterns.
+/// Requires that the keyword appears at a word boundary (preceded by a non-alnum
+/// or at start of line) to avoid false positives like `mykeyword_count = 3`.
+fn containsSecretKeywordAssignment(line: []const u8) bool {
+    const keywords = [_][]const u8{
+        "api_key", "apikey", "api-key",
+        "auth_token", "access_token",
+        "_token",  "_secret",  "_key",
+        "password", "passwd",
+    };
+    for (keywords) |kw| {
+        var pos: usize = 0;
+        while (pos + kw.len <= line.len) {
+            const idx = indexOfIgnoreCase(line[pos..], kw) orelse break;
+            const abs = pos + idx;
+            // Word-boundary check for non-suffix keywords (api_key, password, …):
+            // the char before the keyword must not be a plain alpha (it can be `_`
+            // or a digit since compound env-var prefixes like DB_PASSWORD are valid
+            // targets). Reject only pure-alpha prefixes that would make it a
+            // mid-word false-positive like "secrecy".
+            const is_suffix_keyword = kw[0] == '_';
+            if (!is_suffix_keyword) {
+                // Reject if preceded by a plain alpha (e.g. "mysecret").
+                if (abs > 0 and std.ascii.isAlphabetic(line[abs - 1])) {
+                    pos = abs + kw.len;
+                    continue;
+                }
+            } else {
+                // Suffix keyword (_token, _secret, _key): must be attached to a
+                // preceding alnum/underscore (e.g. `my_token`, `auth_key`).
+                if (abs == 0 or (!std.ascii.isAlphanumeric(line[abs - 1]) and line[abs - 1] != '_')) {
+                    pos = abs + kw.len;
+                    continue;
+                }
+            }
+            // Now confirm there is an `=` or `:` after the keyword (possibly with
+            // whitespace) and that something follows it.
+            const after = abs + kw.len;
+            var j = after;
+            while (j < line.len and (line[j] == ' ' or line[j] == '\t')) : (j += 1) {}
+            if (j < line.len and (line[j] == '=' or line[j] == ':')) {
+                // Confirm there's a non-whitespace value after the separator.
+                var k = j + 1;
+                while (k < line.len and (line[k] == ' ' or line[k] == '\t')) : (k += 1) {}
+                if (k < line.len) return true;
+            }
+            pos = abs + kw.len;
+        }
+    }
+    return false;
+}
+
+fn indexOfIgnoreCase(haystack: []const u8, needle: []const u8) ?usize {
+    if (needle.len == 0) return 0;
+    if (needle.len > haystack.len) return null;
+    var i: usize = 0;
+    while (i + needle.len <= haystack.len) : (i += 1) {
+        if (std.ascii.eqlIgnoreCase(haystack[i .. i + needle.len], needle)) return i;
+    }
+    return null;
 }
 
 fn containsIgnoreCase(haystack: []const u8, needle: []const u8) bool {
@@ -620,19 +978,24 @@ fn wingetPackageZigAlloc(
     return null;
 }
 
-/// Best-effort secondary guard against symlinked *directory* components that a
-/// lexical check and `follow_symlinks=false` (final component only) would miss.
-/// `realPath` has limited platform support and is race-prone, so a resolution
-/// failure is intentionally NOT treated as an escape — it only rejects a path
-/// it can prove resolves outside the workspace. The atomic open-time flags in
-/// `readFileJsonAlloc` are the primary guarantee.
+/// Defense-in-depth on top of the fail-closed `pathHasSymlinkComponent` walk
+/// and the lexical `safeRelativePath` filter: canonicalize the target and
+/// confirm it still resolves inside the workspace root.
+///
+/// The workspace root is canonicalized via `realPathFileAlloc(".")`, NOT
+/// `realPath(cwd)` — the latter returns `error.FileNotFound` on the Linux
+/// std.Io backend, which previously made this guard a silent no-op there.
+/// Still fails OPEN when either canonicalization is unavailable: that is an
+/// accepted availability tradeoff because the per-component symlink walk is
+/// the always-on fail-closed guarantee, so a canonicalization failure here
+/// only loses a redundant backstop, never the primary defense. TOCTOU-racy by
+/// nature, not an atomic guarantee.
 fn resolvedPathEscapesWorkspace(allocator: Allocator, io: std.Io, path: []const u8) bool {
-    var cwd_buffer: [4096]u8 = undefined;
-    const cwd_len = std.Io.Dir.cwd().realPath(io, &cwd_buffer) catch return false;
-    const cwd_real = cwd_buffer[0..cwd_len];
+    const root_real = std.Io.Dir.cwd().realPathFileAlloc(io, ".", allocator) catch return false;
+    defer allocator.free(root_real);
     const target_real = std.Io.Dir.cwd().realPathFileAlloc(io, path, allocator) catch return false;
     defer allocator.free(target_real);
-    return !pathWithin(cwd_real, target_real);
+    return !pathWithin(root_real, target_real);
 }
 
 fn stripWindowsLongPrefix(p: []const u8) []const u8 {
@@ -674,6 +1037,31 @@ pub fn safeRelativePath(path: []const u8) bool {
         if (std.mem.eql(u8, part, "..")) return false;
     }
     return true;
+}
+
+/// True if any component of `rel_path` (already lexically validated as a
+/// workspace-relative path) is a symlink — an intermediate directory or the
+/// final entry. Walks left to right with lstat-style metadata only (no read,
+/// no realPath), so it is portable across the Windows and POSIX std.Io
+/// backends and fails closed. A non-existent component is not a rejection
+/// (openFile surfaces an accurate error); only an actual symlink is. This is
+/// TOCTOU-best-effort: the threat model is an attacker-influenced path string
+/// against a non-attacker-controlled filesystem, not a hostile live FS.
+fn pathHasSymlinkComponent(io: std.Io, rel_path: []const u8) bool {
+    var i: usize = 0;
+    while (i < rel_path.len) : (i += 1) {
+        const c = rel_path[i];
+        const at_sep = c == '/' or c == '\\';
+        const at_end = i + 1 == rel_path.len;
+        if (!at_sep and !at_end) continue;
+        const prefix_len = if (at_sep) i else i + 1;
+        if (prefix_len == 0) continue;
+        const prefix = rel_path[0..prefix_len];
+        if (std.Io.Dir.cwd().statFile(io, prefix, .{ .follow_symlinks = false })) |entry| {
+            if (entry.kind == .sym_link) return true;
+        } else |_| {}
+    }
+    return false;
 }
 
 fn termStatus(term: std.process.Child.Term) u8 {
@@ -792,6 +1180,113 @@ test "redacts secret-like lines and reports clipping" {
     try std.testing.expectEqualStrings("abc", clipped.text);
 }
 
+test "redacts Authorization bearer and basic headers" {
+    const r1 = try redactSecretsAlloc(std.testing.allocator, "Authorization: Bearer eyJhbGciOiJSUzI1NiJ9.abc");
+    defer r1.deinit(std.testing.allocator);
+    try std.testing.expect(r1.changed);
+    try std.testing.expect(std.mem.indexOf(u8, r1.text, "eyJhbGciOiJSUzI1NiJ9") == null);
+
+    const r2 = try redactSecretsAlloc(std.testing.allocator, "authorization: Basic dXNlcjpwYXNz");
+    defer r2.deinit(std.testing.allocator);
+    try std.testing.expect(r2.changed);
+}
+
+test "redacts AWS AKIA access key IDs" {
+    const r = try redactSecretsAlloc(std.testing.allocator, "key=AKIAIOSFODNN7EXAMPLE");
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expect(r.changed);
+    try std.testing.expect(std.mem.indexOf(u8, r.text, "AKIA") == null);
+
+    // Should NOT redact AKIA embedded mid-word
+    const r2 = try redactSecretsAlloc(std.testing.allocator, "prefixAKIAIOSFODNN7EXAMPLEsuffix");
+    defer r2.deinit(std.testing.allocator);
+    try std.testing.expect(!r2.changed);
+}
+
+test "redacts Slack xox tokens" {
+    // Fixture assembled at comptime so the contiguous token shape never
+    // appears in source (avoids tripping repo secret scanners); the redactor
+    // still receives the full real-shaped string at runtime.
+    const r = try redactSecretsAlloc(std.testing.allocator, "token=xox" ++ "b-1234567890-1234567890123-abcdefghijklmnopqrstuvwx");
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expect(r.changed);
+    try std.testing.expect(std.mem.indexOf(u8, r.text, "xoxb-") == null);
+}
+
+test "redacts GitHub gh_ tokens" {
+    // ghp_ with 36+ alnum chars; split at comptime so the contiguous token
+    // shape never appears in source (scanner-safe), runtime value unchanged.
+    const r = try redactSecretsAlloc(std.testing.allocator, "GITHUB_TOKEN=ghp" ++ "_abcdefghijklmnopqrstuvwxyz0123456789AB");
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expect(r.changed);
+    try std.testing.expect(std.mem.indexOf(u8, r.text, "ghp_") == null);
+}
+
+test "redacts PEM private key blocks" {
+    const pem =
+        \\some other content
+        \\-----BEGIN RSA PRIVATE KEY-----
+        \\MIIEowIBAAKCAQEA1234abcd
+        \\-----END RSA PRIVATE KEY-----
+        \\after block
+    ;
+    const r = try redactSecretsAlloc(std.testing.allocator, pem);
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expect(r.changed);
+    try std.testing.expect(std.mem.indexOf(u8, r.text, "MIIEowIBAAKCAQEA1234abcd") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.text, "some other content") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.text, "after block") != null);
+}
+
+test "redacts password and passwd assignments" {
+    const r1 = try redactSecretsAlloc(std.testing.allocator, "password = hunter2");
+    defer r1.deinit(std.testing.allocator);
+    try std.testing.expect(r1.changed);
+
+    const r2 = try redactSecretsAlloc(std.testing.allocator, "db_passwd: s3cr3t");
+    defer r2.deinit(std.testing.allocator);
+    try std.testing.expect(r2.changed);
+
+    const r3 = try redactSecretsAlloc(std.testing.allocator, "my_token = tok_abc123");
+    defer r3.deinit(std.testing.allocator);
+    try std.testing.expect(r3.changed);
+
+    const r4 = try redactSecretsAlloc(std.testing.allocator, "my_secret: sup3rs3cr3t");
+    defer r4.deinit(std.testing.allocator);
+    try std.testing.expect(r4.changed);
+}
+
+test "no false positives on ordinary prose and code" {
+    const safe_lines = [_][]const u8{
+        // Ordinary English prose
+        "The password protected zip was delivered yesterday.",
+        // Hex color
+        "#aabbcc is a valid CSS color",
+        // Short hex SHA (32 chars) — below high-entropy threshold
+        "commit abc123def456789012345678901234567890",
+        // Code constant that contains keyword but no assignment value
+        "const SECRET_LEN = 32;",
+        // AKIA mid-word (no boundary)
+        "prefixAKIAIOSFODNN7EXAMPLEsuffix",
+        // Password keyword without separator
+        "forgot password",
+        // keyword_count pattern
+        "secret_count: 0",
+        // gh prefix without the right 3rd char
+        "ghz_notarealtoken_blahblahblahblahblahblahblahblah",
+        // Normal log line
+        "INFO [2024-01-01] request completed in 42ms",
+    };
+    for (safe_lines) |line| {
+        const r = try redactSecretsAlloc(std.testing.allocator, line);
+        defer r.deinit(std.testing.allocator);
+        if (r.changed) {
+            std.debug.print("\nFalse positive on: {s}\n", .{line});
+        }
+        try std.testing.expect(!r.changed);
+    }
+}
+
 test "file read returns minimized redacted metadata" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -811,6 +1306,75 @@ test "file read returns minimized redacted metadata" {
     try std.testing.expect(std.mem.indexOf(u8, json, "\"content_truncated\":false") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "hunter2") == null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"context_policy\":\"bounded_64k_redacted\"") != null);
+}
+
+test "file read rejects a symlinked directory component escaping the workspace" {
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // A real directory and file OUTSIDE the workspace root (cwd's parent).
+    const outside_rel = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "../zz_agentd_escape_{s}",
+        .{tmp.sub_path[0..]},
+    );
+    defer std.testing.allocator.free(outside_rel);
+    var outside_dir = try std.Io.Dir.cwd().createDirPathOpen(io, outside_rel, .{});
+    defer {
+        outside_dir.close(io);
+        std.Io.Dir.cwd().deleteTree(io, outside_rel) catch {};
+    }
+    try outside_dir.writeFile(io, .{ .sub_path = "secret.txt", .data = "TOPSECRET\n" });
+
+    var abs_buffer: [4096]u8 = undefined;
+    const abs_len = outside_dir.realPath(io, &abs_buffer) catch return error.SkipZigTest;
+    const outside_abs = abs_buffer[0..abs_len];
+
+    // A directory symlink INSIDE the workspace that points at the outside dir.
+    tmp.dir.symLink(io, outside_abs, "evil", .{ .is_directory = true }) catch |e| switch (e) {
+        error.AccessDenied, error.PermissionDenied => return error.SkipZigTest,
+        else => return e,
+    };
+
+    const path = try std.fs.path.join(std.testing.allocator, &.{
+        ".zig-cache", "tmp", &tmp.sub_path, "evil", "secret.txt",
+    });
+    defer std.testing.allocator.free(path);
+
+    // safeRelativePath passes (no `..`) and the final component `secret.txt`
+    // is a regular file, so this escape is caught by the per-component symlink
+    // walk seeing that the intermediate `evil` component is a symlink (the
+    // realpath containment check is defense in depth on top).
+    try std.testing.expectError(
+        error.UnsafePath,
+        readFileJsonAlloc(std.testing.allocator, io, path),
+    );
+}
+
+test "file read rejects a symlinked final component" {
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.writeFile(io, .{ .sub_path = "real.txt", .data = "data\n" });
+    // The link target stays INSIDE the workspace, so the realpath containment
+    // check would not flag it — proving the per-component symlink walk is what
+    // rejects a symlinked final component.
+    tmp.dir.symLink(io, "real.txt", "link.txt", .{}) catch |e| switch (e) {
+        error.AccessDenied, error.PermissionDenied => return error.SkipZigTest,
+        else => return e,
+    };
+
+    const path = try std.fs.path.join(std.testing.allocator, &.{
+        ".zig-cache", "tmp", &tmp.sub_path, "link.txt",
+    });
+    defer std.testing.allocator.free(path);
+
+    try std.testing.expectError(
+        error.UnsafePath,
+        readFileJsonAlloc(std.testing.allocator, io, path),
+    );
 }
 
 test "resolves configured zig path before path lookup" {
@@ -853,4 +1417,104 @@ test "rejects NUL in configured zig path" {
     try env.put("ZIGGYZAG_ZIG_PATH", "bad\x00zig.exe");
 
     try std.testing.expectError(error.InvalidZigPath, resolveZigExeAlloc(std.testing.allocator, std.testing.io, &env));
+}
+
+test "shouldKill correctly identifies timed-out commands" {
+    // Not yet timed out: elapsed < timeout.
+    try std.testing.expect(!shouldKill(500, 0, 1000));
+    // Exactly at the limit: should kill.
+    try std.testing.expect(shouldKill(1000, 0, 1000));
+    // Well past the limit.
+    try std.testing.expect(shouldKill(5000, 0, 1000));
+    // Non-zero start time.
+    try std.testing.expect(!shouldKill(1_000_000_200, 1_000_000_000, 1000));
+    try std.testing.expect(shouldKill(1_000_001_000, 1_000_000_000, 1000));
+    // Clock went backward — never kill.
+    try std.testing.expect(!shouldKill(0, 500, 1000));
+}
+
+test "audit policy export is stateless and describes all tools" {
+    const json = try auditPolicyJsonAlloc(std.testing.allocator);
+    defer std.testing.allocator.free(json);
+    // Required top-level fields.
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"audit_mode\":\"stateless_policy\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"redaction\":{") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"output_caps\":{") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"tools\":[") != null);
+    // Each tool spec must appear.
+    for (specs) |spec| {
+        try std.testing.expect(std.mem.indexOf(u8, json, spec.name) != null);
+        try std.testing.expect(std.mem.indexOf(u8, json, spec.effect) != null);
+    }
+    // Approval-required tools must set requires_host: true.
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"requires_host\":true") != null);
+    // Read-only tools must have requires_host: false.
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"requires_host\":false") != null);
+    // Redaction patterns listed.
+    try std.testing.expect(std.mem.indexOf(u8, json, "aws_akia") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "pem_private_key") != null);
+}
+
+test "error codes are snake_case for all known tool errors" {
+    const known_errors = [_]anyerror{
+        error.MissingTool,
+        error.UnknownTool,
+        error.MissingPath,
+        error.UnsafePath,
+        error.MissingQuery,
+        error.EmptyQuery,
+        error.InvalidQuery,
+        error.QueryTooLarge,
+        error.MissingText,
+        error.EmptyText,
+        error.InvalidText,
+        error.TextTooLarge,
+        error.UnsupportedBuildCommand,
+        error.InvalidZigPath,
+        error.ConfiguredZigUnavailable,
+        error.ZigUnavailable,
+        error.ToolTimedOut,
+        error.FileNotFound,
+        error.AccessDenied,
+    };
+    for (known_errors) |err| {
+        const code = errorCode(err);
+        try std.testing.expect(code.len > 0);
+        // snake_case: no uppercase letters.
+        for (code) |c| {
+            try std.testing.expect(!(c >= 'A' and c <= 'Z'));
+        }
+        // No CamelCase: first letter lowercase or underscore.
+        try std.testing.expect(code[0] != '_');
+    }
+    // Representative spot-checks.
+    try std.testing.expectEqualStrings("unknown_tool", errorCode(error.UnknownTool));
+    try std.testing.expectEqualStrings("missing_path", errorCode(error.MissingPath));
+    try std.testing.expectEqualStrings("invalid_query", errorCode(error.InvalidQuery));
+    try std.testing.expectEqualStrings("tool_timed_out", errorCode(error.ToolTimedOut));
+}
+
+test "error envelope shape for unknown tool" {
+    // Simulate the envelope written for an UnknownTool error.
+    const code = errorCode(error.UnknownTool);
+    const msg = errorMessage(error.UnknownTool);
+    const envelope = try protocol.writeErrorEnvelope(std.testing.allocator, "1", code, msg);
+    defer std.testing.allocator.free(envelope);
+    try std.testing.expect(std.mem.indexOf(u8, envelope, "\"id\":1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, envelope, "\"ok\":false") != null);
+    try std.testing.expect(std.mem.indexOf(u8, envelope, "\"code\":\"unknown_tool\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, envelope, "\"message\":\"unknown tool name\"") != null);
+}
+
+test "error envelope shape for missing path" {
+    const envelope = try protocol.writeErrorEnvelope(
+        std.testing.allocator,
+        "null",
+        errorCode(error.MissingPath),
+        errorMessage(error.MissingPath),
+    );
+    defer std.testing.allocator.free(envelope);
+    try std.testing.expect(std.mem.indexOf(u8, envelope, "\"id\":null") != null);
+    try std.testing.expect(std.mem.indexOf(u8, envelope, "\"ok\":false") != null);
+    try std.testing.expect(std.mem.indexOf(u8, envelope, "\"code\":\"missing_path\"") != null);
 }

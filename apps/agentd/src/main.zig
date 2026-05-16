@@ -78,6 +78,7 @@ fn printHelp(writer: *std.Io.Writer) !void {
         \\  {"id":4,"method":"tools/call","tool":"rg.search","query":"TODO"}
         \\  {"id":5,"method":"tools/call","tool":"terminal.write","text":"zig build\n"}  # approval-shaped host action
         \\  {"id":6,"method":"agent/run","prompt":"summarize the workspace"}
+        \\  {"id":7,"method":"audit/policy"}                                # stateless tool-effect and redaction policy
         \\
     );
 }
@@ -150,7 +151,7 @@ fn handleRequest(
 
     if (std.mem.eql(u8, request.method, "tools/call")) {
         const result = agentd.tools.run(allocator, io, env, request) catch |err| {
-            const envelope = try agentd.protocol.writeErrorEnvelope(allocator, request.id, @errorName(err), agentd.tools.errorMessage(err));
+            const envelope = try agentd.protocol.writeErrorEnvelope(allocator, request.id, agentd.tools.errorCode(err), agentd.tools.errorMessage(err));
             defer allocator.free(envelope);
             try writer.writeAll(envelope);
             return;
@@ -162,10 +163,19 @@ fn handleRequest(
         return;
     }
 
+    if (std.mem.eql(u8, request.method, "audit/policy")) {
+        const result = try agentd.tools.auditPolicyJsonAlloc(allocator);
+        defer allocator.free(result);
+        const envelope = try agentd.protocol.writeOkEnvelope(allocator, request.id, result);
+        defer allocator.free(envelope);
+        try writer.writeAll(envelope);
+        return;
+    }
+
     if (std.mem.eql(u8, request.method, "agent/run")) {
         const prompt = request.prompt orelse "";
         validateAgentPrompt(prompt) catch |err| {
-            const envelope = try agentd.protocol.writeErrorEnvelope(allocator, request.id, @errorName(err), agentRunErrorMessage(err));
+            const envelope = try agentd.protocol.writeErrorEnvelope(allocator, request.id, agentRunErrorCode(err), agentRunErrorMessage(err));
             defer allocator.free(envelope);
             try writer.writeAll(envelope);
             return;
@@ -362,6 +372,14 @@ fn callProviderCurl(
 fn validateAgentPrompt(prompt: []const u8) !void {
     if (prompt.len > max_agent_prompt_bytes) return error.PromptTooLarge;
     if (std.mem.indexOfScalar(u8, prompt, 0) != null) return error.InvalidPrompt;
+}
+
+fn agentRunErrorCode(err: anyerror) []const u8 {
+    return switch (err) {
+        error.PromptTooLarge => "prompt_too_large",
+        error.InvalidPrompt => "invalid_prompt",
+        else => "invalid_request",
+    };
 }
 
 fn agentRunErrorMessage(err: anyerror) []const u8 {

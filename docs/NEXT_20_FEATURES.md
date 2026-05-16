@@ -27,7 +27,7 @@ The remaining work is concentrated in four buckets:
 
 - [ ] 1. Terminal compatibility harness and VT parser decision
   Build conformance tests around the current grid, CSI/OSC parsing, cursor state, scroll regions, erase behavior, save/restore cursor, private modes, and malformed sequence recovery. Decide whether to keep expanding the local parser or integrate `libghostty-vt` after the boundary is proven.
-  Progress: focused terminal/integration unit coverage now includes split OSC events, scrollback caps, cursor save/restore, insert/delete, richer SGR colors/attributes, alternate screen, bracketed paste, app cursor, and mouse private modes. A standalone conformance harness and parser decision remain open.
+  Progress: the escape parser is now a resumable byte-driven state machine whose state lives on the `Grid`, so a CSI/OSC/UTF-8 sequence split across `feed()` calls (PTY reads are chunked at arbitrary boundaries) resumes instead of being printed as literal text. OSC strings are consumed (BEL/ST/CAN/SUB), the CSI parameter buffer is bounded with overflow-then-resync, and conformance coverage adds a byte-split invariance fuzzer, OSC title/hyperlink, scroll-region, CSI overflow resync, and ESC RI/IND/NEL/RIS tests on top of the prior split-OSC/scrollback/cursor/SGR/alt-screen/private-mode tests. A standalone conformance-harness binary and the keep-local-vs-`libghostty-vt` parser decision remain open.
   Primary paths: `apps/desktop/src/terminal.zig`, `apps/desktop/src/integration.zig`.
 
 - [ ] 2. Unicode/grapheme cell model
@@ -42,12 +42,12 @@ The remaining work is concentrated in four buckets:
 
 - [ ] 4. Alternate screen, scroll margins, insert/delete, and resize reflow
   Support full-screen apps properly: alternate buffer, main scrollback separation, cursor/state restore, origin mode, insert/delete character and line, soft-wrap tracking, bottom anchoring, and reflow-aware resize.
-  Progress: alternate buffer/state restore, no-alt-screen scrollback capture, insert/delete character and line, and resize preservation are implemented. Scroll margins, origin mode, and reflow-aware resize remain open.
+  Progress: alternate buffer/state restore, no-alt-screen scrollback capture, insert/delete character and line, and resize preservation are implemented. DECSTBM scroll margins are threaded through line feed, region scroll up/down, and insert/delete line, with a full-screen region preserving the original scrollback-capturing path. DECOM origin mode (cursor addressing relative to and constrained within the scroll region) and DECAWM auto-wrap mode now land too. Soft-wrap tracking and reflow-aware resize remain open.
   Primary paths: `apps/desktop/src/terminal.zig`, `apps/desktop/src/windows_app.zig`.
 
 - [ ] 5. Bracketed paste, keyboard modes, and mouse reporting
   Track bracketed paste mode, application cursor/keypad mode, modifier-aware key encoding, Alt/meta input, function keys, IME/dead-key behavior, focus events, xterm/SGR mouse reporting, and wheel events inside alternate screen apps.
-  Progress: bracketed paste wrapping, application cursor arrows, DEC mouse tracking/encoding state, and alternate-screen wheel reports are implemented. Modifier/function keys, IME/dead-key behavior, focus events, and full mouse button reports remain open.
+  Progress: bracketed paste wrapping, application cursor arrows, DEC mouse tracking/encoding state, and alternate-screen wheel reports are implemented. The terminal core now also consumes OSC strings (window title / OSC 8 hyperlink / clipboard) instead of spilling their payloads onto the grid, handles ESC M (RI), ESC D (IND), ESC E (NEL), ESC c (RIS), and tracks application/normal keypad mode (ESC = / ESC >) with C0 controls executing in place inside a CSI per ECMA-48. Modifier/function keys, IME/dead-key behavior, focus events, and full mouse button reports (keyboard-input side, `windows_app.zig`) remain open.
   Primary paths: `apps/desktop/src/windows_app.zig`.
 
 - [x] 6. PTY lifecycle hardening
@@ -90,6 +90,7 @@ The remaining work is concentrated in four buckets:
 
 - [ ] 14. Completion engine v2
   Support completions at the cursor, quote/escape paths with spaces on Windows and POSIX, add option schemas, file filters, dynamic values, descriptions, cancellation, timeout, and bounded stdout from programmable completers.
+  Progress: programmable completer stdout is now bounded (256-line cap) and deduplicated via a dedicated helper. Cursor-position-aware completion and quoted/escaped path-token handling remain open.
   Primary paths: `apps/shell/src/main.zig`.
 
 - [ ] 15. Bounded searchable scrollback and copy mode

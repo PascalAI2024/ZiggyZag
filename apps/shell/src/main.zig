@@ -9,6 +9,10 @@ const max_history_file_bytes = 8 * 1024 * 1024;
 const max_pipeline_capture_bytes = 8 * 1024 * 1024;
 const max_pipeline_stage_input_bytes = 64 * 1024;
 const max_prompt_git_output_bytes = 256 * 1024;
+/// Maximum number of candidates a programmable completer may contribute per
+/// invocation.  Protects against runaway or malicious completers flooding the
+/// completion list and terminal display.
+const max_completer_output_lines = 256;
 const default_prompt_cache_ms = 1000;
 const default_prompt_git_timeout_ms = 150;
 
@@ -1301,11 +1305,7 @@ const Shell = struct {
         defer self.allocator.free(result.stdout);
         defer self.allocator.free(result.stderr);
 
-        var lines = std.mem.splitScalar(u8, result.stdout, '\n');
-        while (lines.next()) |raw_line| {
-            const candidate = trimTrailingCarriageReturn(raw_line);
-            try self.addCompletionMatch(matches, prefix, candidate);
-        }
+        try collectCompleterLines(self.allocator, result.stdout, prefix, matches);
     }
 
     fn execute(self: *Shell, line: []const u8) anyerror!bool {
@@ -3898,6 +3898,13 @@ const Shell = struct {
     }
 
     fn writeRedirect(self: *Shell, redirect: Redirection, bytes: []const u8) !void {
+        // fd-dup redirections (e.g. `2>&1`) have no file path; external commands
+        // have their dup semantics fulfilled by the system shell.  For builtin
+        // commands there is no fd-level control, so dup redirections are silently
+        // ignored here and bytes are dropped.  This is an intentional best-effort
+        // limitation of the builtin-output path; full dup semantics require OS
+        // fd plumbing that is out of scope.
+        if (redirect.dup_source != null) return;
         if (!redirect.append) {
             try std.Io.Dir.cwd().writeFile(self.io, .{ .sub_path = redirect.path, .data = bytes });
             return;
@@ -4238,6 +4245,10 @@ const TerminalMode = if (builtin.os.tag == .windows) struct {
 const Redirection = struct {
     path: []u8,
     append: bool,
+    /// When set, this is an fd-dup redirection: the target fd is duplicated from
+    /// the fd named by `dup_source` (e.g. `2>&1` means stderr ← stdout's dest).
+    /// `path` is empty ("") and must NOT be freed when `dup_source` is non-null.
+    dup_source: ?RedirectTarget = null,
 };
 
 const RedirectTarget = enum {
@@ -4248,6 +4259,8 @@ const RedirectTarget = enum {
 const RedirectionSpec = struct {
     target: RedirectTarget,
     append: bool,
+    /// Non-null for `N>&M` / `>&M` dup forms.
+    dup_source: ?RedirectTarget = null,
 };
 
 const ParsedCommand = struct {
@@ -4270,9 +4283,12 @@ const ParsedCommand = struct {
     fn extractRedirections(self: *ParsedCommand) !void {
         var argv: std.ArrayList([]u8) = .empty;
 
+        // Validate: non-dup redirection operators must be followed by a path token.
         for (self.argv.items, 0..) |token, token_index| {
-            if (parseRedirectionOperator(token) != null and token_index + 1 >= self.argv.items.len) {
-                return error.MissingRedirectTarget;
+            if (parseRedirectionOperator(token)) |spec| {
+                if (spec.dup_source == null and token_index + 1 >= self.argv.items.len) {
+                    return error.MissingRedirectTarget;
+                }
             }
         }
 
@@ -4281,9 +4297,17 @@ const ParsedCommand = struct {
             const token = self.argv.items[index];
             if (parseRedirectionOperator(token)) |spec| {
                 self.allocator.free(token);
-                const path = self.argv.items[index + 1];
-                self.setRedirection(spec, path);
-                index += 2;
+                if (spec.dup_source != null) {
+                    // fd-dup: self-contained operator, no following path token.
+                    // Path is unused (and not freed) for dup redirections.
+                    const empty_path = try self.allocator.dupe(u8, "");
+                    self.setRedirection(spec, empty_path);
+                    index += 1;
+                } else {
+                    const path = self.argv.items[index + 1];
+                    self.setRedirection(spec, path);
+                    index += 2;
+                }
                 continue;
             }
 
@@ -4300,7 +4324,7 @@ const ParsedCommand = struct {
     }
 
     fn setRedirection(self: *ParsedCommand, spec: RedirectionSpec, path: []u8) void {
-        const redirect: Redirection = .{ .path = path, .append = spec.append };
+        const redirect: Redirection = .{ .path = path, .append = spec.append, .dup_source = spec.dup_source };
         switch (spec.target) {
             .stdout => {
                 if (self.stdout_redirect) |old| self.allocator.free(old.path);
@@ -4338,17 +4362,27 @@ fn parseTokens(allocator: Allocator, line: []const u8, shell: ?*Shell) !ParsedCo
     var current: std.ArrayList(u8) = .empty;
     defer current.deinit(allocator);
 
+    // True once a quote has explicitly opened a word, so an empty quoted
+    // string (`""`, `''`) or a quoted empty expansion (`"$UNSET"`) still emits
+    // one empty argument instead of being silently dropped.
+    var token_active: bool = false;
+
     var i: usize = 0;
     while (i < line.len) {
         const c = line[i];
         switch (c) {
             ' ', '\t' => {
-                try flushToken(allocator, &argv, &current);
+                try flushTokenForce(allocator, &argv, &current, &token_active);
                 i += 1;
             },
             '>' => {
-                try flushToken(allocator, &argv, &current);
-                if (i + 1 < line.len and line[i + 1] == '>') {
+                try flushTokenForce(allocator, &argv, &current, &token_active);
+                // Check for `>&1` / `>&2` fd-dup form (stdout ← stdout/stderr)
+                if (i + 2 < line.len and line[i + 1] == '&' and (line[i + 2] == '1' or line[i + 2] == '2')) {
+                    var operator = [_]u8{ '>', '&', line[i + 2] };
+                    try appendToken(allocator, &argv, &operator);
+                    i += 3;
+                } else if (i + 1 < line.len and line[i + 1] == '>') {
                     try appendToken(allocator, &argv, ">>");
                     i += 2;
                 } else {
@@ -4358,7 +4392,12 @@ fn parseTokens(allocator: Allocator, line: []const u8, shell: ?*Shell) !ParsedCo
             },
             '1', '2' => {
                 if (current.items.len == 0 and i + 1 < line.len and line[i + 1] == '>') {
-                    if (i + 2 < line.len and line[i + 2] == '>') {
+                    // Check for `N>&M` fd-dup form before `N>>` and `N>`
+                    if (i + 3 < line.len and line[i + 2] == '&' and (line[i + 3] == '1' or line[i + 3] == '2')) {
+                        var operator = [_]u8{ c, '>', '&', line[i + 3] };
+                        try appendToken(allocator, &argv, &operator);
+                        i += 4;
+                    } else if (i + 2 < line.len and line[i + 2] == '>') {
                         var operator = [_]u8{ c, '>', '>' };
                         try appendToken(allocator, &argv, &operator);
                         i += 3;
@@ -4373,6 +4412,7 @@ fn parseTokens(allocator: Allocator, line: []const u8, shell: ?*Shell) !ParsedCo
                 }
             },
             '\'' => {
+                token_active = true;
                 i += 1;
                 while (i < line.len and line[i] != '\'') : (i += 1) {
                     try current.append(allocator, line[i]);
@@ -4381,6 +4421,7 @@ fn parseTokens(allocator: Allocator, line: []const u8, shell: ?*Shell) !ParsedCo
                 i += 1;
             },
             '"' => {
+                token_active = true;
                 i += 1;
                 while (i < line.len and line[i] != '"') : (i += 1) {
                     if (line[i] == '$') {
@@ -4391,7 +4432,14 @@ fn parseTokens(allocator: Allocator, line: []const u8, shell: ?*Shell) !ParsedCo
                     }
                     if (line[i] == '\\' and i + 1 < line.len) {
                         const next = line[i + 1];
-                        if (next == '$' or next == '`' or next == '"' or next == '\\' or next == '\n') {
+                        if (next == '\n') {
+                            // backslash-newline: line continuation — consume both, emit nothing.
+                            // The while loop posts i += 1, so set i to the newline position
+                            // and let the post-increment skip past it.
+                            i += 1;
+                            continue;
+                        }
+                        if (next == '$' or next == '`' or next == '"' or next == '\\') {
                             try current.append(allocator, next);
                             i += 1;
                             continue;
@@ -4410,8 +4458,14 @@ fn parseTokens(allocator: Allocator, line: []const u8, shell: ?*Shell) !ParsedCo
             },
             '\\' => {
                 if (i + 1 < line.len) {
-                    try current.append(allocator, line[i + 1]);
-                    i += 2;
+                    const next = line[i + 1];
+                    if (next == '\n') {
+                        // backslash-newline outside quotes: line continuation — consume both, emit nothing
+                        i += 2;
+                    } else {
+                        try current.append(allocator, next);
+                        i += 2;
+                    }
                 } else {
                     try current.append(allocator, c);
                     i += 1;
@@ -4424,7 +4478,7 @@ fn parseTokens(allocator: Allocator, line: []const u8, shell: ?*Shell) !ParsedCo
         }
     }
 
-    try flushToken(allocator, &argv, &current);
+    try flushTokenForce(allocator, &argv, &current, &token_active);
     return .{ .allocator = allocator, .argv = argv };
 }
 
@@ -4490,6 +4544,21 @@ fn flushToken(allocator: Allocator, argv: *std.ArrayList([]u8), current: *std.Ar
     current.clearRetainingCapacity();
 }
 
+// Word-boundary flush that preserves an explicitly quoted empty word. Used at
+// whitespace, redirection operators, and end of input; not used for unquoted
+// expansion word splitting, where empty words must still be discarded.
+fn flushTokenForce(
+    allocator: Allocator,
+    argv: *std.ArrayList([]u8),
+    current: *std.ArrayList(u8),
+    token_active: *bool,
+) !void {
+    if (current.items.len == 0 and !token_active.*) return;
+    try argv.append(allocator, try allocator.dupe(u8, current.items));
+    current.clearRetainingCapacity();
+    token_active.* = false;
+}
+
 fn parseRedirectionOperator(token: []const u8) ?RedirectionSpec {
     if (std.mem.eql(u8, token, ">") or std.mem.eql(u8, token, "1>")) {
         return .{ .target = .stdout, .append = false };
@@ -4502,6 +4571,20 @@ fn parseRedirectionOperator(token: []const u8) ?RedirectionSpec {
     }
     if (std.mem.eql(u8, token, "2>>")) {
         return .{ .target = .stderr, .append = true };
+    }
+    // fd-dup forms: `2>&1` (stderr → stdout), `1>&2` (stdout → stderr),
+    // `>&1` (stdout → stdout, identity), `>&2` (stdout → stderr).
+    if (std.mem.eql(u8, token, "2>&1")) {
+        return .{ .target = .stderr, .append = false, .dup_source = .stdout };
+    }
+    if (std.mem.eql(u8, token, "1>&2")) {
+        return .{ .target = .stdout, .append = false, .dup_source = .stderr };
+    }
+    if (std.mem.eql(u8, token, ">&1")) {
+        return .{ .target = .stdout, .append = false, .dup_source = .stdout };
+    }
+    if (std.mem.eql(u8, token, ">&2")) {
+        return .{ .target = .stdout, .append = false, .dup_source = .stderr };
     }
     return null;
 }
@@ -5094,6 +5177,41 @@ fn trimTrailingCarriageReturn(line: []const u8) []const u8 {
     return line;
 }
 
+/// Parse the newline-delimited output of a programmable completer and add
+/// non-empty candidates that start with `prefix` to `matches`, up to
+/// `max_completer_output_lines` entries total.  Exported as a free function so
+/// unit tests can exercise the bound logic without spawning a process.
+fn collectCompleterLines(
+    allocator: Allocator,
+    stdout_blob: []const u8,
+    prefix: []const u8,
+    matches: *std.ArrayList([]u8),
+) !void {
+    var lines = std.mem.splitScalar(u8, stdout_blob, '\n');
+    var line_count: usize = 0;
+    while (lines.next()) |raw_line| {
+        if (line_count >= max_completer_output_lines) break;
+        const candidate = trimTrailingCarriageReturn(raw_line);
+        if (candidate.len == 0) continue;
+        if (!std.mem.startsWith(u8, candidate, prefix)) {
+            line_count += 1;
+            continue;
+        }
+        // Avoid duplicates (mirrors addCompletionMatch logic).
+        var already_present = false;
+        for (matches.items) |existing| {
+            if (std.mem.eql(u8, existing, candidate)) {
+                already_present = true;
+                break;
+            }
+        }
+        if (!already_present) {
+            try matches.append(allocator, try allocator.dupe(u8, candidate));
+        }
+        line_count += 1;
+    }
+}
+
 fn sortCompletionMatches(items: [][]u8) void {
     var i: usize = 1;
     while (i < items.len) : (i += 1) {
@@ -5198,6 +5316,41 @@ test "parse reports quote and redirection errors" {
     try std.testing.expectError(error.UnterminatedSingleQuote, parseCommand(std.testing.allocator, "echo 'oops"));
     try std.testing.expectError(error.UnterminatedDoubleQuote, parseCommand(std.testing.allocator, "echo \"oops"));
     try std.testing.expectError(error.MissingRedirectTarget, parseCommand(std.testing.allocator, "echo hello >"));
+}
+
+test "parse preserves explicitly quoted empty arguments" {
+    const cases = [_]struct {
+        line: []const u8,
+        expected: []const []const u8,
+    }{
+        .{ .line = "echo \"\"", .expected = &.{ "echo", "" } },
+        .{ .line = "echo ''", .expected = &.{ "echo", "" } },
+        .{ .line = "echo a \"\" b", .expected = &.{ "echo", "a", "", "b" } },
+        .{ .line = "echo \"$UNSET\"", .expected = &.{ "echo", "" } },
+        // Unquoted empty expansion still yields no word (POSIX field splitting).
+        .{ .line = "echo $UNSET", .expected = &.{"echo"} },
+        // Empty quotes adjacent to text must not introduce a spurious word.
+        .{ .line = "echo a'' b", .expected = &.{ "echo", "a", "b" } },
+    };
+
+    for (cases) |case| {
+        var parsed = try parseCommand(std.testing.allocator, case.line);
+        defer parsed.deinit();
+        try std.testing.expectEqual(case.expected.len, parsed.argv.items.len);
+        for (case.expected, 0..) |word, idx| {
+            try std.testing.expectEqualStrings(word, parsed.argv.items[idx]);
+        }
+    }
+}
+
+test "parse keeps an empty quoted word alongside a redirection" {
+    var parsed = try parseCommand(std.testing.allocator, "echo \"\" > out.txt");
+    defer parsed.deinit();
+    try std.testing.expectEqual(@as(usize, 2), parsed.argv.items.len);
+    try std.testing.expectEqualStrings("echo", parsed.argv.items[0]);
+    try std.testing.expectEqualStrings("", parsed.argv.items[1]);
+    try std.testing.expect(parsed.stdout_redirect != null);
+    try std.testing.expectEqualStrings("out.txt", parsed.stdout_redirect.?.path);
 }
 
 test "split unquoted pipes" {
@@ -5323,6 +5476,105 @@ test "history privacy commands toggle and clear state" {
     try shell.historyCommand(&.{ "history", "enable" }, &output);
     try std.testing.expect(shell.history_enabled);
     try std.testing.expect(std.mem.indexOf(u8, output.items, "enabled") != null);
+}
+
+test "backslash-newline line continuation outside quotes" {
+    // A backslash immediately before a newline is a POSIX line continuation:
+    // both characters are consumed and nothing is emitted.
+    var parsed = try parseCommand(std.testing.allocator, "echo hel\\\nlo");
+    defer parsed.deinit();
+    try std.testing.expectEqual(@as(usize, 2), parsed.argv.items.len);
+    try std.testing.expectEqualStrings("echo", parsed.argv.items[0]);
+    try std.testing.expectEqualStrings("hello", parsed.argv.items[1]);
+}
+
+test "backslash-newline line continuation inside double quotes" {
+    // Inside double quotes, backslash-newline is also a continuation.
+    var parsed = try parseCommand(std.testing.allocator, "echo \"hel\\\nlo\"");
+    defer parsed.deinit();
+    try std.testing.expectEqual(@as(usize, 2), parsed.argv.items.len);
+    try std.testing.expectEqualStrings("echo", parsed.argv.items[0]);
+    try std.testing.expectEqualStrings("hello", parsed.argv.items[1]);
+}
+
+test "backslash before non-newline still escapes" {
+    // Ensure the continuation change didn't regress normal backslash escaping.
+    var parsed = try parseCommand(std.testing.allocator, "echo he\\llo");
+    defer parsed.deinit();
+    try std.testing.expectEqual(@as(usize, 2), parsed.argv.items.len);
+    try std.testing.expectEqualStrings("echo", parsed.argv.items[0]);
+    // Outer unquoted \l → l (backslash escapes the 'l').
+    try std.testing.expectEqualStrings("hello", parsed.argv.items[1]);
+}
+
+test "parse fd-dup redirection 2>&1" {
+    // `2>&1` should set stderr_redirect with dup_source=.stdout, not write to
+    // a file named "&1".
+    var parsed = try parseCommand(std.testing.allocator, "cmd 2>&1");
+    defer parsed.deinit();
+    try std.testing.expectEqual(@as(usize, 1), parsed.argv.items.len);
+    try std.testing.expectEqualStrings("cmd", parsed.argv.items[0]);
+    try std.testing.expect(parsed.stderr_redirect != null);
+    try std.testing.expectEqual(RedirectTarget.stdout, parsed.stderr_redirect.?.dup_source.?);
+    try std.testing.expect(parsed.stdout_redirect == null);
+}
+
+test "parse fd-dup redirection 1>&2" {
+    var parsed = try parseCommand(std.testing.allocator, "cmd 1>&2");
+    defer parsed.deinit();
+    try std.testing.expectEqual(@as(usize, 1), parsed.argv.items.len);
+    try std.testing.expect(parsed.stdout_redirect != null);
+    try std.testing.expectEqual(RedirectTarget.stderr, parsed.stdout_redirect.?.dup_source.?);
+    try std.testing.expect(parsed.stderr_redirect == null);
+}
+
+test "parse fd-dup alongside regular redirect" {
+    // `cmd > out.txt 2>&1` — stdout to file, stderr duplicated from stdout's destination.
+    var parsed = try parseCommand(std.testing.allocator, "cmd > out.txt 2>&1");
+    defer parsed.deinit();
+    try std.testing.expectEqual(@as(usize, 1), parsed.argv.items.len);
+    try std.testing.expect(parsed.stdout_redirect != null);
+    try std.testing.expectEqualStrings("out.txt", parsed.stdout_redirect.?.path);
+    try std.testing.expect(parsed.stdout_redirect.?.dup_source == null);
+    try std.testing.expect(parsed.stderr_redirect != null);
+    try std.testing.expectEqual(RedirectTarget.stdout, parsed.stderr_redirect.?.dup_source.?);
+}
+
+test "parse fd-dup >&2 (stdout to stderr)" {
+    var parsed = try parseCommand(std.testing.allocator, "cmd >&2");
+    defer parsed.deinit();
+    try std.testing.expectEqual(@as(usize, 1), parsed.argv.items.len);
+    try std.testing.expect(parsed.stdout_redirect != null);
+    try std.testing.expectEqual(RedirectTarget.stderr, parsed.stdout_redirect.?.dup_source.?);
+}
+
+test "completer output line count is bounded" {
+    // Build a synthetic stdout blob with more lines than max_completer_output_lines.
+    // Every line starts with "pfx" so all are accepted by the prefix filter.
+    const over = max_completer_output_lines + 50;
+    var blob: std.ArrayList(u8) = .empty;
+    defer blob.deinit(std.testing.allocator);
+    for (0..over) |idx| {
+        try blob.appendSlice(std.testing.allocator, "pfx");
+        const digits = try std.fmt.allocPrint(std.testing.allocator, "{d}", .{idx});
+        defer std.testing.allocator.free(digits);
+        try blob.appendSlice(std.testing.allocator, digits);
+        try blob.append(std.testing.allocator, '\n');
+    }
+
+    var matches: std.ArrayList([]u8) = .empty;
+    defer {
+        for (matches.items) |item| std.testing.allocator.free(item);
+        matches.deinit(std.testing.allocator);
+    }
+
+    // Exercise the production helper directly — this is the same path taken by
+    // addCompleterMatches, so deleting or raising the bound in production would
+    // fail this test.
+    try collectCompleterLines(std.testing.allocator, blob.items, "pfx", &matches);
+
+    try std.testing.expect(matches.items.len <= max_completer_output_lines);
+    try std.testing.expectEqual(@as(usize, max_completer_output_lines), matches.items.len);
 }
 
 pub fn main(init_data: std.process.Init) !void {
