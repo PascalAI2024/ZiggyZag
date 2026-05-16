@@ -16,9 +16,7 @@
   <a href="https://app.codecrafters.io/courses/shell/overview"><img alt="CodeCrafters Shell" src="https://img.shields.io/badge/CodeCrafters-shell_complete-6f42c1"></a>
 </p>
 
-[![progress-banner](https://backend.codecrafters.io/progress/shell/4aa8614f-8333-4a30-93c0-1c6f6d009671)](https://app.codecrafters.io/users/codecrafters-bot?r=2qF)
-
-ZiggyZag started as a completed CodeCrafters "Build Your Own Shell" project and is now being shaped into a small, readable, hackable shell for people who want to learn how shells work without getting buried in decades of compatibility code.
+ZiggyZag started as a completed CodeCrafters "Build Your Own Shell" project and is now an open-source, readable, hackable shell for people who want to learn how shells work without getting buried in decades of compatibility code.
 
 The repo is now scoped as a workspace: the Zig shell remains the working core, `ziggyzag-agentd` provides a small JSON-lines agent process for terminal-aware assistance experiments, and the desktop lane is Windows-native first with a terminal-attached POSIX launcher for macOS and Linux alpha builds.
 
@@ -157,7 +155,7 @@ pie title ZiggyZag capability mix
 |       |   `-- main.zig
 |       `-- README.md
 |-- apps/desktop-tauri-spike/
-|   `-- README_SPIKE.md
+|   `-- README.md
 |-- assets/
 |   `-- ziggyzag-logo.svg
 |-- docs/
@@ -184,9 +182,7 @@ pie title ZiggyZag capability mix
 |   |-- smoke.sh
 |   `-- smoke.ps1
 |-- build.zig
-|-- build.zig.zon
-|-- your_program.sh
-`-- codecrafters.yml
+`-- build.zig.zon
 ```
 
 ## Docs
@@ -247,7 +243,7 @@ The first modern shell sprint is in the codebase now. The next wave is about dee
 - More completion spec shapes for options, files, and dynamic values.
 - Durable queryable history backend behind the current metadata history format.
 - Native pipelines with streaming process pipes and redirection support.
-- More parser and execution tests outside the CodeCrafters harness.
+- More parser and execution tests covering quoting, redirection, and pipelines.
 
 See [docs/ROADMAP.md](docs/ROADMAP.md) for feature ideas inspired by fish, zsh, Nushell, PowerShell, Atuin, Starship, and other modern shell tools.
 

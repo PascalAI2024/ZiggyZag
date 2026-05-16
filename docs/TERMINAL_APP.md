@@ -44,7 +44,7 @@ flowchart LR
 
 ## Binary Contract
 
-Root-level `zig build` must keep producing `zig-out/bin/ziggyzag` for local development, CI, CodeCrafters, and early desktop experiments. The desktop app can use that path during development, but packaged builds should copy or build a deliberate `ziggyzag` binary into the app bundle and launch that known artifact.
+Root-level `zig build` must keep producing `zig-out/bin/ziggyzag` for local development, CI, and early desktop experiments. The desktop app can use that path during development, but packaged builds should copy or build a deliberate `ziggyzag` binary into the app bundle and launch that known artifact.
 
 Do not let the desktop app depend on an accidental working-tree `zig-out` location in production packaging.
 

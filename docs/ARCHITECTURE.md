@@ -145,7 +145,7 @@ Optional shell integration should be explicit and ignorable by other terminals. 
 
 ## Design Rules
 
-- Keep the default prompt and core output stable for CodeCrafters compatibility.
+- Keep the default prompt and core output stable so scripts and tests stay reliable.
 - Prefer small helper functions over hidden framework magic.
 - Keep feature behavior readable before making it clever.
 - Make every added UX feature teach a shell concept.

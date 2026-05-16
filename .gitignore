@@ -1,5 +1,4 @@
 # Zig build artifacts
-main
 zig-cache/
 .zig-cache/
 zig-out/
@@ -17,6 +16,3 @@ bin/
 **/.DS_Store
 *.swp
 *~
-
-# Local smoke-test scratch files
-UserspascaAppDataLocalTemp*

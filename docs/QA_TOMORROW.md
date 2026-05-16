@@ -2,7 +2,7 @@
 
 Date: 2026-05-15
 Primary verification machine: Windows, PowerShell
-Repo: `C:\Users\pasca\dev\ZiggyZag\codecrafters-shell-zig`
+Repo: `C:\Users\pasca\dev\ZiggyZag`
 Zig version: `0.16.0`
 
 This checklist is for the current alpha line. Windows testers get the full native desktop host. macOS/Linux testers get the ZiggyZag shell, AgentD, smoke script, and a terminal-attached desktop launcher that uses the native POSIX PTY relay when available, then `script(1)`, then direct stdio; a native POSIX graphical window is not expected yet.

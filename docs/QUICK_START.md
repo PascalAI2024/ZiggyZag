@@ -178,14 +178,6 @@ On Windows:
 
 AgentD also has a Windows desktop panel in the alpha. Open it with `Ctrl+Shift+A` or from the command palette. The panel can request health/tool data and preview `terminal.write`; it only writes the pending preview into the active pane after explicit approval.
 
-## CodeCrafters Wrapper
-
-The CodeCrafters-compatible wrapper still works:
-
-```sh
-./your_program.sh
-```
-
 ## Try This
 
 ```sh

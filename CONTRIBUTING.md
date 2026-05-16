@@ -85,7 +85,7 @@ The release folder should contain five zips, `checksums.sha256`, and `release-ma
 
 - Prefer straightforward code over abstractions that hide shell behavior.
 - Keep comments short and useful.
-- Avoid changing CodeCrafters-compatible output unless the change is intentional.
+- Keep default prompt and core stdout/stderr output stable unless a change is intentional.
 - Keep docs updated when adding user-facing behavior.
 - Keep friend-test instructions accurate when changing build, desktop, or AgentD behavior.
 
