@@ -55,6 +55,7 @@ The repo now contains a Windows-native all-Zig alpha under `apps/desktop`:
 - Keyboard input forwarded to the shell process.
 - Resize handling across the window, grid, and pseudoconsole.
 - Status bar and window-title updates from shell integration events.
+- Built-in terminal themes, theme-aware ANSI colors, a settings overlay, live theme cycling, and desktop config loading.
 - Tested terminal grid and OSC 777 event extraction.
 - Slim `ziggyzag-agentd` sidecar under `apps/agentd` for terminal AI panel integration.
 
@@ -77,7 +78,7 @@ The first hardened version should prove that the app can host ZiggyZag well:
 
 1. Launch ZiggyZag in a real PTY with correct resize, cleanup, paste, Ctrl+C interrupt, Ctrl+Shift+C copy-visible, and wheel scrollback behavior.
 2. Provide one window with tabs, each backed by a separate ZiggyZag process.
-3. Persist basic app settings: font family, font size, theme, shell path, startup directory, scrollback size.
+3. Deepen persisted app settings: shell path, startup directory, scrollback size, keybindings, and a proper settings editor.
 4. Add a command palette for app-level commands such as new tab, close tab, split later placeholder, increase font, decrease font, and open settings.
 5. Add an agent panel backed by `ziggyzag-agentd --stdio`, with explicit approval before terminal writes or build commands.
 6. Surface session status: current directory, last command status, running command indicator, and background job count when ZiggyZag exposes them.

@@ -1,4 +1,5 @@
 const std = @import("std");
+const desktop_config = @import("config.zig");
 const integration = @import("integration.zig");
 const terminal = @import("terminal.zig");
 const theme = @import("theme.zig");
@@ -45,10 +46,12 @@ const WM_KILLFOCUS = 0x0008;
 const WM_CLOSE = 0x0010;
 const WM_MOUSEWHEEL = 0x020A;
 const VK_C = 0x43;
+const VK_T = 0x54;
 const VK_V = 0x56;
 const VK_INSERT = 0x2D;
 const VK_CONTROL = 0x11;
 const VK_SHIFT = 0x10;
+const VK_OEM_COMMA = 0xBC;
 const VK_LEFT = 0x25;
 const VK_UP = 0x26;
 const VK_RIGHT = 0x27;
@@ -269,6 +272,12 @@ const App = struct {
     hwnd: HWND = null,
     grid: terminal.Grid,
     mutex: SpinLock = .{},
+    config: desktop_config.Config = .{},
+    config_buffer: ?[]u8 = null,
+    config_path: [320]u8 = undefined,
+    config_path_len: usize = 0,
+    config_error: [128]u8 = undefined,
+    config_error_len: usize = 0,
     selected_theme: theme.Theme = theme.ziggy,
     font: HFONT = null,
     bg_brush: HBRUSH = null,
@@ -287,6 +296,7 @@ const App = struct {
     startup_error: [96]u8 = undefined,
     startup_error_len: usize = 0,
     focused: bool = false,
+    settings_open: bool = false,
     running: bool = true,
 
     fn init(allocator: Allocator, io: std.Io, env: *std.process.Environ.Map) !App {
@@ -298,21 +308,98 @@ const App = struct {
         };
     }
 
+    fn loadDesktopConfig(self: *App) void {
+        const path = self.desktopConfigPathAlloc() catch |err| {
+            self.setConfigError(err);
+            return;
+        };
+        defer self.allocator.free(path);
+        self.setConfigPath(path);
+
+        const file = if (std.fs.path.isAbsolute(path))
+            std.Io.Dir.openFileAbsolute(self.io, path, .{}) catch |err| switch (err) {
+                error.FileNotFound => return,
+                else => {
+                    self.setConfigError(err);
+                    return;
+                },
+            }
+        else
+            std.Io.Dir.cwd().openFile(self.io, path, .{}) catch |err| switch (err) {
+                error.FileNotFound => return,
+                else => {
+                    self.setConfigError(err);
+                    return;
+                },
+            };
+        defer file.close(self.io);
+
+        var read_buffer: [4096]u8 = undefined;
+        var reader = file.readerStreaming(self.io, &read_buffer);
+        const contents = reader.interface.allocRemaining(self.allocator, .limited(64 * 1024)) catch |err| {
+            self.setConfigError(err);
+            return;
+        };
+        errdefer self.allocator.free(contents);
+
+        const parsed = desktop_config.parse(contents) catch |err| {
+            self.setConfigError(err);
+            self.allocator.free(contents);
+            return;
+        };
+
+        if (self.config_buffer) |old| self.allocator.free(old);
+        self.config_buffer = contents;
+        self.config = parsed;
+        self.selected_theme = parsed.selected_theme;
+        self.status_height = if (parsed.options.show_status_bar) 28 else 0;
+    }
+
+    fn desktopConfigPathAlloc(self: *App) ![]u8 {
+        if (self.env.get("ZIGGYZAG_DESKTOP_CONFIG")) |path| return try self.allocator.dupe(u8, path);
+        if (self.env.get("APPDATA")) |appdata| return try std.fs.path.join(self.allocator, &.{ appdata, "ZiggyZag", "desktop.conf" });
+        const home = self.env.get("HOME") orelse self.env.get("USERPROFILE") orelse ".";
+        return try std.fs.path.join(self.allocator, &.{ home, ".config", "ziggyzag", "desktop.conf" });
+    }
+
     fn deinit(self: *App) void {
         self.shutdownPty();
         if (self.font) |font| _ = DeleteObject(@ptrCast(font));
         if (self.bg_brush) |brush| _ = DeleteObject(@ptrCast(brush));
         if (self.panel_brush) |brush| _ = DeleteObject(@ptrCast(brush));
         if (self.cursor_brush) |brush| _ = DeleteObject(@ptrCast(brush));
+        if (self.config_buffer) |buffer| self.allocator.free(buffer);
         self.grid.deinit();
     }
 
-    fn setupGdi(self: *App) void {
-        self.bg_brush = CreateSolidBrush(toColorRef(self.selected_theme.background));
-        self.panel_brush = CreateSolidBrush(toColorRef(.{ .r = 0x19, .g = 0x1c, .b = 0x1d }));
-        self.cursor_brush = CreateSolidBrush(toColorRef(self.selected_theme.cursor));
+    fn setConfigPath(self: *App, path: []const u8) void {
+        const len = @min(path.len, self.config_path.len);
+        @memcpy(self.config_path[0..len], path[0..len]);
+        self.config_path_len = len;
+    }
+
+    fn configPathSlice(self: *const App) []const u8 {
+        return self.config_path[0..self.config_path_len];
+    }
+
+    fn setConfigError(self: *App, err: anyerror) void {
+        const name = @errorName(err);
+        const len = @min(name.len, self.config_error.len);
+        @memcpy(self.config_error[0..len], name[0..len]);
+        self.config_error_len = len;
+    }
+
+    fn configErrorSlice(self: *const App) []const u8 {
+        return self.config_error[0..self.config_error_len];
+    }
+
+    fn setupGdi(self: *App) !void {
+        self.rebuildThemeBrushes();
+        const font_name = try std.unicode.utf8ToUtf16LeAllocZ(self.allocator, self.config.font.family);
+        defer self.allocator.free(font_name);
+        const font_height = -@as(i32, @intCast(self.config.font.size + 2));
         self.font = CreateFontW(
-            -16,
+            font_height,
             0,
             0,
             0,
@@ -325,8 +412,17 @@ const App = struct {
             CLIP_DEFAULT_PRECIS,
             CLEARTYPE_QUALITY,
             FIXED_PITCH | FF_MODERN,
-            wideLiteral("Cascadia Mono"),
+            font_name.ptr,
         );
+    }
+
+    fn rebuildThemeBrushes(self: *App) void {
+        if (self.bg_brush) |brush| _ = DeleteObject(@ptrCast(brush));
+        if (self.panel_brush) |brush| _ = DeleteObject(@ptrCast(brush));
+        if (self.cursor_brush) |brush| _ = DeleteObject(@ptrCast(brush));
+        self.bg_brush = CreateSolidBrush(toColorRef(self.selected_theme.background));
+        self.panel_brush = CreateSolidBrush(toColorRef(self.selected_theme.panel));
+        self.cursor_brush = CreateSolidBrush(toColorRef(self.selected_theme.cursor));
     }
 
     fn startPty(self: *App) !void {
@@ -671,7 +767,8 @@ const App = struct {
             self.paintStartupMessage(hdc, rect, startup_error[0..startup_error_len]);
         }
         self.paintScrollIndicator(hdc, rect, scroll_offset, history_len);
-        self.paintStatus(hdc, rect, status, scroll_offset, history_len);
+        if (self.status_height > 0) self.paintStatus(hdc, rect, status, scroll_offset, history_len);
+        if (self.settings_open) self.paintSettingsOverlay(hdc, rect);
     }
 
     fn paintCellRun(self: *App, hdc: HDC, cells: []const terminal.Cell, y: i32) void {
@@ -748,7 +845,7 @@ const App = struct {
         if (track_height < 32) return;
 
         var track = RECT{ .left = rect.right - 7, .top = top, .right = rect.right - 4, .bottom = bottom };
-        const track_brush = CreateSolidBrush(toColorRef(theme.Color.rgb(0x35, 0x3a, 0x3c)));
+        const track_brush = CreateSolidBrush(toColorRef(scaleColor(self.selected_theme.muted, 55)));
         if (track_brush) |brush| {
             _ = FillRect(hdc, &track, brush);
             _ = DeleteObject(@ptrCast(brush));
@@ -782,7 +879,7 @@ const App = struct {
         const cwd = if (status.cwd_len > 0) status.cwdSlice() else "starting shell";
         const duration = if (status.last_duration_ms) |ms| std.fmt.bufPrint(&duration_text, "{d}ms", .{ms}) catch "n/a" else "n/a";
         const wide_layout = rect.right - rect.left > 920;
-        const shortcuts = "Ctrl+C int | Ctrl+Shift+C copy | Ctrl+V paste | wheel scroll";
+        const shortcuts = "Ctrl+C int | Ctrl+Shift+C copy | Ctrl+V paste | Ctrl+, settings | Ctrl+Shift+T theme";
         const text = if (wide_layout)
             (std.fmt.bufPrint(&status_text, "ZiggyZag  |  {s}  |  commands:{d}  |  status:{s}  |  last:{s}{s}  |  {s}", .{
                 cwd,
@@ -799,6 +896,109 @@ const App = struct {
                 if (scroll_offset > 0) "  |  scrollback" else "",
             }) catch "ZiggyZag");
         drawUtf8TextFitted(hdc, 10, rect.bottom - self.status_height + 7, text, rect.right - rect.left - 20, self.char_width);
+    }
+
+    fn paintSettingsOverlay(self: *App, hdc: HDC, rect: RECT) void {
+        const available_width = @max(rect.right - rect.left - 48, 280);
+        const panel_width = @min(available_width, 760);
+        const left = rect.right - panel_width - 24;
+        const top: i32 = 24;
+        const bottom_limit = rect.bottom - self.status_height - 12;
+        const desired_height = self.char_height * 18 + 48;
+        const bottom = @min(bottom_limit, top + desired_height);
+        if (bottom <= top + self.char_height * 4) return;
+
+        var panel = RECT{ .left = left, .top = top, .right = rect.right - 24, .bottom = bottom };
+        _ = FillRect(hdc, &panel, self.panel_brush);
+        var accent_line = RECT{ .left = panel.left, .top = panel.top, .right = panel.right, .bottom = panel.top + 3 };
+        const accent_brush = CreateSolidBrush(toColorRef(self.selected_theme.accent));
+        if (accent_brush) |brush| {
+            _ = FillRect(hdc, &accent_line, brush);
+            _ = DeleteObject(@ptrCast(brush));
+        }
+
+        _ = SetBkMode(hdc, TRANSPARENT);
+        _ = SetTextColor(hdc, toColorRef(self.selected_theme.foreground));
+        const text_x = panel.left + 14;
+        var y = panel.top + 14;
+        const max_width = panel.right - text_x - 14;
+
+        drawUtf8TextFitted(hdc, text_x, y, "Settings", max_width, self.char_width);
+        y += self.char_height + 8;
+
+        var line: [512]u8 = undefined;
+        const theme_text = std.fmt.bufPrint(&line, "Theme: {s}  ({s})", .{ self.selected_theme.name, self.selected_theme.id }) catch "Theme";
+        _ = SetTextColor(hdc, toColorRef(self.selected_theme.accent));
+        drawUtf8TextFitted(hdc, text_x, y, theme_text, max_width, self.char_width);
+        y += self.char_height + 4;
+
+        _ = SetTextColor(hdc, toColorRef(self.selected_theme.foreground));
+        const font_text = std.fmt.bufPrint(&line, "Font: {s} {d}px", .{ self.config.font.family, self.config.font.size }) catch "Font";
+        drawUtf8TextFitted(hdc, text_x, y, font_text, max_width, self.char_width);
+        y += self.char_height + 4;
+
+        const status_text = std.fmt.bufPrint(&line, "Status bar: {s}    Bell: {s}    Smooth scroll: {s}", .{
+            if (self.config.options.show_status_bar) "on" else "off",
+            if (self.config.options.bell) "on" else "off",
+            if (self.config.options.smooth_scroll) "on" else "off",
+        }) catch "Status";
+        drawUtf8TextFitted(hdc, text_x, y, status_text, max_width, self.char_width);
+        y += self.char_height + 4;
+
+        const path = if (self.config_path_len > 0) self.configPathSlice() else "%APPDATA%\\ZiggyZag\\desktop.conf";
+        const config_text = std.fmt.bufPrint(&line, "Config: {s}", .{path}) catch "Config";
+        _ = SetTextColor(hdc, toColorRef(self.selected_theme.muted));
+        drawUtf8TextFitted(hdc, text_x, y, config_text, max_width, self.char_width);
+        y += self.char_height + 4;
+
+        if (self.config_error_len > 0) {
+            const error_text = std.fmt.bufPrint(&line, "Config error: {s}", .{self.configErrorSlice()}) catch "Config error";
+            _ = SetTextColor(hdc, toColorRef(self.selected_theme.ansi[1]));
+            drawUtf8TextFitted(hdc, text_x, y, error_text, max_width, self.char_width);
+            y += self.char_height + 6;
+        } else {
+            y += 6;
+        }
+
+        _ = SetTextColor(hdc, toColorRef(self.selected_theme.foreground));
+        drawUtf8TextFitted(hdc, text_x, y, "Built-in themes", max_width, self.char_width);
+        y += self.char_height + 6;
+
+        const columns: i32 = if (panel_width > 560) 2 else 1;
+        const column_width = @divTrunc(max_width, columns);
+        var index: usize = 0;
+        while (index < theme.themes.len) : (index += 1) {
+            const col: i32 = @intCast(index % @as(usize, @intCast(columns)));
+            const row: i32 = @intCast(index / @as(usize, @intCast(columns)));
+            const option_x = text_x + col * column_width;
+            const option_y = y + row * (self.char_height + 7);
+            if (option_y + self.char_height >= bottom - self.char_height * 2) break;
+            self.paintThemeOption(hdc, theme.themes[index], option_x, option_y, column_width - 10);
+        }
+
+        _ = SetTextColor(hdc, toColorRef(self.selected_theme.muted));
+        drawUtf8TextFitted(hdc, text_x, bottom - self.char_height - 12, "Ctrl+Shift+T cycles theme. Ctrl+, toggles this panel. Edit desktop.conf to persist.", max_width, self.char_width);
+    }
+
+    fn paintThemeOption(self: *App, hdc: HDC, preset: theme.Theme, x: i32, y: i32, max_width: i32) void {
+        const swatch_size = @max(@min(self.char_height - 3, 14), 8);
+        var bg = RECT{ .left = x, .top = y + 2, .right = x + swatch_size, .bottom = y + 2 + swatch_size };
+        var accent = RECT{ .left = x + swatch_size + 3, .top = y + 2, .right = x + swatch_size * 2 + 3, .bottom = y + 2 + swatch_size };
+
+        const bg_brush = CreateSolidBrush(toColorRef(preset.background));
+        if (bg_brush) |brush| {
+            _ = FillRect(hdc, &bg, brush);
+            _ = DeleteObject(@ptrCast(brush));
+        }
+        const accent_brush = CreateSolidBrush(toColorRef(preset.accent));
+        if (accent_brush) |brush| {
+            _ = FillRect(hdc, &accent, brush);
+            _ = DeleteObject(@ptrCast(brush));
+        }
+
+        const is_current = std.mem.eql(u8, preset.id, self.selected_theme.id);
+        _ = SetTextColor(hdc, toColorRef(if (is_current) self.selected_theme.accent else self.selected_theme.foreground));
+        drawUtf8TextFitted(hdc, x + swatch_size * 2 + 10, y, preset.name, @max(max_width - swatch_size * 2 - 10, 20), self.char_width);
     }
 
     fn updateCaret(self: *App, hwnd: HWND) void {
@@ -863,7 +1063,8 @@ pub fn run(init_data: std.process.Init) !void {
         app.deinit();
         allocator.destroy(app);
     }
-    app.setupGdi();
+    app.loadDesktopConfig();
+    try app.setupGdi();
     global_app = app;
     defer global_app = null;
 
@@ -1031,6 +1232,18 @@ fn handleChar(app: *App, wparam: WPARAM) void {
 }
 
 fn handleKey(app: *App, hwnd: HWND, wparam: WPARAM) bool {
+    if (keyDown(VK_CONTROL) and wparam == VK_OEM_COMMA) {
+        app.settings_open = !app.settings_open;
+        _ = InvalidateRect(hwnd, null, 0);
+        return true;
+    }
+    if (keyDown(VK_CONTROL) and keyDown(VK_SHIFT) and wparam == VK_T) {
+        app.selected_theme = theme.next(app.selected_theme);
+        app.config.selected_theme = app.selected_theme;
+        app.rebuildThemeBrushes();
+        _ = InvalidateRect(hwnd, null, 0);
+        return true;
+    }
     if (keyDown(VK_CONTROL) and keyDown(VK_SHIFT) and wparam == VK_C) {
         app.copyVisibleText(hwnd);
         return true;
@@ -1155,35 +1368,35 @@ fn styleEql(left: terminal.Style, right: terminal.Style) bool {
 }
 
 fn styleForeground(selected_theme: theme.Theme, style: terminal.Style) theme.Color {
-    var color = terminalColor(style.fg) orelse selected_theme.foreground;
+    var color = terminalColor(selected_theme, style.fg) orelse selected_theme.foreground;
     if (style.dim) color = scaleColor(color, 65);
     if (style.bold and style.fg == .default) color = brightenColor(color);
     return color;
 }
 
 fn styleBackground(selected_theme: theme.Theme, style: terminal.Style) theme.Color {
-    return terminalColor(style.bg) orelse selected_theme.background;
+    return terminalColor(selected_theme, style.bg) orelse selected_theme.background;
 }
 
-fn terminalColor(color: terminal.Color) ?theme.Color {
+fn terminalColor(selected_theme: theme.Theme, color: terminal.Color) ?theme.Color {
     return switch (color) {
         .default => null,
-        .black => theme.Color.rgb(0x1d, 0x20, 0x21),
-        .red => theme.Color.rgb(0xe6, 0x6a, 0x6a),
-        .green => theme.Color.rgb(0x9b, 0xe2, 0x8f),
-        .yellow => theme.Color.rgb(0xf2, 0xcd, 0x76),
-        .blue => theme.Color.rgb(0x7a, 0xb7, 0xff),
-        .magenta => theme.Color.rgb(0xcf, 0x9b, 0xff),
-        .cyan => theme.Color.rgb(0x73, 0xd7, 0xd7),
-        .white => theme.Color.rgb(0xee, 0xf2, 0xe2),
-        .bright_black => theme.Color.rgb(0x6a, 0x70, 0x72),
-        .bright_red => theme.Color.rgb(0xff, 0x8a, 0x8a),
-        .bright_green => theme.Color.rgb(0xba, 0xf5, 0xa9),
-        .bright_yellow => theme.Color.rgb(0xff, 0xdf, 0x8a),
-        .bright_blue => theme.Color.rgb(0x9d, 0xcb, 0xff),
-        .bright_magenta => theme.Color.rgb(0xdf, 0xb6, 0xff),
-        .bright_cyan => theme.Color.rgb(0x91, 0xef, 0xef),
-        .bright_white => theme.Color.rgb(0xff, 0xfd, 0xf2),
+        .black => selected_theme.ansi[0],
+        .red => selected_theme.ansi[1],
+        .green => selected_theme.ansi[2],
+        .yellow => selected_theme.ansi[3],
+        .blue => selected_theme.ansi[4],
+        .magenta => selected_theme.ansi[5],
+        .cyan => selected_theme.ansi[6],
+        .white => selected_theme.ansi[7],
+        .bright_black => selected_theme.ansi[8],
+        .bright_red => selected_theme.ansi[9],
+        .bright_green => selected_theme.ansi[10],
+        .bright_yellow => selected_theme.ansi[11],
+        .bright_blue => selected_theme.ansi[12],
+        .bright_magenta => selected_theme.ansi[13],
+        .bright_cyan => selected_theme.ansi[14],
+        .bright_white => selected_theme.ansi[15],
     };
 }
 

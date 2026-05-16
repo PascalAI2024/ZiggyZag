@@ -33,97 +33,31 @@ Most shells are either mature production tools with a lot of historical surface 
 - Friendly enough to use as a personal shell lab.
 - Written in Zig so memory ownership, process spawning, and terminal behavior stay visible.
 
-## Quick Start
+## What Is In The Box
 
-Install [Zig 0.16.0](https://ziglang.org/download/) first. Then build and run from the repository root.
+ZiggyZag is split into a few deliberately small pieces:
 
-```sh
-git clone https://github.com/PascalAI2024/ZiggyZag.git
-cd ZiggyZag
-zig build
-./zig-out/bin/ziggyzag
-```
+- `apps/shell`: the shell itself, including parsing, expansion, builtins, history, jobs, completion, and interactive editing.
+- `apps/desktop`: the native terminal host. Windows has the full Win32/ConPTY alpha; macOS/Linux currently use a terminal-attached launcher.
+- `apps/launcher`: the friendly launcher entry point used by release zips.
+- `apps/agentd`: a slim JSON-lines sidecar for terminal-aware assistance experiments.
+- `apps/desktop-tauri-spike`: an older Tauri/xterm.js product spike kept for reference.
 
-On Windows PowerShell:
+For installation and command examples, use the dedicated [Quick Start](docs/QUICK_START.md).
 
-```powershell
-git clone https://github.com/PascalAI2024/ZiggyZag.git
-cd ZiggyZag
-zig build
-.\zig-out\bin\ziggyzag.exe
-```
+## Current Alpha Shape
 
-Run the Windows desktop terminal MVP. For normal use, start the top-level launcher; it opens the native desktop host for you:
+The alpha is practical but intentionally honest about platform maturity:
 
-```powershell
-.\zig-out\bin\ziggyzag-launcher.exe
-zig build run-desktop
-```
+- Windows has the first full native desktop host: a Win32 window, ConPTY shell process, terminal grid, copy/paste, wheel scrollback, status bar, live theme switching, and config loading.
+- macOS/Linux build the shell, AgentD, and a terminal-attached desktop launcher. The native graphical host for those platforms is still future work.
+- The Tauri/xterm.js app remains in the repo as a spike, not the primary lane.
 
-On macOS/Linux, `zig build run-desktop` currently launches ZiggyZag in the calling terminal through the POSIX desktop entry point. It prefers `script(1)` as a small PTY wrapper and falls back to direct stdio when needed. It does not open a separate native window yet. The shell and AgentD binaries are also first-class alpha artifacts on those platforms:
+## Themes And Settings
 
-```sh
-zig build
-./zig-out/bin/ziggyzag
-./zig-out/bin/ziggyzag-agentd --describe-tools
-./scripts/smoke.sh
-zig build run-desktop
-```
+The desktop host now ships with a modern preset collection inspired by popular terminal/editor palettes: `ziggy`, `catppuccin-mocha`, `tokyo-night`, `dracula`, `nord`, `rose-pine`, `gruvbox-dark`, `everforest-dark`, `kanagawa-wave`, `solarized-dark`, `one-dark`, `paper`, and `ember`.
 
-Run the agent sidecar tool list:
-
-```powershell
-zig build run-agentd -- --describe-tools
-```
-
-You can also run the CodeCrafters-compatible wrapper:
-
-```sh
-./your_program.sh
-```
-
-## Try This
-
-```sh
-declare project=ZiggyZag
-echo hello_${project}
-
-alias gs='git status --short'
-gs
-
-abbr gco='git checkout'
-gco main
-
-complete -c zig -a 'build fmt test' -d 'common Zig command'
-
-export EDITOR=vim
-echo $EDITOR
-
-which zig
-path --json
-timeit echo quick
-repeat 2 echo again
-project
-run --list
-dirs
-history --stats
-
-inspect echo hello | grep hello
-doctor
-history --search zig
-```
-
-## Configuration
-
-ZiggyZag loads startup commands from `$ZIGGYZAG_CONFIG` or `~/.ziggyzagrc`.
-
-```sh
-alias gs='git status --short'
-abbr gco='git checkout'
-complete -c zig -a 'build fmt test' -d 'common Zig command'
-prompt smart
-export ZIGGYZAG_HISTORY_DB=~/.ziggyzag-history.tsv
-```
+On Windows, press `Ctrl+,` to open the settings overlay and `Ctrl+Shift+T` to cycle themes live. Persistent desktop settings are loaded from `%APPDATA%\ZiggyZag\desktop.conf`, or from `ZIGGYZAG_DESKTOP_CONFIG` when that environment variable is set. Shell startup commands remain separate and still use `$ZIGGYZAG_CONFIG` or `~/.ziggyzagrc`.
 
 ## Feature Map
 
@@ -143,7 +77,7 @@ export ZIGGYZAG_HISTORY_DB=~/.ziggyzag-history.tsv
 | Introspection | Done | `about`, `doctor`, `inspect`, `which`, `path`, `project`, slash shortcuts, JSON output for jobs/history/prompt/env/doctor/project/dirs, and config validation/reload. |
 | Convenience commands | Done | `mkcd`, `up`, `back`, `forward`, `jump`, `repeat`, `timeit`, `source`, `env`, `vars`, and project-aware `run`. |
 | Developer polish | Done | Repo docs, diagrams, refactors, smoke script, and user-facing enhancements. |
-| Desktop terminal host | Alpha | Windows-native all-Zig app with Win32 windowing, GDI terminal rendering, ConPTY shell hosting, keyboard input, copy/paste, wheel scrollback, status bar, themes, desktop config parsing, and OSC 777 shell-event parsing. macOS/Linux currently build a terminal-attached launcher that resolves and starts `ziggyzag` through `script(1)` when available; native POSIX graphical hosting is still in progress. |
+| Desktop terminal host | Alpha | Windows-native all-Zig app with Win32 windowing, GDI terminal rendering, ConPTY shell hosting, keyboard input, copy/paste, wheel scrollback, status bar, themes, desktop config loading, and OSC 777 shell-event parsing. macOS/Linux currently build a terminal-attached launcher that resolves and starts `ziggyzag` through `script(1)` when available; native POSIX graphical hosting is still in progress. |
 | Agent runtime | Alpha | Slim `ziggyzag-agentd` binary with JSON-lines protocol, tool descriptions/calls, terminal host actions, and OpenAI-compatible/Ollama request shaping on Windows, macOS, and Linux. |
 
 ## Architecture
@@ -217,6 +151,7 @@ pie title ZiggyZag capability mix
 |   |-- ARCHITECTURE.md
 |   |-- FEATURES.md
 |   |-- QA_TOMORROW.md
+|   |-- QUICK_START.md
 |   |-- ROADMAP.md
 |   |-- SCOPE.md
 |   `-- TERMINAL_APP.md
@@ -232,6 +167,7 @@ pie title ZiggyZag capability mix
 
 ## Docs
 
+- [Quick start](docs/QUICK_START.md)
 - [Architecture](docs/ARCHITECTURE.md)
 - [Features and roadmap](docs/FEATURES.md)
 - [All-Zig terminal direction](docs/ALL_ZIG_TERMINAL.md)
@@ -247,7 +183,7 @@ pie title ZiggyZag capability mix
 Release packages are produced with:
 
 ```powershell
-$Version = "v0.1.0-alpha.1"
+$Version = "v0.1.0-alpha.2"
 .\scripts\build-release.ps1 -Version $Version -Optimize ReleaseSafe
 .\scripts\qa-release-artifacts.ps1 -Version $Version
 ```
@@ -264,106 +200,9 @@ Expected files under `dist\$Version`:
 
 Every zip contains a top-level `ZiggyZag` launcher (`ZiggyZag.exe` on Windows), `bin/ziggyzag-launcher`, `bin/ziggyzag`, `bin/ziggyzag-agentd`, `bin/ziggyzag-desktop`, plus `README.md` and `LICENSE`; Windows binaries use the `.exe` suffix. For Windows friend testing, double-click the top-level `ZiggyZag.exe`. Use `checksums.sha256` to verify downloads before testing. The archive QA script expands each zip, checks expected binaries and binary headers, and runs extracted Windows shell, AgentD, launcher, and desktop smoke tests. Linux/macOS runtime smokes still need real Linux/macOS hosts or CI runners.
 
-## Development
+## Quick Start
 
-Build:
-
-```sh
-zig build
-```
-
-Run:
-
-```sh
-zig build run
-```
-
-Run the all-Zig desktop target:
-
-```sh
-./zig-out/bin/ziggyzag-launcher
-zig build run-desktop
-```
-
-Platform behavior:
-
-- Windows: `ziggyzag-launcher.exe` opens the native terminal host and launches `ziggyzag` through ConPTY. Release zips copy this launcher to top-level `ZiggyZag.exe` so it is easy to double-click without colliding with `bin\ziggyzag.exe`.
-- macOS/Linux: launches `ziggyzag` in the calling terminal after resolving the shell path; it uses `script(1)` as a PTY wrapper when available, can be forced to direct stdio with `ZIGGYZAG_DESKTOP_NO_PTY=1`, and does not open a separate graphical window yet.
-
-Run the Zig-native agent runtime:
-
-```sh
-zig build run-agentd -- --describe-tools
-zig build run-agentd -- --stdio
-```
-
-Format:
-
-```sh
-zig fmt apps/shell/src/main.zig apps/desktop/src/main.zig apps/desktop/src/lib.zig apps/desktop/src/integration.zig apps/desktop/src/terminal.zig apps/desktop/src/theme.zig apps/desktop/src/config.zig apps/desktop/src/pty.zig apps/desktop/src/windows_app.zig apps/agentd/src/main.zig apps/agentd/src/lib.zig apps/agentd/src/protocol.zig apps/agentd/src/provider.zig apps/agentd/src/tools.zig build.zig
-```
-
-Unit tests:
-
-```sh
-zig build test
-```
-
-Smoke test:
-
-```sh
-printf "help\nalias hi='echo hello'\nhi world\nexit\n" | ./zig-out/bin/ziggyzag
-```
-
-Feature smoke:
-
-```sh
-./scripts/smoke.sh
-```
-
-On Windows:
-
-```powershell
-.\scripts\smoke.ps1
-```
-
-For normal desktop testing today, use the all-Zig Windows app. On macOS/Linux, test the shell, AgentD, smoke script, and terminal-attached desktop launcher. The Tauri/xterm.js version is preserved only as a spike under `apps/desktop-tauri-spike`. See [docs/ALL_ZIG_TERMINAL.md](docs/ALL_ZIG_TERMINAL.md).
-
-## Friend Test Checklist
-
-For a quick Windows test session tomorrow, use this order:
-
-1. Install Zig 0.16.0 and confirm `zig version` prints `0.16.0`.
-2. Run `zig build`.
-3. Run `.\scripts\qa-tomorrow.ps1` on Windows for the full scripted pass.
-4. Run `.\zig-out\bin\ziggyzag.exe` and try `help`, `doctor`, `history --stats`, `project`, and `exit`.
-5. Run `.\scripts\smoke.ps1`.
-6. Run `.\zig-out\bin\ziggyzag-launcher.exe` and test typing, Enter, Backspace, Ctrl+C interrupt, Ctrl+V paste, Shift+Insert paste, Ctrl+Shift+C copy-visible text, window resize, and mouse-wheel scrollback.
-7. Run `zig build run-agentd -- --describe-tools` and confirm the JSON tool list includes `project.info`, `file.read`, `rg.search`, `git.diff`, `zig.build`, and `terminal.write`.
-8. Run `zig build run-agentd -- --stdio` and send `{"id":1,"method":"agent/health"}` to confirm AgentD reports provider readiness.
-9. If Ollama is installed, start it separately and try `zig build run-agentd -- --oneshot "summarize this workspace"`.
-
-For macOS/Linux alpha testing:
-
-1. Install Zig 0.16.0 and confirm `zig version` prints `0.16.0`.
-2. Run `zig build`.
-3. Run `./scripts/smoke.sh`.
-4. Run `./zig-out/bin/ziggyzag` and try `help`, `doctor`, `history --stats`, `project`, and `exit`.
-5. Run `./zig-out/bin/ziggyzag-agentd --describe-tools`.
-6. Run `printf '%s\n' '{"id":1,"method":"agent/health"}' | ./zig-out/bin/ziggyzag-agentd --stdio`.
-7. Run `zig build run-desktop`, confirm it launches ZiggyZag in the current terminal, then type `exit` to return. A native desktop window is not expected yet.
-
-## Troubleshooting
-
-| Symptom | Fix |
-| --- | --- |
-| `zig` is not recognized | Install Zig 0.16.0 and open a fresh terminal, or add the Zig folder to `PATH`. On Windows, `winget install zig.zig` is usually enough. |
-| `.\zig-out\bin\ziggyzag.exe` is missing | Run `zig build` from the repo root first. |
-| `.\scripts\smoke.ps1` says the binary is missing | Run `zig build`, then rerun the smoke script from the repo root. |
-| Desktop window opens but shell does not start | Confirm `zig-out\bin\ziggyzag.exe` exists and that antivirus did not quarantine a local build artifact. |
-| macOS/Linux `zig build run-desktop` does not open a window | Expected for this alpha. It should launch ZiggyZag in the current terminal through `script(1)` when available; use `./zig-out/bin/ziggyzag` directly if you do not want the launcher banner. |
-| AgentD returns `provider_error` from `--oneshot` or `agent/run` | This is expected when Ollama or the configured OpenAI-compatible provider is not running. Tool listing, `agent/health`, and local tool calls should still work. |
-| Ollama request fails | Start Ollama, confirm `http://127.0.0.1:11434` is reachable, and set `ZIGGYZAG_AGENT_MODEL` to a local model you have pulled. |
+Ready to build, run, theme, or friend-test it? Use the dedicated [Quick Start](docs/QUICK_START.md). Keeping the commands there lets this page explain the project first and keeps the practical checklist easy to maintain.
 
 ## Roadmap
 

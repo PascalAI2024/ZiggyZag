@@ -61,6 +61,10 @@ fn apply(config: *Config, key: []const u8, value: []const u8) ParseError!void {
         config.selected_theme = config.selected_theme.withCursor(try theme.Color.fromHex(value));
     } else if (std.ascii.eqlIgnoreCase(key, "theme.accent")) {
         config.selected_theme = config.selected_theme.withAccent(try theme.Color.fromHex(value));
+    } else if (std.ascii.eqlIgnoreCase(key, "theme.panel")) {
+        config.selected_theme = config.selected_theme.withPanel(try theme.Color.fromHex(value));
+    } else if (std.ascii.eqlIgnoreCase(key, "theme.muted")) {
+        config.selected_theme = config.selected_theme.withMuted(try theme.Color.fromHex(value));
     } else if (std.ascii.eqlIgnoreCase(key, "font.family")) {
         config.font.family = value;
     } else if (std.ascii.eqlIgnoreCase(key, "font.size")) {
@@ -117,7 +121,7 @@ test "defaults select ziggy theme and desktop font" {
 test "parses key value desktop config" {
     const parsed = try parse(
         \\# ZiggyZag Desktop
-        \\theme = paper
+        \\theme = catppuccin mocha
         \\font.family = "JetBrains Mono"
         \\font.size = 16
         \\show_status_bar = off
@@ -126,7 +130,7 @@ test "parses key value desktop config" {
         \\
     );
 
-    try std.testing.expectEqualStrings("Paper", parsed.selected_theme.name);
+    try std.testing.expectEqualStrings("Catppuccin Mocha", parsed.selected_theme.name);
     try std.testing.expectEqualStrings("JetBrains Mono", parsed.font.family);
     try std.testing.expectEqual(@as(u8, 16), parsed.font.size);
     try std.testing.expect(!parsed.options.show_status_bar);
@@ -141,6 +145,8 @@ test "parses theme color overrides" {
         \\theme.foreground = 0a0b0c
         \\theme.cursor = #111213
         \\theme.accent = #212223
+        \\theme.panel = #313233
+        \\theme.muted = #414243
     );
 
     try std.testing.expectEqualStrings("Ember", parsed.selected_theme.name);
@@ -148,6 +154,8 @@ test "parses theme color overrides" {
     try std.testing.expect(parsed.selected_theme.foreground.eql(theme.Color.rgb(0x0a, 0x0b, 0x0c)));
     try std.testing.expect(parsed.selected_theme.cursor.eql(theme.Color.rgb(0x11, 0x12, 0x13)));
     try std.testing.expect(parsed.selected_theme.accent.eql(theme.Color.rgb(0x21, 0x22, 0x23)));
+    try std.testing.expect(parsed.selected_theme.panel.eql(theme.Color.rgb(0x31, 0x32, 0x33)));
+    try std.testing.expect(parsed.selected_theme.muted.eql(theme.Color.rgb(0x41, 0x42, 0x43)));
 }
 
 test "rejects unknown keys and invalid values" {
