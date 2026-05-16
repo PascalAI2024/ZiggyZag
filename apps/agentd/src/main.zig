@@ -266,6 +266,27 @@ const ProviderCall = struct {
     }
 };
 
+/// Drains a child pipe on its own thread so stdout and stderr are read
+/// concurrently. Reading them sequentially deadlocks: curl can fill the
+/// stderr pipe buffer (and block) while the parent is still blocked reading
+/// stdout that never closes.
+const StderrDrain = struct {
+    io: std.Io,
+    file: std.Io.File,
+    allocator: Allocator,
+    out: ?[]u8 = null,
+    err: ?anyerror = null,
+
+    fn run(self: *StderrDrain) void {
+        var buffer: [4096]u8 = undefined;
+        var reader = self.file.readerStreaming(self.io, &buffer);
+        self.out = reader.interface.allocRemaining(self.allocator, .limited(128 * 1024)) catch |e| {
+            self.err = e;
+            return;
+        };
+    }
+};
+
 fn callProviderCurl(
     allocator: Allocator,
     io: std.Io,
@@ -310,14 +331,24 @@ fn callProviderCurl(
     stdin_file.close(io);
     child.stdin = null;
 
+    var drain = StderrDrain{ .io = io, .file = child.stderr.?, .allocator = allocator };
+    const stderr_thread = try std.Thread.spawn(.{}, StderrDrain.run, .{&drain});
+
     var stdout_buffer: [4096]u8 = undefined;
     var stdout_reader = child.stdout.?.readerStreaming(io, &stdout_buffer);
-    const stdout = try stdout_reader.interface.allocRemaining(allocator, .limited(1024 * 1024));
-    errdefer allocator.free(stdout);
+    const stdout_result = stdout_reader.interface.allocRemaining(allocator, .limited(1024 * 1024));
 
-    var stderr_buffer: [4096]u8 = undefined;
-    var stderr_reader = child.stderr.?.readerStreaming(io, &stderr_buffer);
-    const stderr = try stderr_reader.interface.allocRemaining(allocator, .limited(128 * 1024));
+    // The thread borrows `drain` and the stderr pipe, so it must finish before
+    // this frame returns under any path.
+    stderr_thread.join();
+
+    const stdout = stdout_result catch |e| {
+        if (drain.out) |buf| allocator.free(buf);
+        return e;
+    };
+    errdefer allocator.free(stdout);
+    if (drain.err) |e| return e;
+    const stderr = drain.out orelse return error.Unexpected;
     errdefer allocator.free(stderr);
 
     const term = try child.wait(io);

@@ -200,6 +200,20 @@ fn projectInfoJsonAlloc(allocator: Allocator, io: std.Io) ![]u8 {
 
 fn readFileJsonAlloc(allocator: Allocator, io: std.Io, path: []const u8) ![]u8 {
     if (!safeRelativePath(path)) return error.UnsafePath;
+    // A planted symlink is the primary way the lexical filter is bypassed to
+    // disclose out-of-tree files. Reject a symlinked final component via an
+    // lstat-style metadata check (no read path, so it stays portable; opening
+    // with follow_symlinks=false yields an unreadable async handle on Windows).
+    if (std.Io.Dir.cwd().statFile(io, path, .{ .follow_symlinks = false })) |entry| {
+        if (entry.kind == .sym_link) return error.UnsafePath;
+    } else |_| {
+        // Missing/permission errors are surfaced by openFile below with an
+        // accurate message; only the symlink case is a safety rejection.
+    }
+    // Secondary: canonicalize and confirm the resolved path stays inside the
+    // workspace. This also catches a symlinked *directory* component, which
+    // the final-component lstat above cannot see.
+    if (resolvedPathEscapesWorkspace(allocator, io, path)) return error.UnsafePath;
     const file = try std.Io.Dir.cwd().openFile(io, path, .{});
     defer file.close(io);
 
@@ -606,6 +620,48 @@ fn wingetPackageZigAlloc(
     return null;
 }
 
+/// Best-effort secondary guard against symlinked *directory* components that a
+/// lexical check and `follow_symlinks=false` (final component only) would miss.
+/// `realPath` has limited platform support and is race-prone, so a resolution
+/// failure is intentionally NOT treated as an escape — it only rejects a path
+/// it can prove resolves outside the workspace. The atomic open-time flags in
+/// `readFileJsonAlloc` are the primary guarantee.
+fn resolvedPathEscapesWorkspace(allocator: Allocator, io: std.Io, path: []const u8) bool {
+    var cwd_buffer: [4096]u8 = undefined;
+    const cwd_len = std.Io.Dir.cwd().realPath(io, &cwd_buffer) catch return false;
+    const cwd_real = cwd_buffer[0..cwd_len];
+    const target_real = std.Io.Dir.cwd().realPathFileAlloc(io, path, allocator) catch return false;
+    defer allocator.free(target_real);
+    return !pathWithin(cwd_real, target_real);
+}
+
+fn stripWindowsLongPrefix(p: []const u8) []const u8 {
+    if (std.mem.startsWith(u8, p, "\\\\?\\UNC\\")) return p["\\\\?\\UNC\\".len..];
+    if (std.mem.startsWith(u8, p, "\\\\?\\")) return p["\\\\?\\".len..];
+    return p;
+}
+
+fn pathWithin(base_in: []const u8, target_in: []const u8) bool {
+    const windows = builtin.os.tag == .windows;
+    var base = if (windows) stripWindowsLongPrefix(base_in) else base_in;
+    const target = if (windows) stripWindowsLongPrefix(target_in) else target_in;
+    // A trailing separator on the workspace root must not defeat the boundary
+    // check (`C:\ws\` vs `C:\ws`).
+    while (base.len > 1 and (base[base.len - 1] == '/' or base[base.len - 1] == '\\')) {
+        base = base[0 .. base.len - 1];
+    }
+    if (base.len == 0 or target.len < base.len) return false;
+    const head = target[0..base.len];
+    const matches = if (windows)
+        std.ascii.eqlIgnoreCase(head, base)
+    else
+        std.mem.eql(u8, head, base);
+    if (!matches) return false;
+    if (target.len == base.len) return true;
+    const boundary = target[base.len];
+    return boundary == '/' or boundary == '\\';
+}
+
 pub fn safeRelativePath(path: []const u8) bool {
     if (path.len == 0) return false;
     if (path.len > 4096) return false;
@@ -656,6 +712,16 @@ test "rejects unsafe paths" {
     try std.testing.expect(!safeRelativePath("README.md:ads"));
     try std.testing.expect(!safeRelativePath(""));
     try std.testing.expect(safeRelativePath("docs/README.md"));
+}
+
+test "pathWithin enforces workspace containment with separator boundary" {
+    try std.testing.expect(pathWithin("/home/u/ws", "/home/u/ws"));
+    try std.testing.expect(pathWithin("/home/u/ws", "/home/u/ws/docs/README.md"));
+    // Sibling prefix that shares a string prefix but escapes the directory.
+    try std.testing.expect(!pathWithin("/home/u/ws", "/home/u/ws-evil/secret"));
+    try std.testing.expect(!pathWithin("/home/u/ws", "/etc/passwd"));
+    try std.testing.expect(!pathWithin("/home/u/ws", "/home/u"));
+    try std.testing.expect(!pathWithin("", "/anything"));
 }
 
 test "rejects invalid bounded tool inputs before spawning commands" {
