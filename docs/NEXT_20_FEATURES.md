@@ -113,4 +113,3 @@ Do not label ZiggyZag as ready for daily use until these gates pass on the targe
 - The desktop app has bounded scrollback, clean PTY shutdown, and no detached thread using freed state.
 - A user can uninstall or roll back without losing shell history.
 - Agent actions require explicit approval before changing the terminal, filesystem, or build state.
-
