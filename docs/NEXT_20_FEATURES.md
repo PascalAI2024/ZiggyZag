@@ -4,6 +4,17 @@ This is the daily-driver task list for making ZiggyZag good enough to become a m
 
 The conclusion is clear: stay all-Zig, keep ZiggyZag's shell as the source of truth, and borrow the quality bar rather than embedding WezTerm or wrapping another terminal. The next wave should make terminal behavior boringly correct, then make shell context, themes, settings, and agent assistance feel first-party.
 
+## Current Snapshot
+
+The first alpha implementation pass shipped several foundations that used to be open in this file: PTY lifecycle hardening, parser diagnostics, prompt/git status caching, command palette actions, split panes, release packaging, POSIX PTY launcher fallback, and the first AgentD desktop panel.
+
+The remaining work is concentrated in four buckets:
+
+- Terminal correctness: VT conformance, Unicode graphemes, scroll margins, keyboard/mouse protocols, selection/copy mode, and TUI torture tests.
+- Shell depth: true streaming pipelines, Windows raw input, durable metadata history, completion v2, and stronger job-control boundaries.
+- Product UX: tabs, richer session restore, settings writes, keybindings, profile editing, quick-select open actions, and theme/prompt sync.
+- Release confidence: real Linux/macOS runtime smoke, crash diagnostics, install/rollback paths, and friend-test feedback loops.
+
 ## Reference Bar
 
 - Ghostty's feature docs emphasize native UI, tabs/splits, GPU rendering, built-in themes, ligatures, grapheme clustering, and modern terminal protocols such as Kitty graphics. See [Ghostty features](https://ghostty.org/docs/features).
@@ -20,7 +31,8 @@ The conclusion is clear: stay all-Zig, keep ZiggyZag's shell as the source of tr
   Primary paths: `apps/desktop/src/terminal.zig`, `apps/desktop/src/integration.zig`.
 
 - [ ] 2. Unicode/grapheme cell model
-  Replace byte cells with decoded codepoints, width metadata, combining behavior, grapheme clusters, CJK wide cells, emoji, and box drawing safety. This unlocks modern prompts and makes selection/copy sane.
+  Finish the cell model with width metadata, combining behavior, grapheme clusters, CJK wide cells, emoji, and box drawing safety. This unlocks modern prompts and makes selection/copy sane.
+  Progress: terminal cells now store Unicode scalars, decode UTF-8 with invalid-byte replacement, emit UTF-8 for copy/search/visible text, and track wide-cell continuations. Combining marks, grapheme clusters, emoji width, fallback fonts, ligatures, box drawing polish, and deeper renderer tests remain open.
   Primary paths: `apps/desktop/src/terminal.zig`, `apps/desktop/src/windows_app.zig`.
 
 - [ ] 3. Truecolor, render attributes, and honest `TERM`
@@ -57,8 +69,8 @@ The conclusion is clear: stay all-Zig, keep ZiggyZag's shell as the source of tr
   Primary paths: `apps/shell/src/main.zig`.
 
 - [ ] 10. Streaming pipelines and bounded captures
-  Replace buffered native pipelines with real pipe handles, concurrent stdout/stderr draining, bounded capture, spill-to-temp behavior for huge output, and deadlock tests.
-  Progress: native stages now bound input, drain stdout/stderr together, and fail safely on oversized captures. A true streaming pipe chain with spill-to-temp remains open.
+  Finish the native pipeline engine with real pipe handles, concurrent stdout/stderr draining, bounded capture, spill-to-temp behavior for huge output, and deadlock tests.
+  Progress: native stages now bound input, drain stdout/stderr together, hand large stage output through temp files, and fail safely on oversized captures. A true OS pipe chain between stages, richer redirection composition, and deadlock tests remain open.
   Primary paths: `apps/shell/src/main.zig`.
 
 - [ ] 11. Cross-platform background jobs
@@ -105,20 +117,22 @@ The conclusion is clear: stay all-Zig, keep ZiggyZag's shell as the source of tr
   Progress: desktop config now applies profile shell path, startup cwd, TERM, scrollback lines, and startup pane count/orientation; `Ctrl+Shift+R` reloads safe settings. Environment arrays, keybindings, settings editing, light/dark pairs, and prompt/theme sync remain open.
   Primary paths: `apps/desktop/src/config.zig`, `apps/desktop/src/theme.zig`, `apps/shell/src/main.zig`.
 
-- [x] 20. Approval-aware agent panel
+- [x] 20. Approval-aware agent panel first version
   Spawn `ziggyzag-agentd --stdio` from the desktop host, list tools, run read-only tools automatically, require approval for terminal writes/builds, preview exact text before insertion, audit every decision, minimize context, redact secrets, and harden OSC 777 as UI context rather than a trust boundary.
   Shipped first version: AgentD exposes richer tool schemas, approval metadata, audit/event host actions, and redacted bounded read/search/git output; the Windows desktop panel spawns `ziggyzag-agentd --stdio`, shows a bounded transcript, requests health/tools, previews `terminal.write`, and writes only after explicit approval. Read-only browsing, audit export, build-action approval, and provider streaming remain hardening work.
   Primary paths: `apps/agentd/src/main.zig`, `apps/agentd/src/tools.zig`, `apps/desktop/src/integration.zig`, `apps/desktop/src/windows_app.zig`.
 
 ## Execution Waves
 
-Wave 1 should fix the things that can crash, hang, or lie: PTY lifecycle, UI-thread affinity, streaming pipelines, bounded reads, job reaping, parser statuses, and prompt timeouts.
+Completed wave: stability and honesty foundations. PTY lifecycle, UI-thread refresh posting, bounded reads, job reaping improvements, parser statuses, prompt/git caching, first large-output pipeline handoff, split panes, command palette actions, release packaging, and first AgentD approval path are in the repo.
 
-Wave 2 should make the terminal trustworthy: VT tests, Unicode cells, truecolor, alternate screen, bracketed paste, keyboard/mouse protocols, and searchable bounded scrollback.
+Next wave A should make the terminal trustworthy: conformance harness, scroll margins/origin/reflow, Unicode graphemes/fallback fonts, modifier/function keys, IME/focus events, full mouse reports, mouse selection, keyboard copy mode, and representative TUI tests.
 
-Wave 3 should make it feel like a modern terminal: tabs, splits, copy mode, quick select, command palette, profiles, keybindings, settings, themes, and session restore.
+Next wave B should make it feel like a modern terminal: tabs, close confirmation, richer session restore, settings writes, keybindings, profile editor, quick-select open actions, prompt-jump, theme/prompt sync, and accessibility passes.
 
-Wave 4 should make ZiggyZag uniquely useful: shell-aware prompt jumping, rich history, completion v2, approval-aware agent panel, audit logs, and context-minimized AI assistance.
+Next wave C should make ZiggyZag uniquely useful: durable metadata history, completion v2, true streaming pipelines, Windows raw shell input, AgentD read-only browsing, build approval, audit export, provider streaming, and stronger secret redaction.
+
+Release wave should make the alpha safe to share: Linux/macOS runtime smoke on real hosts or CI, support bundles, install/uninstall notes, rollback path, and friend-test feedback promoted into tests or known edges.
 
 ## Main Terminal Gate
 
