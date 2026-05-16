@@ -246,8 +246,67 @@ fn validIdValue(value: std.json.Value) bool {
 fn safeRawId(raw: []const u8) bool {
     if (raw.len == 0) return false;
     if (std.mem.eql(u8, raw, "null")) return true;
-    if (raw[0] == '"') return raw.len >= 2 and raw[raw.len - 1] == '"';
-    return raw[0] == '-' or std.ascii.isDigit(raw[0]);
+    if (raw[0] == '"') return validJsonStringLiteral(raw);
+    return validJsonNumberLiteral(raw);
+}
+
+fn validJsonStringLiteral(raw: []const u8) bool {
+    if (raw.len < 2 or raw[0] != '"' or raw[raw.len - 1] != '"') return false;
+
+    var index: usize = 1;
+    while (index < raw.len - 1) : (index += 1) {
+        const byte = raw[index];
+        if (byte < 0x20) return false;
+        if (byte == '"') return false;
+        if (byte != '\\') continue;
+
+        index += 1;
+        if (index >= raw.len - 1) return false;
+        switch (raw[index]) {
+            '"', '\\', '/', 'b', 'f', 'n', 'r', 't' => {},
+            'u' => {
+                if (index + 4 >= raw.len - 1) return false;
+                for (raw[index + 1 .. index + 5]) |hex| {
+                    if (!std.ascii.isHex(hex)) return false;
+                }
+                index += 4;
+            },
+            else => return false,
+        }
+    }
+    return true;
+}
+
+fn validJsonNumberLiteral(raw: []const u8) bool {
+    var index: usize = 0;
+    if (raw[index] == '-') {
+        index += 1;
+        if (index >= raw.len) return false;
+    }
+
+    if (raw[index] == '0') {
+        index += 1;
+    } else if (raw[index] >= '1' and raw[index] <= '9') {
+        index += 1;
+        while (index < raw.len and std.ascii.isDigit(raw[index])) : (index += 1) {}
+    } else {
+        return false;
+    }
+
+    if (index < raw.len and raw[index] == '.') {
+        index += 1;
+        if (index >= raw.len or !std.ascii.isDigit(raw[index])) return false;
+        while (index < raw.len and std.ascii.isDigit(raw[index])) : (index += 1) {}
+    }
+
+    if (index < raw.len and (raw[index] == 'e' or raw[index] == 'E')) {
+        index += 1;
+        if (index < raw.len and (raw[index] == '+' or raw[index] == '-')) index += 1;
+        if (index >= raw.len or !std.ascii.isDigit(raw[index])) return false;
+        while (index < raw.len and std.ascii.isDigit(raw[index])) : (index += 1) {}
+    }
+
+    return index == raw.len;
 }
 
 fn valueStart(payload: []const u8, key: []const u8) ?usize {
@@ -299,7 +358,11 @@ test "reports bad request parse errors" {
 test "keeps best effort id for parse error envelopes" {
     try std.testing.expectEqualStrings("99", bestEffortId("{\"id\":99,\"method\":42}"));
     try std.testing.expectEqualStrings("\"abc\"", bestEffortId("{\"id\":\"abc\",\"method\":42}"));
+    try std.testing.expectEqualStrings("-12.5e+3", bestEffortId("{\"id\":-12.5e+3,\"method\":42}"));
     try std.testing.expectEqualStrings("null", bestEffortId("{\"id\":true,\"method\":42}"));
+    try std.testing.expectEqualStrings("null", bestEffortId("{\"id\":01,\"method\":42}"));
+    try std.testing.expectEqualStrings("null", bestEffortId("{\"id\":1abc,\"method\":42}"));
+    try std.testing.expectEqualStrings("null", bestEffortId("{\"id\":\"bad\\x\",\"method\":42}"));
 }
 
 test "escapes JSON strings" {

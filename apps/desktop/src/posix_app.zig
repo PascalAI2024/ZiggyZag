@@ -32,7 +32,7 @@ pub fn run(init_data: std.process.Init) !void {
         try init_data.environ_map.put("TERM", "xterm-256color");
     }
 
-    if (init_data.environ_map.get("ZIGGYZAG_DESKTOP_NO_PTY") == null) {
+    if (!shouldSkipPty(init_data.environ_map)) {
         try printLaunchNote(&stderr.interface, shell_path, true);
         try stderr.interface.flush();
         const term = runWithScript(init_data.io, init_data.environ_map, allocator, shell_path) catch |err| {
@@ -68,7 +68,7 @@ fn runWithScript(
         .linux => {
             const command = try shellCommandLine(allocator, shell_path);
             defer allocator.free(command);
-            var argv = [_][]const u8{ "script", "-q", "-c", command, "/dev/null" };
+            var argv = [_][]const u8{ "script", "-q", "-e", "-c", command, "/dev/null" };
             return spawnAndWait(io, env, &argv);
         },
         .macos, .freebsd, .netbsd, .openbsd => {
@@ -102,7 +102,7 @@ pub fn resolveShellPath(
     env: *std.process.Environ.Map,
 ) ![]u8 {
     if (env.get("ZIGGYZAG_SHELL_PATH")) |path| {
-        if (path.len == 0) return error.EmptyShellPath;
+        try validateShellPath(path);
         return try allocator.dupe(u8, path);
     }
 
@@ -124,6 +124,7 @@ pub fn resolveShellPath(
 
 fn existingCandidate(allocator: Allocator, io: std.Io, path: []const u8) !?[]u8 {
     if (!exists(io, path)) return null;
+    try validateShellPath(path);
     return try allocator.dupe(u8, path);
 }
 
@@ -134,10 +135,18 @@ fn pathCandidate(allocator: Allocator, io: std.Io, env: *std.process.Environ.Map
         const dir = if (entry.len == 0) "." else entry;
         const candidate = try std.fs.path.join(allocator, &.{ dir, command });
         errdefer allocator.free(candidate);
-        if (exists(io, candidate)) return candidate;
+        if (exists(io, candidate)) {
+            try validateShellPath(candidate);
+            return candidate;
+        }
         allocator.free(candidate);
     }
     return null;
+}
+
+fn validateShellPath(path: []const u8) !void {
+    if (path.len == 0) return error.EmptyShellPath;
+    if (std.mem.indexOfScalar(u8, path, 0) != null) return error.InvalidShellPath;
 }
 
 fn exists(io: std.Io, path: []const u8) bool {
@@ -169,6 +178,21 @@ fn shellQuote(allocator: Allocator, value: []const u8) ![]u8 {
     }
     try out.append(allocator, '\'');
     return try out.toOwnedSlice(allocator);
+}
+
+fn shouldSkipPty(env: *const std.process.Environ.Map) bool {
+    return noPtyValueEnabled(env.get("ZIGGYZAG_DESKTOP_NO_PTY"));
+}
+
+fn noPtyValueEnabled(value: ?[]const u8) bool {
+    const raw = value orelse return false;
+    const trimmed = std.mem.trim(u8, raw, " \t\r\n");
+    if (trimmed.len == 0) return false;
+    if (std.ascii.eqlIgnoreCase(trimmed, "0")) return false;
+    if (std.ascii.eqlIgnoreCase(trimmed, "false")) return false;
+    if (std.ascii.eqlIgnoreCase(trimmed, "no")) return false;
+    if (std.ascii.eqlIgnoreCase(trimmed, "off")) return false;
+    return true;
 }
 
 fn printLaunchNote(stderr: *std.Io.Writer, shell_path: []const u8, through_pty: bool) !void {
@@ -218,6 +242,30 @@ test "shell quoting handles spaces and single quotes" {
     const quoted = try shellQuote(std.testing.allocator, "/tmp/zig gy' zag");
     defer std.testing.allocator.free(quoted);
     try std.testing.expectEqualStrings("'/tmp/zig gy'\\'' zag'", quoted);
+}
+
+test "script command line execs quoted shell path" {
+    const command = try shellCommandLine(std.testing.allocator, "/tmp/zig gy' zag");
+    defer std.testing.allocator.free(command);
+    try std.testing.expectEqualStrings("exec '/tmp/zig gy'\\'' zag'", command);
+}
+
+test "no pty flag accepts explicit true values and ignores false-like values" {
+    try std.testing.expect(!noPtyValueEnabled(null));
+    try std.testing.expect(!noPtyValueEnabled(""));
+    try std.testing.expect(!noPtyValueEnabled(" 0 "));
+    try std.testing.expect(!noPtyValueEnabled("false"));
+    try std.testing.expect(!noPtyValueEnabled("NO"));
+    try std.testing.expect(!noPtyValueEnabled("off"));
+    try std.testing.expect(noPtyValueEnabled("1"));
+    try std.testing.expect(noPtyValueEnabled("true"));
+    try std.testing.expect(noPtyValueEnabled("yes"));
+}
+
+test "shell path validation rejects empty and nul bytes" {
+    try std.testing.expectError(error.EmptyShellPath, validateShellPath(""));
+    try std.testing.expectError(error.InvalidShellPath, validateShellPath("ziggyzag\x00bad"));
+    try validateShellPath("/tmp/zig gy' zag");
 }
 
 test "term status maps exited code" {

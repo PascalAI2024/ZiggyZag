@@ -1,11 +1,11 @@
-# Alpha QA Tomorrow
+# Alpha QA Checklist
 
 Date: 2026-05-15
 Primary verification machine: Windows, PowerShell
 Repo: `C:\Users\pasca\dev\ZiggyZag\codecrafters-shell-zig`
 Zig version: `0.16.0`
 
-This checklist is for the next alpha. Windows testers get the full native desktop host. macOS/Linux testers get the ZiggyZag shell, AgentD, smoke script, and a terminal-attached desktop launcher; a native POSIX desktop window is not expected yet.
+This checklist is for the current alpha line. Windows testers get the full native desktop host. macOS/Linux testers get the ZiggyZag shell, AgentD, smoke script, and a terminal-attached desktop launcher that uses `script(1)` when available; a native POSIX graphical window is not expected yet.
 
 ## Fast Rerun On Windows
 
@@ -17,14 +17,15 @@ Run this from the repo root:
 
 The script keeps running after failures, summarizes each step, and detects the WinGet Zig install when `zig` is not on `PATH`.
 
-For release artifacts:
+For release artifacts, set `$Version` to the release tag you are validating:
 
 ```powershell
-.\scripts\build-release.ps1 -Version "v0.1.0-alpha.1"
-.\scripts\qa-release-artifacts.ps1 -Version "v0.1.0-alpha.1"
+$Version = "v0.1.0-alpha.1"
+.\scripts\build-release.ps1 -Version $Version
+.\scripts\qa-release-artifacts.ps1 -Version $Version
 ```
 
-Use a temporary version such as `v0.1.0-alpha.1-wave3-qa` when validating packaging without touching the published artifact directory.
+Use a temporary version such as `v0.1.0-alpha.1-local-qa` when validating packaging without touching the published artifact directory.
 
 ## Fast Rerun On macOS/Linux
 
@@ -39,7 +40,7 @@ printf '%s\n' '{"id":1,"method":"agent/health"}' | ./zig-out/bin/ziggyzag-agentd
 printf 'exit\n' | zig build run-desktop
 ```
 
-Expected POSIX desktop result: `zig build run-desktop` prints `ZiggyZag Desktop (POSIX PTY)`, launches ZiggyZag in the calling terminal, consumes `exit`, and exits cleanly. It does not open a separate terminal window in this alpha.
+Expected POSIX desktop result: `zig build run-desktop` prints `ZiggyZag Desktop (POSIX PTY)`, launches ZiggyZag in the calling terminal through `script(1)` when available, consumes `exit`, and exits cleanly. It does not open a separate terminal window in this alpha. If `script(1)` is unavailable, the launcher should print a fallback note and run through direct stdio.
 
 ## Readiness Gate
 
@@ -73,6 +74,16 @@ $Version = "v0.1.0-alpha.1"
 .\scripts\qa-release-artifacts.ps1 -Version $Version
 ```
 
+Expected artifact names:
+
+- `ZiggyZag-$Version-windows-x86_64.zip`
+- `ZiggyZag-$Version-linux-x86_64.zip`
+- `ZiggyZag-$Version-linux-aarch64.zip`
+- `ZiggyZag-$Version-macos-x86_64.zip`
+- `ZiggyZag-$Version-macos-aarch64.zip`
+- `checksums.sha256`
+- `release-manifest.json`
+
 The archive QA script checks:
 
 - All five expected zips exist.
@@ -80,6 +91,8 @@ The archive QA script checks:
 - Each artifact contains `bin/ziggyzag`, `bin/ziggyzag-agentd`, and `bin/ziggyzag-desktop` with `.exe` suffixes for Windows.
 - Linux binaries have ELF headers, macOS binaries have Mach-O headers, and Windows binaries have PE/MZ headers.
 - The extracted Windows zip can run shell help, AgentD tool discovery, and desktop launch/close smoke.
+
+The build script writes `checksums.sha256` and `release-manifest.json` next to the zips. Use those files when uploading or verifying release downloads.
 
 The Windows host cannot execute Linux or macOS binaries directly. Those runtime smokes must happen on real Linux/macOS machines or CI runners using the release-zip commands below.
 
@@ -98,8 +111,8 @@ The AgentD health check returned valid `ok:true` JSON. The real provider call re
 Latest release artifact run:
 
 ```powershell
-.\scripts\build-release.ps1 -Version "v0.1.0-alpha.1-wave3-qa"
-.\scripts\qa-release-artifacts.ps1 -Version "v0.1.0-alpha.1-wave3-qa"
+.\scripts\build-release.ps1 -Version "v0.1.0-alpha.1-local-qa"
+.\scripts\qa-release-artifacts.ps1 -Version "v0.1.0-alpha.1-local-qa"
 ```
 
 Result: all five cross-built zips were produced; archive expansion, expected-binary checks, binary-header checks, extracted Windows shell smoke, extracted Windows AgentD smoke, and extracted Windows desktop launch/close smoke passed.
@@ -130,7 +143,7 @@ Use this order after the scripted checks:
 4. Run `./zig-out/bin/ziggyzag-agentd --describe-tools`.
 5. Run `printf '%s\n' '{"id":1,"method":"agent/health"}' | ./zig-out/bin/ziggyzag-agentd --stdio`.
 6. Run `printf 'exit\n' | zig build run-desktop`.
-7. Confirm the desktop command prints `ZiggyZag Desktop (POSIX PTY)`, launches a shell prompt, and exits cleanly. Do not expect a native desktop window yet.
+7. Confirm the desktop command prints `ZiggyZag Desktop (POSIX PTY)`, launches a shell prompt, and exits cleanly. If `script(1)` is missing, a direct-stdio fallback is acceptable. Do not expect a native graphical window yet.
 
 ## AgentD Friend-Test Script
 
@@ -212,7 +225,7 @@ Expected:
 - Shell prints help and exits with code 0.
 - AgentD lists `terminal.write`.
 - `agent/health` returns JSON with `"ok":true`.
-- POSIX desktop launcher prints the selected PTY backend and launches the bundled shell in the current terminal. It is not a native graphical Linux window yet.
+- POSIX desktop launcher prints the selected PTY backend and launches the bundled shell in the current terminal, using `script(1)` when available. It is not a native graphical Linux window yet.
 
 ### Linux aarch64
 
@@ -253,7 +266,7 @@ printf '{"id":1,"method":"agent/health"}\n' | ./bin/ziggyzag-agentd --stdio
 printf 'exit\n' | ./bin/ziggyzag-desktop
 ```
 
-Expected behavior matches Linux: shell and AgentD should run; POSIX desktop launcher uses the current terminal rather than a native macOS window.
+Expected behavior matches Linux: shell and AgentD should run; POSIX desktop launcher uses the current terminal rather than a native macOS window, with `script(1)` preferred when available.
 
 ### macOS aarch64
 
@@ -316,7 +329,7 @@ Ask testers to note:
 
 ## Known Edges
 
-- The native desktop host is Windows-only in this alpha. macOS/Linux desktop support is currently a terminal-attached launcher, plus fully usable shell and AgentD binaries.
+- The native graphical desktop host is Windows-only in this alpha. macOS/Linux desktop support is currently a terminal-attached launcher, plus fully usable shell and AgentD binaries.
 - Linux/macOS release zips may need `chmod +x bin/ziggyzag bin/ziggyzag-agentd bin/ziggyzag-desktop` after unzip because the zips are produced on Windows.
 - macOS browser downloads may be quarantined; the smoke commands include `xattr -dr com.apple.quarantine .`.
 - Desktop config parsing exists, but persisted config loading into the Win32 host is still a near-term integration task.

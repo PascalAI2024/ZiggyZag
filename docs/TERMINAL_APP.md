@@ -58,7 +58,7 @@ The repo now contains a Windows-native all-Zig alpha under `apps/desktop`:
 - Tested terminal grid and OSC 777 event extraction.
 - Slim `ziggyzag-agentd` sidecar under `apps/agentd` for terminal AI panel integration.
 
-For macOS/Linux alpha artifacts, `ziggyzag-desktop` currently builds and runs as a terminal-attached launcher. It resolves the ZiggyZag shell binary, reports the selected POSIX backend, and starts the shell in the calling terminal. It does not open a native window or allocate a dedicated desktop PTY yet. The usable POSIX alpha surface is the shell binary, AgentD, smoke script, and this launcher.
+For macOS/Linux alpha artifacts, `ziggyzag-desktop` currently builds and runs as a terminal-attached launcher. It resolves the ZiggyZag shell binary, reports the selected POSIX backend, and starts the shell in the calling terminal. It prefers `script(1)` as a small PTY wrapper and falls back to direct stdio when needed. It does not open a native graphical window yet. The usable POSIX alpha surface is the shell binary, AgentD, smoke script, and this launcher.
 
 The repo also contains a Tauri/xterm.js prototype slice. Treat it as an experiment unless the team explicitly chooses the webview route:
 
@@ -81,7 +81,7 @@ The first hardened version should prove that the app can host ZiggyZag well:
 4. Add a command palette for app-level commands such as new tab, close tab, split later placeholder, increase font, decrease font, and open settings.
 5. Add an agent panel backed by `ziggyzag-agentd --stdio`, with explicit approval before terminal writes or build commands.
 6. Surface session status: current directory, last command status, running command indicator, and background job count when ZiggyZag exposes them.
-7. Keep packaging Windows native desktop builds while macOS/Linux ship shell, AgentD, and the terminal-attached desktop launcher until POSIX native hosting is ready.
+7. Keep packaging Windows native desktop builds while macOS/Linux ship shell, AgentD, and the terminal-attached desktop launcher until POSIX native graphical hosting is ready.
 
 MVP success is not visual novelty. It is confidence that ZiggyZag behaves like a real interactive shell inside a desktop host.
 
@@ -92,7 +92,7 @@ Use the first friend-test pass to answer concrete questions:
 | Area | What to try | Pass signal |
 | --- | --- | --- |
 | Windows launch | `zig build run-desktop` | Window opens and prompt appears. |
-| macOS/Linux desktop launcher | `zig build run-desktop` | Prints `ZiggyZag Desktop (POSIX PTY)`, launches the shell in the current terminal, and exits cleanly after `exit`. |
+| macOS/Linux desktop launcher | `zig build run-desktop` | Prints `ZiggyZag Desktop (POSIX PTY)`, launches the shell in the current terminal through `script(1)` when available, and exits cleanly after `exit`. |
 | Input | Type commands, edit with Backspace, press Enter | Text reaches the shell and output returns. |
 | Clipboard | Ctrl+V, Shift+Insert, Ctrl+Shift+C | Paste writes into the PTY; copy places visible text on the clipboard. Ctrl+C remains shell interrupt. |
 | Resize | Drag the window smaller/larger | Grid resizes without losing the running session. |

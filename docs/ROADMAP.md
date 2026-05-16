@@ -32,7 +32,7 @@ flowchart LR
     b --> c["1. Full SQLite history backend"]
     c --> d["2. Streaming native pipelines"]
     d --> e["3. Completion option schemas"]
-    e --> f["Done: Shell integration protocol scaffold"]
+    e --> f["Done: Shell integration protocol MVP"]
     f --> g["Done: Windows all-Zig desktop MVP"]
     g --> h["Done: Zig-native agentd MVP"]
     h --> i["4. Desktop hardening and packaging"]

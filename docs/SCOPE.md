@@ -18,7 +18,7 @@ The shell is the source of truth. The desktop app is a host and enhancer.
 | Agent runtime | Keep AI assistance slim and native with a Zig `agentd` process, JSON-lines protocol, approval-aware terminal/file/build tools, and OpenAI-compatible/Ollama provider hooks. |
 | Shell integration | Add optional, versioned events for command lifecycle, cwd, status, duration, jobs, prompt context, and capabilities. |
 | Unified themes | Share a theme vocabulary between prompt colors, syntax highlighting, and the terminal app. |
-| Product spikes | Keep non-Zig scaffolds only as temporary experiments, not the primary product direction. |
+| Product spikes | Keep non-Zig prototypes only as temporary experiments, not the primary product direction. |
 | Documentation | Keep the repo organized so contributors can tell what belongs to the shell, the desktop host, and shared product direction. |
 
 ## Out Of Scope For Now

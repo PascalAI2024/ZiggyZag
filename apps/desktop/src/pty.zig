@@ -40,5 +40,8 @@ test "preferred backend is named" {
 test "posix target helper matches preferred backend coverage" {
     try @import("std").testing.expect(isPosixPtyTarget(.linux));
     try @import("std").testing.expect(isPosixPtyTarget(.macos));
+    try @import("std").testing.expect(isPosixPtyTarget(.freebsd));
+    try @import("std").testing.expect(isPosixPtyTarget(.netbsd));
+    try @import("std").testing.expect(isPosixPtyTarget(.openbsd));
     try @import("std").testing.expect(!isPosixPtyTarget(.windows));
 }

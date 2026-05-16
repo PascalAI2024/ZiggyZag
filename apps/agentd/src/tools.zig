@@ -72,9 +72,11 @@ pub fn errorMessage(err: anyerror) []const u8 {
         error.UnsafePath => "file.read path must be relative and stay inside the workspace",
         error.MissingQuery => "rg.search requires a query field",
         error.EmptyQuery => "rg.search query cannot be empty",
+        error.InvalidQuery => "rg.search query contains invalid bytes",
         error.QueryTooLarge => "rg.search query is too large",
         error.MissingText => "terminal.write requires a text field",
         error.EmptyText => "terminal.write text cannot be empty",
+        error.InvalidText => "terminal.write text contains invalid bytes",
         error.TextTooLarge => "terminal.write text is too large",
         error.UnsupportedBuildCommand => "zig.build command must be omitted, \"build\", or \"test\"",
         error.InvalidZigPath => "configured Zig path contains invalid bytes",
@@ -190,12 +192,14 @@ fn rgSearchJsonAlloc(
 ) ![]u8 {
     const trimmed = std.mem.trim(u8, query, " \t\r\n");
     if (trimmed.len == 0) return error.EmptyQuery;
+    if (std.mem.indexOfScalar(u8, trimmed, 0) != null) return error.InvalidQuery;
     if (trimmed.len > 1024) return error.QueryTooLarge;
-    return commandJsonAlloc(allocator, io, env, &.{ "rg", "--line-number", "--color", "never", trimmed, "." });
+    return commandJsonAlloc(allocator, io, env, &.{ "rg", "--line-number", "--color", "never", "--", trimmed, "." });
 }
 
 fn terminalWriteJsonAlloc(allocator: Allocator, text: []const u8) ![]u8 {
     if (text.len == 0) return error.EmptyText;
+    if (std.mem.indexOfScalar(u8, text, 0) != null) return error.InvalidText;
     if (text.len > 16 * 1024) return error.TextTooLarge;
     var out: std.ArrayList(u8) = .empty;
     errdefer out.deinit(allocator);
@@ -397,7 +401,9 @@ fn wingetPackageZigAlloc(
 
 pub fn safeRelativePath(path: []const u8) bool {
     if (path.len == 0) return false;
+    if (path.len > 4096) return false;
     if (std.fs.path.isAbsolute(path)) return false;
+    if (path[0] == '/' or path[0] == '\\') return false;
     if (std.mem.indexOfScalar(u8, path, 0) != null) return false;
     if (std.mem.indexOfScalar(u8, path, ':') != null) return false;
     var parts = std.mem.tokenizeAny(u8, path, "/\\");
@@ -432,9 +438,30 @@ test "rejects unsafe paths" {
     try std.testing.expect(!safeRelativePath("../README.md"));
     try std.testing.expect(!safeRelativePath("docs/../README.md"));
     try std.testing.expect(!safeRelativePath("C:\\temp\\secret.txt"));
+    try std.testing.expect(!safeRelativePath("\\temp\\secret.txt"));
+    try std.testing.expect(!safeRelativePath("/tmp/secret.txt"));
     try std.testing.expect(!safeRelativePath("README.md:ads"));
     try std.testing.expect(!safeRelativePath(""));
     try std.testing.expect(safeRelativePath("docs/README.md"));
+}
+
+test "rejects invalid bounded tool inputs before spawning commands" {
+    var env = std.process.Environ.Map.init(std.testing.allocator);
+    defer env.deinit();
+
+    try std.testing.expectError(error.InvalidQuery, rgSearchJsonAlloc(std.testing.allocator, std.testing.io, &env, "bad\x00query"));
+    try std.testing.expectError(error.EmptyQuery, rgSearchJsonAlloc(std.testing.allocator, std.testing.io, &env, " \t\r\n"));
+
+    var large_query: [1025]u8 = undefined;
+    @memset(&large_query, 'a');
+    try std.testing.expectError(error.QueryTooLarge, rgSearchJsonAlloc(std.testing.allocator, std.testing.io, &env, &large_query));
+
+    try std.testing.expectError(error.InvalidText, terminalWriteJsonAlloc(std.testing.allocator, "bad\x00text"));
+    try std.testing.expectError(error.EmptyText, terminalWriteJsonAlloc(std.testing.allocator, ""));
+
+    var large_text: [16 * 1024 + 1]u8 = undefined;
+    @memset(&large_text, 'z');
+    try std.testing.expectError(error.TextTooLarge, terminalWriteJsonAlloc(std.testing.allocator, &large_text));
 }
 
 test "resolves configured zig path before path lookup" {

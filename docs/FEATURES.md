@@ -28,7 +28,7 @@ This file tracks what ZiggyZag already does and what would make it more useful a
 | Track | Shape |
 | --- | --- |
 | Shell core | Keep deepening ZiggyZag as a compact shell with stronger history, streaming pipelines, richer completion schemas, prompt modules, and parser diagnostics. |
-| Desktop terminal | Windows-native all-Zig MVP with Win32 windowing, GDI terminal rendering, ConPTY shell hosting, keyboard input, copy/paste, wheel scrollback, resize handling, status bar, tested styled terminal grid, OSC 777 event extraction, themes, desktop config parsing, and a preserved Tauri/xterm.js spike for reference. |
+| Desktop terminal | Windows-native all-Zig MVP with Win32 windowing, GDI terminal rendering, ConPTY shell hosting, keyboard input, copy/paste, wheel scrollback, resize handling, status bar, tested styled terminal grid, OSC 777 event extraction, themes, desktop config parsing, POSIX terminal-attached release launcher, and a preserved Tauri/xterm.js spike for reference. |
 | Agent panel | First-party `apps/agentd` binary is ready for the desktop host to spawn as a sidecar for approval-aware terminal assistance. |
 | Shared integration | Added a small optional OSC 777 protocol for command lifecycle, cwd, status, duration, jobs, and prompt context. |
 

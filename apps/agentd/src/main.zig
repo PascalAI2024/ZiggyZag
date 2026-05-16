@@ -2,6 +2,7 @@ const std = @import("std");
 const agentd = @import("lib.zig");
 
 const Allocator = std.mem.Allocator;
+const max_agent_prompt_bytes = 64 * 1024;
 
 pub fn main(init_data: std.process.Init) !void {
     const allocator = init_data.gpa;
@@ -161,6 +162,12 @@ fn handleRequest(
 
     if (std.mem.eql(u8, request.method, "agent/run")) {
         const prompt = request.prompt orelse "";
+        validateAgentPrompt(prompt) catch |err| {
+            const envelope = try agentd.protocol.writeErrorEnvelope(allocator, request.id, @errorName(err), agentRunErrorMessage(err));
+            defer allocator.free(envelope);
+            try writer.writeAll(envelope);
+            return;
+        };
         const result = providerAgentRunJsonAlloc(allocator, io, env, prompt) catch |err|
             try localAgentRunJsonAlloc(allocator, env, prompt, providerFallbackStatus(err));
         defer allocator.free(result);
@@ -213,6 +220,7 @@ fn providerAgentRunJsonAlloc(
     const body = try config.requestBodyAlloc(allocator, prompt);
     defer allocator.free(body);
 
+    if (config.kind == .openai_compatible and config.api_key == null) return error.MissingApiKey;
     if (!agentd.provider.curlAvailable(allocator, io, env)) return error.CurlUnavailable;
     const call = try callProviderCurl(allocator, io, env, config, endpoint, body);
     defer call.deinit(allocator);
@@ -272,6 +280,7 @@ fn callProviderCurl(
     try argv.appendSlice(allocator, &.{
         "curl",
         "-sS",
+        "-f",
         "-N",
         "--max-time",
         "90",
@@ -314,6 +323,19 @@ fn callProviderCurl(
         .stdout = stdout,
         .stderr = stderr,
         .status = termStatus(term),
+    };
+}
+
+fn validateAgentPrompt(prompt: []const u8) !void {
+    if (prompt.len > max_agent_prompt_bytes) return error.PromptTooLarge;
+    if (std.mem.indexOfScalar(u8, prompt, 0) != null) return error.InvalidPrompt;
+}
+
+fn agentRunErrorMessage(err: anyerror) []const u8 {
+    return switch (err) {
+        error.PromptTooLarge => "agent/run prompt is too large",
+        error.InvalidPrompt => "agent/run prompt contains invalid bytes",
+        else => "agent/run request is invalid",
     };
 }
 

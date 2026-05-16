@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const protocol = @import("protocol.zig");
 
 const Allocator = std.mem.Allocator;
@@ -52,6 +53,19 @@ pub const Config = struct {
         };
     }
 
+    pub fn healthEndpointAlloc(self: Config, allocator: Allocator) ![]u8 {
+        const base = trimTrailingSlash(self.base_url);
+        return switch (self.kind) {
+            .ollama => try std.fmt.allocPrint(allocator, "{s}/api/tags", .{base}),
+            .openai_compatible => blk: {
+                if (std.mem.endsWith(u8, base, "/v1")) {
+                    break :blk try std.fmt.allocPrint(allocator, "{s}/models", .{base});
+                }
+                break :blk try std.fmt.allocPrint(allocator, "{s}/v1/models", .{base});
+            },
+        };
+    }
+
     pub fn requestBodyAlloc(self: Config, allocator: Allocator, prompt: []const u8) ![]u8 {
         var out: std.ArrayList(u8) = .empty;
         errdefer out.deinit(allocator);
@@ -76,9 +90,12 @@ pub fn statusJsonAlloc(
     const config = Config.fromEnv(env);
     const endpoint = try config.endpointAlloc(allocator);
     defer allocator.free(endpoint);
+    const health_endpoint = try config.healthEndpointAlloc(allocator);
+    defer allocator.free(health_endpoint);
     const curl_ready = curlAvailable(allocator, io, env);
     const key_state = apiKeyState(config);
-    const ready = curl_ready and !std.mem.eql(u8, key_state, "missing");
+    const provider_status = providerStatus(allocator, io, env, config, health_endpoint, curl_ready, key_state);
+    const ready = std.mem.eql(u8, provider_status, "reachable");
 
     var out: std.ArrayList(u8) = .empty;
     errdefer out.deinit(allocator);
@@ -88,12 +105,16 @@ pub fn statusJsonAlloc(
     try protocol.appendJsonString(allocator, &out, config.model);
     try out.appendSlice(allocator, ",\"endpoint\":");
     try protocol.appendJsonString(allocator, &out, endpoint);
+    try out.appendSlice(allocator, ",\"health_endpoint\":");
+    try protocol.appendJsonString(allocator, &out, health_endpoint);
     try out.appendSlice(allocator, ",\"stream\":");
     try out.appendSlice(allocator, if (config.stream) "true" else "false");
     try out.appendSlice(allocator, ",\"curl\":");
     try protocol.appendJsonString(allocator, &out, if (curl_ready) "available" else "unavailable");
     try out.appendSlice(allocator, ",\"api_key\":");
     try protocol.appendJsonString(allocator, &out, key_state);
+    try out.appendSlice(allocator, ",\"provider_status\":");
+    try protocol.appendJsonString(allocator, &out, provider_status);
     try out.appendSlice(allocator, ",\"ready\":");
     try out.appendSlice(allocator, if (ready) "true" else "false");
     try out.append(allocator, '}');
@@ -152,6 +173,66 @@ fn apiKeyState(config: Config) []const u8 {
     };
 }
 
+fn providerStatus(
+    allocator: Allocator,
+    io: std.Io,
+    env: *std.process.Environ.Map,
+    config: Config,
+    health_endpoint: []const u8,
+    curl_ready: bool,
+    key_state: []const u8,
+) []const u8 {
+    if (std.mem.eql(u8, key_state, "missing")) return "missing_api_key";
+    if (!curl_ready) return "curl_unavailable";
+    return if (probeProviderHealth(allocator, io, env, config, health_endpoint)) "reachable" else "unreachable";
+}
+
+fn probeProviderHealth(
+    allocator: Allocator,
+    io: std.Io,
+    env: *std.process.Environ.Map,
+    config: Config,
+    health_endpoint: []const u8,
+) bool {
+    var argv: std.ArrayList([]const u8) = .empty;
+    defer argv.deinit(allocator);
+    var auth_header: ?[]u8 = null;
+    defer if (auth_header) |header| allocator.free(header);
+
+    argv.appendSlice(allocator, &.{
+        "curl",
+        "-fsS",
+        "--max-time",
+        "2",
+        "-o",
+        nullDevicePath(),
+    }) catch return false;
+
+    if (config.kind == .openai_compatible) {
+        const api_key = config.api_key orelse return false;
+        auth_header = std.fmt.allocPrint(allocator, "Authorization: Bearer {s}", .{api_key}) catch return false;
+        argv.appendSlice(allocator, &.{ "-H", auth_header.? }) catch return false;
+    }
+
+    argv.append(allocator, health_endpoint) catch return false;
+
+    const result = std.process.run(allocator, io, .{
+        .argv = argv.items,
+        .environ_map = env,
+    }) catch return false;
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+
+    return switch (result.term) {
+        .exited => |code| code == 0,
+        else => false,
+    };
+}
+
+fn nullDevicePath() []const u8 {
+    return if (builtin.os.tag == .windows) "NUL" else "/dev/null";
+}
+
 fn trimTrailingSlash(value: []const u8) []const u8 {
     var end = value.len;
     while (end > 0 and value[end - 1] == '/') : (end -= 1) {}
@@ -163,6 +244,10 @@ test "builds ollama request target and body" {
     const endpoint = try config.endpointAlloc(std.testing.allocator);
     defer std.testing.allocator.free(endpoint);
     try std.testing.expectEqualStrings("http://127.0.0.1:11434/api/chat", endpoint);
+
+    const health_endpoint = try config.healthEndpointAlloc(std.testing.allocator);
+    defer std.testing.allocator.free(health_endpoint);
+    try std.testing.expectEqualStrings("http://127.0.0.1:11434/api/tags", health_endpoint);
 
     const body = try config.requestBodyAlloc(std.testing.allocator, "hello");
     defer std.testing.allocator.free(body);
@@ -179,6 +264,10 @@ test "builds openai compatible endpoint with v1" {
     const endpoint = try config.endpointAlloc(std.testing.allocator);
     defer std.testing.allocator.free(endpoint);
     try std.testing.expectEqualStrings("https://example.test/v1/chat/completions", endpoint);
+
+    const health_endpoint = try config.healthEndpointAlloc(std.testing.allocator);
+    defer std.testing.allocator.free(health_endpoint);
+    try std.testing.expectEqualStrings("https://example.test/v1/models", health_endpoint);
 }
 
 test "builds openai compatible request body with escaped prompt" {
@@ -194,4 +283,19 @@ test "builds openai compatible request body with escaped prompt" {
     try std.testing.expect(std.mem.indexOf(u8, body, "\"model\":\"small\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, body, "\"stream\":false") != null);
     try std.testing.expect(std.mem.indexOf(u8, body, "say \\\"hi\\\"\\n") != null);
+}
+
+test "health reports missing OpenAI-compatible API key as not ready" {
+    var env = std.process.Environ.Map.init(std.testing.allocator);
+    defer env.deinit();
+    try env.put("ZIGGYZAG_AGENT_PROVIDER", "openai-compatible");
+    try env.put("ZIGGYZAG_AGENT_BASE_URL", "https://example.test");
+
+    const json = try statusJsonAlloc(std.testing.allocator, std.testing.io, &env);
+    defer std.testing.allocator.free(json);
+
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"provider\":\"openai-compatible\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"api_key\":\"missing\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"provider_status\":\"missing_api_key\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"ready\":false") != null);
 }

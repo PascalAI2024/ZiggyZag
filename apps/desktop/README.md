@@ -4,7 +4,7 @@ This is the primary lane for the all-Zig desktop terminal host.
 
 On Windows, the app launches `ziggyzag` through a real ConPTY, renders terminal output in its own native Win32 window, and uses ZiggyZag's OSC 777 shell-integration events for cwd, command status, duration, jobs, and shell-aware UI.
 
-On macOS/Linux, the desktop binary is currently a terminal-attached launcher: it resolves the ZiggyZag shell binary, prints the selected POSIX backend, and starts the shell in the calling terminal. It does not open a native window or allocate a dedicated desktop PTY yet.
+On macOS/Linux, the desktop binary is currently a terminal-attached launcher: it resolves the ZiggyZag shell binary, prints the selected POSIX backend, and starts the shell in the calling terminal. It prefers `script(1)` as a small PTY wrapper and falls back to direct stdio when needed. It does not open a native graphical window yet.
 
 The previous Tauri/xterm.js prototype lives in `apps/desktop-tauri-spike` as a product spike.
 
@@ -18,8 +18,10 @@ This directory contains a buildable Zig executable named `ziggyzag-desktop` plus
 - `config.zig`: lightweight desktop settings model and key=value parser.
 - `theme.zig`: typed color, theme presets, lookup, and override primitives.
 - `pty.zig`: platform backend selector for Windows ConPTY and POSIX PTY work.
+- `posix_app.zig`: macOS/Linux terminal-attached launcher used by alpha release artifacts.
+- `posix_pty.zig`: low-level POSIX PTY experiments and tests for the future native POSIX host.
 
-The Windows implementation is the first complete native alpha. The POSIX launcher is useful for release artifacts and friend testing while native POSIX window+PTY hosting and a stronger terminal core follow without changing the shell boundary.
+The Windows implementation is the first complete native alpha. The POSIX launcher is useful for release artifacts and friend testing while native POSIX graphical hosting and a stronger terminal core follow without changing the shell boundary.
 
 ## Desktop Settings
 
@@ -69,7 +71,7 @@ zig build run-desktop
 `zig build run-desktop` expects the shell binary to be available from the same build output.
 
 - Windows: opens the native terminal host. If the desktop starts but the terminal is blank or exits quickly, run `zig build` again and confirm `zig-out\bin\ziggyzag.exe` exists.
-- macOS/Linux: launches `ziggyzag` in the calling terminal. If the shell binary is not in `zig-out/bin`, put `ziggyzag` beside `ziggyzag-desktop` in the release package or set `ZIGGYZAG_SHELL_PATH` to the shell executable. A native window is not expected in this alpha.
+- macOS/Linux: launches `ziggyzag` in the calling terminal. It uses `script(1)` when available so the shell gets PTY-like behavior, then falls back to direct stdio if that wrapper is unavailable. If the shell binary is not in `zig-out/bin`, put `ziggyzag` beside `ziggyzag-desktop` in the release package or set `ZIGGYZAG_SHELL_PATH` to the shell executable. A native graphical window is not expected in this alpha. Set `ZIGGYZAG_DESKTOP_NO_PTY=1` to skip the `script(1)` wrapper; false-like values such as `0`, `false`, `no`, and `off` leave PTY mode enabled.
 
 ## Manual Test Checklist
 
@@ -106,13 +108,13 @@ For macOS/Linux friends, use this alpha checklist:
 | Ctrl+C does not copy text | Ctrl+C is reserved for shell interrupt. Use Ctrl+Shift+C for copy-visible. |
 | Mouse wheel does not show old output | Produce enough terminal output first; current scrollback is local and bounded. |
 | Theme/config changes do not affect the window yet | `config.zig` parses the settings model; full persisted loading into the Win32 host is still a near-term integration task. |
-| macOS/Linux desktop command does not open a window | Expected for this alpha. It should launch ZiggyZag in the calling terminal. Use `./zig-out/bin/ziggyzag` directly if you do not want the launcher banner. |
+| macOS/Linux desktop command does not open a window | Expected for this alpha. It should launch ZiggyZag in the calling terminal, preferably through `script(1)`. Use `./zig-out/bin/ziggyzag` directly if you do not want the launcher banner. |
 
 ## Next Milestones
 
 1. Add mouse selection and selection-aware copy.
 2. Improve ANSI/CSI coverage or integrate `libghostty-vt`.
-3. Add native POSIX window+PTY hosting for Linux/macOS.
+3. Add native POSIX graphical hosting with first-party PTY management for Linux/macOS.
 4. Wire persisted desktop settings into the Win32 host and future POSIX hosts.
 5. Add search, tabs, and split panes.
 6. Move rendering from GDI to a faster GPU path when the terminal model demands it.

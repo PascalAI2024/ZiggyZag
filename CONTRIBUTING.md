@@ -71,6 +71,16 @@ zig build run-agentd -- --describe-tools
 
 Desktop changes should be tested for launch, typing, Ctrl+C interrupt, paste, Ctrl+Shift+C copy-visible, resize, wheel scrollback, and clean close. AgentD provider changes should report a structured error when the configured Ollama/OpenAI-compatible provider is unavailable.
 
+For release or packaging changes, run the archive QA path from PowerShell on Windows:
+
+```powershell
+$Version = "v0.1.0-alpha.1"
+.\scripts\build-release.ps1 -Version $Version -Optimize ReleaseSafe
+.\scripts\qa-release-artifacts.ps1 -Version $Version
+```
+
+The release folder should contain five zips, `checksums.sha256`, and `release-manifest.json`. Windows gets the native graphical desktop host; macOS/Linux get the shell, AgentD, and terminal-attached desktop launcher until native POSIX graphical hosting lands.
+
 ## Code Style
 
 - Prefer straightforward code over abstractions that hide shell behavior.

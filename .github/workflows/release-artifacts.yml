@@ -16,6 +16,11 @@ on:
           - ReleaseSafe
           - ReleaseFast
           - ReleaseSmall
+      run_windows_smoke:
+        description: Run extracted Windows desktop smoke on the runner
+        required: true
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -24,6 +29,9 @@ jobs:
   package:
     name: Build release zips
     runs-on: windows-latest
+    env:
+      RELEASE_VERSION: ${{ inputs.version }}
+      RELEASE_OPTIMIZE: ${{ inputs.optimize }}
     steps:
       - uses: actions/checkout@v4
 
@@ -31,9 +39,36 @@ jobs:
         with:
           version: 0.16.0
 
+      - name: Validate PowerShell scripts
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          foreach ($script in @(".\scripts\build-release.ps1", ".\scripts\qa-release-artifacts.ps1")) {
+            $tokens = $null
+            $errors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $script), [ref]$tokens, [ref]$errors)
+            if ($errors.Count -gt 0) {
+              $errors | ForEach-Object { Write-Error $_.Message }
+              throw "PowerShell parse failed for $script"
+            }
+          }
+
+      - name: Dry-run package plan
+        shell: pwsh
+        run: .\scripts\build-release.ps1 -Version "$env:RELEASE_VERSION" -Optimize "$env:RELEASE_OPTIMIZE" -DryRun
+
       - name: Package all targets
         shell: pwsh
-        run: .\scripts\build-release.ps1 -Version "${{ inputs.version }}" -Optimize "${{ inputs.optimize }}"
+        run: .\scripts\build-release.ps1 -Version "$env:RELEASE_VERSION" -Optimize "$env:RELEASE_OPTIMIZE"
+
+      - name: QA release artifacts
+        shell: pwsh
+        run: |
+          if ("${{ inputs.run_windows_smoke }}" -eq "true") {
+            .\scripts\qa-release-artifacts.ps1 -Version "$env:RELEASE_VERSION"
+          } else {
+            .\scripts\qa-release-artifacts.ps1 -Version "$env:RELEASE_VERSION" -SkipWindowsRun
+          }
 
       - name: Upload release artifacts
         uses: actions/upload-artifact@v4

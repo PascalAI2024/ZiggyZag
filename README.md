@@ -59,7 +59,7 @@ Run the Windows desktop terminal MVP:
 zig build run-desktop
 ```
 
-On macOS/Linux, `zig build run-desktop` currently launches ZiggyZag in the calling terminal through the POSIX desktop entry point. It does not open a native window yet. The shell and AgentD binaries are also first-class alpha artifacts on those platforms:
+On macOS/Linux, `zig build run-desktop` currently launches ZiggyZag in the calling terminal through the POSIX desktop entry point. It prefers `script(1)` as a small PTY wrapper and falls back to direct stdio when needed. It does not open a separate native window yet. The shell and AgentD binaries are also first-class alpha artifacts on those platforms:
 
 ```sh
 zig build
@@ -142,7 +142,7 @@ export ZIGGYZAG_HISTORY_DB=~/.ziggyzag-history.tsv
 | Introspection | Done | `about`, `doctor`, `inspect`, `which`, `path`, `project`, slash shortcuts, JSON output for jobs/history/prompt/env/doctor/project/dirs, and config validation/reload. |
 | Convenience commands | Done | `mkcd`, `up`, `back`, `forward`, `jump`, `repeat`, `timeit`, `source`, `env`, `vars`, and project-aware `run`. |
 | Developer polish | Done | Repo docs, diagrams, refactors, smoke script, and user-facing enhancements. |
-| Desktop terminal host | Alpha | Windows-native all-Zig app with Win32 windowing, GDI terminal rendering, ConPTY shell hosting, keyboard input, copy/paste, wheel scrollback, status bar, themes, desktop config parsing, and OSC 777 shell-event parsing. macOS/Linux currently build a terminal-attached launcher that resolves and starts `ziggyzag`; native POSIX window+PTY hosting is still in progress. |
+| Desktop terminal host | Alpha | Windows-native all-Zig app with Win32 windowing, GDI terminal rendering, ConPTY shell hosting, keyboard input, copy/paste, wheel scrollback, status bar, themes, desktop config parsing, and OSC 777 shell-event parsing. macOS/Linux currently build a terminal-attached launcher that resolves and starts `ziggyzag` through `script(1)` when available; native POSIX graphical hosting is still in progress. |
 | Agent runtime | Alpha | Slim `ziggyzag-agentd` binary with JSON-lines protocol, tool descriptions/calls, terminal host actions, and OpenAI-compatible/Ollama request shaping on Windows, macOS, and Linux. |
 
 ## Architecture
@@ -238,6 +238,28 @@ pie title ZiggyZag capability mix
 - [Research-backed roadmap](docs/ROADMAP.md)
 - [Contributing](CONTRIBUTING.md)
 
+## Release Artifacts
+
+Release packages are produced with:
+
+```powershell
+$Version = "v0.1.0-alpha.1"
+.\scripts\build-release.ps1 -Version $Version -Optimize ReleaseSafe
+.\scripts\qa-release-artifacts.ps1 -Version $Version
+```
+
+Expected files under `dist\$Version`:
+
+- `ZiggyZag-$Version-windows-x86_64.zip`
+- `ZiggyZag-$Version-linux-x86_64.zip`
+- `ZiggyZag-$Version-linux-aarch64.zip`
+- `ZiggyZag-$Version-macos-x86_64.zip`
+- `ZiggyZag-$Version-macos-aarch64.zip`
+- `checksums.sha256`
+- `release-manifest.json`
+
+Every zip contains `bin/ziggyzag`, `bin/ziggyzag-agentd`, `bin/ziggyzag-desktop`, plus `README.md` and `LICENSE`; Windows binaries use the `.exe` suffix. Use `checksums.sha256` to verify downloads before testing. The archive QA script expands each zip, checks expected binaries and binary headers, and runs extracted Windows shell, AgentD, and desktop smoke tests. Linux/macOS runtime smokes still need real Linux/macOS hosts or CI runners.
+
 ## Development
 
 Build:
@@ -261,7 +283,7 @@ zig build run-desktop
 Platform behavior:
 
 - Windows: opens the native terminal host and launches `ziggyzag` through ConPTY.
-- macOS/Linux: launches `ziggyzag` in the calling terminal after resolving the shell path; it does not open a native terminal window or allocate a dedicated desktop PTY yet.
+- macOS/Linux: launches `ziggyzag` in the calling terminal after resolving the shell path; it uses `script(1)` as a PTY wrapper when available, can be forced to direct stdio with `ZIGGYZAG_DESKTOP_NO_PTY=1`, and does not open a separate graphical window yet.
 
 Run the Zig-native agent runtime:
 
@@ -334,7 +356,7 @@ For macOS/Linux alpha testing:
 | `.\zig-out\bin\ziggyzag.exe` is missing | Run `zig build` from the repo root first. |
 | `.\scripts\smoke.ps1` says the binary is missing | Run `zig build`, then rerun the smoke script from the repo root. |
 | Desktop window opens but shell does not start | Confirm `zig-out\bin\ziggyzag.exe` exists and that antivirus did not quarantine a local build artifact. |
-| macOS/Linux `zig build run-desktop` does not open a window | Expected for this alpha. It should launch ZiggyZag in the current terminal; use `./zig-out/bin/ziggyzag` directly if you do not want the launcher banner. |
+| macOS/Linux `zig build run-desktop` does not open a window | Expected for this alpha. It should launch ZiggyZag in the current terminal through `script(1)` when available; use `./zig-out/bin/ziggyzag` directly if you do not want the launcher banner. |
 | AgentD returns `provider_error` from `--oneshot` or `agent/run` | This is expected when Ollama or the configured OpenAI-compatible provider is not running. Tool listing, `agent/health`, and local tool calls should still work. |
 | Ollama request fails | Start Ollama, confirm `http://127.0.0.1:11434` is reachable, and set `ZIGGYZAG_AGENT_MODEL` to a local model you have pulled. |
 

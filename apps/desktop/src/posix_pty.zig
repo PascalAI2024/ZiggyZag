@@ -12,6 +12,14 @@ pub const supported = switch (native_os) {
 
 pub const Fd = if (supported) posix.fd_t else i32;
 pub const Pid = if (supported) posix.pid_t else i32;
+pub const invalid_fd: Fd = -1;
+
+const uses_libc_pty = switch (native_os) {
+    .macos, .freebsd, .netbsd, .openbsd => true,
+    else => false,
+};
+
+const empty_environment = [_:null]?[*:0]const u8{};
 
 pub const Size = struct {
     rows: u16 = 24,
@@ -23,25 +31,28 @@ pub const Size = struct {
 };
 
 pub const Pair = struct {
-    master_fd: Fd,
-    slave_fd: Fd,
+    master_fd: Fd = invalid_fd,
+    slave_fd: Fd = invalid_fd,
 
     pub fn close(self: *Pair) void {
-        closeFd(self.slave_fd);
+        self.closeSlave();
         closeFd(self.master_fd);
+        self.master_fd = invalid_fd;
     }
 
     pub fn closeSlave(self: *Pair) void {
         closeFd(self.slave_fd);
+        self.slave_fd = invalid_fd;
     }
 };
 
 pub const Session = struct {
-    master_fd: Fd,
+    master_fd: Fd = invalid_fd,
     child_pid: Pid,
 
     pub fn closeMaster(self: *Session) void {
         closeFd(self.master_fd);
+        self.master_fd = invalid_fd;
     }
 
     pub fn resize(self: Session, size: Size) Error!void {
@@ -52,6 +63,8 @@ pub const Session = struct {
 pub const SpawnOptions = struct {
     shell_path: ?[*:0]const u8 = null,
     argv: ?[*:null]const ?[*:0]const u8 = null,
+    /// Null means an explicit empty environment. Pass an envp block when the
+    /// child shell should inherit or receive specific variables.
     envp: ?[*:null]const ?[*:0]const u8 = null,
     size: Size = .{},
 };
@@ -60,6 +73,7 @@ pub const Error = posix.OpenError || std.fmt.BufPrintError || error{
     UnsupportedOperatingSystem,
     InvalidSize,
     InvalidPtyName,
+    InvalidFileDescriptor,
     ForkFailed,
     PermissionDenied,
     SystemResources,
@@ -68,6 +82,10 @@ pub const Error = posix.OpenError || std.fmt.BufPrintError || error{
 
 pub fn defaultShellPath() [*:0]const u8 {
     return "/bin/sh";
+}
+
+pub fn defaultEnvp() [*:null]const ?[*:0]const u8 {
+    return &empty_environment;
 }
 
 pub fn openPair(size: Size) Error!Pair {
@@ -84,6 +102,7 @@ pub fn openPair(size: Size) Error!Pair {
 pub fn setWindowSize(fd: Fd, size: Size) Error!void {
     if (!supported) return error.UnsupportedOperatingSystem;
     if (!size.isValid()) return error.InvalidSize;
+    if (!isOpenFd(fd)) return error.InvalidFileDescriptor;
 
     var ws = posix.winsize{
         .row = size.rows,
@@ -105,9 +124,8 @@ pub fn spawnShell(options: SpawnOptions) Error!Session {
 
     const shell = options.shell_path orelse defaultShellPath();
     const default_argv = [_:null]?[*:0]const u8{shell};
-    const empty_env = [_:null]?[*:0]const u8{};
     const argv = options.argv orelse &default_argv;
-    const envp = options.envp orelse &empty_env;
+    const envp = options.envp orelse defaultEnvp();
 
     var pair = try openPair(options.size);
     errdefer pair.close();
@@ -144,14 +162,14 @@ fn openLinuxPair(size: Size) Error!Pair {
 }
 
 fn openLibcPair(size: Size) Error!Pair {
-    const master = c_posix_openpt(openFlagsBits(openFlags()));
+    const master = libcPty.posix_openpt(openFlagsBits(openFlags()));
     if (master < 0) return errnoError();
     errdefer closeFd(master);
 
-    if (c_grantpt(master) < 0) return errnoError();
-    if (c_unlockpt(master) < 0) return errnoError();
+    if (libcPty.grantpt(master) < 0) return errnoError();
+    if (libcPty.unlockpt(master) < 0) return errnoError();
 
-    const slave_name = c_ptsname(master) orelse return error.InvalidPtyName;
+    const slave_name = libcPty.ptsname(master) orelse return error.InvalidPtyName;
     const slave = try posix.openatZ(posix.AT.FDCWD, slave_name, openFlags(), 0);
     errdefer closeFd(slave);
 
@@ -194,11 +212,16 @@ fn openFlagsBits(flags: posix.O) c_int {
 
 fn closeFd(fd: Fd) void {
     if (!supported) return;
+    if (!isOpenFd(fd)) return;
     switch (native_os) {
         .linux => _ = linux.close(fd),
         .macos, .freebsd, .netbsd, .openbsd => _ = std.c.close(fd),
         else => {},
     }
+}
+
+fn isOpenFd(fd: Fd) bool {
+    return fd >= 0;
 }
 
 fn forkProcess() Error!Pid {
@@ -322,6 +345,8 @@ fn errnoToError(err: anytype) Error {
     return switch (err) {
         .SUCCESS => error.Unexpected,
         .ACCES, .PERM => error.PermissionDenied,
+        .BADF => error.InvalidFileDescriptor,
+        .AGAIN => error.ForkFailed,
         .MFILE, .NFILE, .NOMEM, .NOBUFS => error.SystemResources,
         else => error.Unexpected,
     };
@@ -337,15 +362,32 @@ const bsdTtyIoctl = struct {
     const set_controlling_tty: c_int = 0x20007461;
 };
 
-extern "c" fn posix_openpt(flags: c_int) c_int;
-extern "c" fn grantpt(fd: c_int) c_int;
-extern "c" fn unlockpt(fd: c_int) c_int;
-extern "c" fn ptsname(fd: c_int) ?[*:0]u8;
+const libcPty = if (uses_libc_pty) struct {
+    extern "c" fn posix_openpt(flags: c_int) c_int;
+    extern "c" fn grantpt(fd: c_int) c_int;
+    extern "c" fn unlockpt(fd: c_int) c_int;
+    extern "c" fn ptsname(fd: c_int) ?[*:0]u8;
+} else struct {
+    fn posix_openpt(flags: c_int) c_int {
+        _ = flags;
+        unreachable;
+    }
 
-const c_posix_openpt = posix_openpt;
-const c_grantpt = grantpt;
-const c_unlockpt = unlockpt;
-const c_ptsname = ptsname;
+    fn grantpt(fd: c_int) c_int {
+        _ = fd;
+        unreachable;
+    }
+
+    fn unlockpt(fd: c_int) c_int {
+        _ = fd;
+        unreachable;
+    }
+
+    fn ptsname(fd: c_int) ?[*:0]u8 {
+        _ = fd;
+        unreachable;
+    }
+};
 
 test "size validation is strict enough for terminal layout" {
     try std.testing.expect((Size{}).isValid());
@@ -355,6 +397,40 @@ test "size validation is strict enough for terminal layout" {
 
 test "default shell path is a stable absolute fallback" {
     try std.testing.expectEqualStrings("/bin/sh", std.mem.sliceTo(defaultShellPath(), 0));
+}
+
+test "default envp is explicit and empty" {
+    const envp = defaultEnvp();
+    try std.testing.expect(envp[0] == null);
+}
+
+test "unsupported targets fail explicitly" {
+    if (supported) return error.SkipZigTest;
+
+    try std.testing.expectError(error.UnsupportedOperatingSystem, openPair(.{}));
+    try std.testing.expectError(error.UnsupportedOperatingSystem, setWindowSize(invalid_fd, .{}));
+    try std.testing.expectError(error.UnsupportedOperatingSystem, spawnShell(.{}));
+}
+
+test "close helpers invalidate descriptors before reuse" {
+    if (!supported) return error.SkipZigTest;
+
+    var pair = Pair{};
+    pair.closeSlave();
+    try std.testing.expectEqual(invalid_fd, pair.slave_fd);
+    pair.close();
+    try std.testing.expectEqual(invalid_fd, pair.master_fd);
+    try std.testing.expectEqual(invalid_fd, pair.slave_fd);
+
+    var session = Session{ .child_pid = 0 };
+    session.closeMaster();
+    try std.testing.expectEqual(invalid_fd, session.master_fd);
+}
+
+test "window size rejects invalid descriptors before ioctl" {
+    if (!supported) return error.SkipZigTest;
+
+    try std.testing.expectError(error.InvalidFileDescriptor, setWindowSize(invalid_fd, .{}));
 }
 
 test "open flag bit conversion keeps read-write intent" {
