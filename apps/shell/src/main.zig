@@ -3,6 +3,11 @@ const std = @import("std");
 
 const Allocator = std.mem.Allocator;
 
+const max_config_file_bytes = 256 * 1024;
+const max_source_file_bytes = 512 * 1024;
+const max_history_file_bytes = 8 * 1024 * 1024;
+const max_pipeline_capture_bytes = 8 * 1024 * 1024;
+
 const CompletionEntry = struct {
     text: []u8,
     is_directory: bool,
@@ -206,7 +211,13 @@ const Shell = struct {
         var stdin = std.Io.File.stdin().readerStreaming(self.io, &stdin_buffer);
         var stdout = std.Io.File.stdout().writer(self.io, &.{});
 
-        try self.loadStartupConfig();
+        self.loadStartupConfig() catch |err| switch (err) {
+            error.ConfigFileTooLarge => {
+                var stderr = std.Io.File.stderr().writer(self.io, &.{});
+                try stderr.interface.print("config: file too large (limit {d} bytes); skipping startup config\n", .{max_config_file_bytes});
+            },
+            else => |e| return e,
+        };
         try self.rememberCurrentDirectory(false);
 
         const terminal_mode = try TerminalMode.enable();
@@ -219,6 +230,10 @@ const Shell = struct {
         if (histfile) |path| {
             self.readHistoryFile(path) catch |err| switch (err) {
                 error.FileNotFound => {},
+                error.HistoryFileTooLarge => {
+                    var stderr = std.Io.File.stderr().writer(self.io, &.{});
+                    try stderr.interface.print("history: {s}: file too large (limit {d} bytes)\n", .{ path, max_history_file_bytes });
+                },
                 else => |e| return e,
             };
             self.history_append_index = self.history.items.len;
@@ -1293,7 +1308,14 @@ const Shell = struct {
             return true;
         }
 
-        var parsed = try parseCommandExpanded(self.allocator, active_line, self);
+        var parsed = parseCommandExpanded(self.allocator, active_line, self) catch |err| switch (err) {
+            error.UnterminatedSingleQuote, error.UnterminatedDoubleQuote, error.MissingRedirectTarget => {
+                try self.printParseError(active_line, err);
+                self.last_status = 2;
+                return true;
+            },
+            else => |e| return e,
+        };
         defer parsed.deinit();
 
         if (parsed.argv.items.len == 0) return true;
@@ -1731,6 +1753,17 @@ const Shell = struct {
         return true;
     }
 
+    fn printParseError(self: *Shell, line: []const u8, err: anyerror) !void {
+        var stderr = std.Io.File.stderr().writer(self.io, &.{});
+        const message = switch (err) {
+            error.UnterminatedSingleQuote => "unterminated single quote",
+            error.UnterminatedDoubleQuote => "unterminated double quote",
+            error.MissingRedirectTarget => "missing redirect target",
+            else => @errorName(err),
+        };
+        try stderr.interface.print("parse error: {s}: {s}\n", .{ message, line });
+    }
+
     fn changeDirectory(self: *Shell, argv: []const []const u8, stderr_buffer: *std.ArrayList(u8)) !bool {
         const target = if (argv.len < 2 or std.mem.eql(u8, argv[1], "~"))
             self.env.get("HOME") orelse ""
@@ -1747,8 +1780,12 @@ const Shell = struct {
     }
 
     fn typeCommand(self: *Shell, argv: []const []const u8, stdout_buffer: *std.ArrayList(u8)) !void {
-        if (argv.len < 2) return;
+        if (argv.len < 2) {
+            self.last_status = 2;
+            return;
+        }
 
+        var missing = false;
         for (argv[1..]) |name| {
             if (isShellBuiltin(name)) {
                 try appendFmt(self.allocator, stdout_buffer, "{s} is a shell builtin\n", .{name});
@@ -1757,14 +1794,19 @@ const Shell = struct {
                 try appendFmt(self.allocator, stdout_buffer, "{s} is {s}\n", .{ name, path });
             } else {
                 try appendFmt(self.allocator, stdout_buffer, "{s}: not found\n", .{name});
+                missing = true;
             }
         }
+        if (missing) self.last_status = 1;
     }
 
     fn whichCommand(self: *Shell, argv: []const []const u8, stdout_buffer: *std.ArrayList(u8)) !void {
         const json = hasArg(argv, "--json");
+        var checked: usize = 0;
+        var missing = false;
         for (argv[1..]) |name| {
             if (std.mem.startsWith(u8, name, "--")) continue;
+            checked += 1;
 
             if (isShellBuiltin(name)) {
                 if (json) {
@@ -1790,7 +1832,9 @@ const Shell = struct {
             } else {
                 try appendFmt(self.allocator, stdout_buffer, "{s}: not found\n", .{name});
             }
+            missing = true;
         }
+        if (checked == 0) self.last_status = 2 else if (missing) self.last_status = 1;
     }
 
     fn appendWhichJson(self: *Shell, stdout_buffer: *std.ArrayList(u8), name: []const u8, kind: []const u8, path: []const u8) !void {
@@ -2196,7 +2240,10 @@ const Shell = struct {
 
         var read_buffer: [4096]u8 = undefined;
         var reader = file.readerStreaming(self.io, &read_buffer);
-        const contents = try reader.interface.allocRemaining(self.allocator, .unlimited);
+        const contents = reader.interface.allocRemaining(self.allocator, .limited(max_config_file_bytes)) catch |err| switch (err) {
+            error.StreamTooLong => return error.ConfigFileTooLarge,
+            else => |e| return e,
+        };
         defer self.allocator.free(contents);
 
         var lines = std.mem.splitScalar(u8, contents, '\n');
@@ -2237,7 +2284,10 @@ const Shell = struct {
 
         var read_buffer: [4096]u8 = undefined;
         var reader = file.readerStreaming(self.io, &read_buffer);
-        const contents = try reader.interface.allocRemaining(self.allocator, .unlimited);
+        const contents = reader.interface.allocRemaining(self.allocator, .limited(max_config_file_bytes)) catch |err| switch (err) {
+            error.StreamTooLong => return error.ConfigFileTooLarge,
+            else => |e| return e,
+        };
         defer self.allocator.free(contents);
 
         var ok = true;
@@ -2272,7 +2322,10 @@ const Shell = struct {
 
         var read_buffer: [4096]u8 = undefined;
         var reader = file.readerStreaming(self.io, &read_buffer);
-        const contents = try reader.interface.allocRemaining(self.allocator, .unlimited);
+        const contents = reader.interface.allocRemaining(self.allocator, .limited(max_history_file_bytes)) catch |err| switch (err) {
+            error.StreamTooLong => return error.HistoryFileTooLarge,
+            else => |e| return e,
+        };
         defer self.allocator.free(contents);
 
         var lines = std.mem.splitScalar(u8, contents, '\n');
@@ -3020,7 +3073,14 @@ const Shell = struct {
 
         var read_buffer: [4096]u8 = undefined;
         var reader = file.readerStreaming(self.io, &read_buffer);
-        const contents = try reader.interface.allocRemaining(self.allocator, .unlimited);
+        const contents = reader.interface.allocRemaining(self.allocator, .limited(max_source_file_bytes)) catch |err| switch (err) {
+            error.StreamTooLong => {
+                try appendFmt(self.allocator, stderr_buffer, "source: {s}: file too large (limit {d} bytes)\n", .{ path, max_source_file_bytes });
+                self.last_status = 1;
+                return true;
+            },
+            else => |e| return e,
+        };
         defer self.allocator.free(contents);
 
         var lines = std.mem.splitScalar(u8, contents, '\n');
@@ -3236,7 +3296,7 @@ const Shell = struct {
 
     fn refreshBackgroundJobs(self: *Shell) void {
         for (self.background_jobs.items) |*job| {
-            if (!job.done and childHasExited(&job.child)) job.done = true;
+            if (!job.done and childHasExited(&job.child, self.io)) job.done = true;
         }
     }
 
@@ -3594,6 +3654,13 @@ const Shell = struct {
                     continue;
                 },
                 error.UnsupportedPipelineStage => return false,
+                error.PipelineOutputTooLarge => {
+                    try appendFmt(self.allocator, &stderr_output, "{s}: pipeline output exceeded {d} bytes\n", .{ parsed.argv.items[0], max_pipeline_capture_bytes });
+                    self.allocator.free(input);
+                    input = try self.allocator.dupe(u8, "");
+                    status = 1;
+                    continue;
+                },
                 else => |e| return e,
             };
             defer result.deinit(self.allocator);
@@ -3658,12 +3725,18 @@ const Shell = struct {
 
         var stdout_buffer: [4096]u8 = undefined;
         var stdout_reader = child.stdout.?.readerStreaming(self.io, &stdout_buffer);
-        const stdout_bytes = try stdout_reader.interface.allocRemaining(self.allocator, .unlimited);
+        const stdout_bytes = stdout_reader.interface.allocRemaining(self.allocator, .limited(max_pipeline_capture_bytes)) catch |err| switch (err) {
+            error.StreamTooLong => return error.PipelineOutputTooLarge,
+            else => |e| return e,
+        };
         errdefer self.allocator.free(stdout_bytes);
 
         var stderr_buffer: [4096]u8 = undefined;
         var stderr_reader = child.stderr.?.readerStreaming(self.io, &stderr_buffer);
-        const stderr_bytes = try stderr_reader.interface.allocRemaining(self.allocator, .unlimited);
+        const stderr_bytes = stderr_reader.interface.allocRemaining(self.allocator, .limited(max_pipeline_capture_bytes)) catch |err| switch (err) {
+            error.StreamTooLong => return error.PipelineOutputTooLarge,
+            else => |e| return e,
+        };
         errdefer self.allocator.free(stderr_bytes);
 
         const term = try child.wait(self.io);
@@ -3827,16 +3900,17 @@ const ParsedCommand = struct {
     fn extractRedirections(self: *ParsedCommand) !void {
         var argv: std.ArrayList([]u8) = .empty;
 
+        for (self.argv.items, 0..) |token, token_index| {
+            if (parseRedirectionOperator(token) != null and token_index + 1 >= self.argv.items.len) {
+                return error.MissingRedirectTarget;
+            }
+        }
+
         var index: usize = 0;
         while (index < self.argv.items.len) {
             const token = self.argv.items[index];
             if (parseRedirectionOperator(token)) |spec| {
                 self.allocator.free(token);
-                if (index + 1 >= self.argv.items.len) {
-                    index += 1;
-                    break;
-                }
-
                 const path = self.argv.items[index + 1];
                 self.setRedirection(spec, path);
                 index += 2;
@@ -3933,7 +4007,8 @@ fn parseTokens(allocator: Allocator, line: []const u8, shell: ?*Shell) !ParsedCo
                 while (i < line.len and line[i] != '\'') : (i += 1) {
                     try current.append(allocator, line[i]);
                 }
-                if (i < line.len) i += 1;
+                if (i >= line.len) return error.UnterminatedSingleQuote;
+                i += 1;
             },
             '"' => {
                 i += 1;
@@ -3954,7 +4029,8 @@ fn parseTokens(allocator: Allocator, line: []const u8, shell: ?*Shell) !ParsedCo
                     }
                     try current.append(allocator, line[i]);
                 }
-                if (i < line.len) i += 1;
+                if (i >= line.len) return error.UnterminatedDoubleQuote;
+                i += 1;
             },
             '$' => {
                 if (!try appendParameterExpansion(allocator, &argv, &current, line, &i, shell, true)) {
@@ -4130,8 +4206,21 @@ fn isShellWhitespace(c: u8) bool {
     return c == ' ' or c == '\t' or c == '\n' or c == '\r';
 }
 
-fn childHasExited(child: *std.process.Child) bool {
+fn childHasExited(child: *std.process.Child, io: std.Io) bool {
     if (child.id == null) return true;
+
+    if (builtin.os.tag == .windows) {
+        const windows = std.os.windows;
+        const minimal_timeout: windows.LARGE_INTEGER = -1;
+        return switch (windows.ntdll.NtWaitForSingleObject(child.id.?, .FALSE, &minimal_timeout)) {
+            .WAIT_0 => {
+                _ = child.wait(io) catch {};
+                return true;
+            },
+            .TIMEOUT => false,
+            else => false,
+        };
+    }
 
     if (builtin.os.tag == .linux) {
         const linux = std.os.linux;
@@ -4700,6 +4789,12 @@ test "parse quotes and redirections" {
     try std.testing.expect(parsed.stderr_redirect != null);
     try std.testing.expectEqualStrings("out.txt", parsed.stdout_redirect.?.path);
     try std.testing.expect(parsed.stderr_redirect.?.append);
+}
+
+test "parse reports quote and redirection errors" {
+    try std.testing.expectError(error.UnterminatedSingleQuote, parseCommand(std.testing.allocator, "echo 'oops"));
+    try std.testing.expectError(error.UnterminatedDoubleQuote, parseCommand(std.testing.allocator, "echo \"oops"));
+    try std.testing.expectError(error.MissingRedirectTarget, parseCommand(std.testing.allocator, "echo hello >"));
 }
 
 test "split unquoted pipes" {

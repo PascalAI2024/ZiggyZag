@@ -45,6 +45,7 @@ const WM_SETFOCUS = 0x0007;
 const WM_KILLFOCUS = 0x0008;
 const WM_CLOSE = 0x0010;
 const WM_MOUSEWHEEL = 0x020A;
+const WM_APP_OUTPUT_READY = 0x8000;
 const VK_C = 0x43;
 const VK_T = 0x54;
 const VK_V = 0x56;
@@ -180,7 +181,6 @@ extern "kernel32" fn GlobalAlloc(flags: UINT, bytes: usize) callconv(.winapi) HG
 extern "kernel32" fn GlobalLock(memory: HGLOBAL) callconv(.winapi) LPVOID;
 extern "kernel32" fn GlobalUnlock(memory: HGLOBAL) callconv(.winapi) BOOL;
 extern "kernel32" fn GlobalFree(memory: HGLOBAL) callconv(.winapi) HGLOBAL;
-extern "kernel32" fn SetEnvironmentVariableW(name: LPCWSTR, value: ?LPCWSTR) callconv(.winapi) BOOL;
 extern "kernel32" fn WaitForSingleObject(handle: HANDLE, milliseconds: DWORD) callconv(.winapi) DWORD;
 extern "kernel32" fn TerminateProcess(handle: HANDLE, exit_code: UINT) callconv(.winapi) BOOL;
 extern "kernel32" fn CreatePseudoConsole(size: COORD, input: HANDLE, output: HANDLE, flags: DWORD, pseudoconsole: *HPCON) callconv(.winapi) HRESULT;
@@ -200,6 +200,7 @@ extern "user32" fn UpdateWindow(hwnd: HWND) callconv(.winapi) BOOL;
 extern "user32" fn GetMessageW(msg: *MSG, hwnd: HWND, min: UINT, max: UINT) callconv(.winapi) BOOL;
 extern "user32" fn TranslateMessage(msg: *const MSG) callconv(.winapi) BOOL;
 extern "user32" fn DispatchMessageW(msg: *const MSG) callconv(.winapi) LRESULT;
+extern "user32" fn PostMessageW(hwnd: HWND, msg: UINT, wparam: WPARAM, lparam: LPARAM) callconv(.winapi) BOOL;
 extern "user32" fn PostQuitMessage(exit_code: i32) callconv(.winapi) void;
 extern "user32" fn DestroyWindow(hwnd: HWND) callconv(.winapi) BOOL;
 extern "user32" fn LoadCursorW(instance: HINSTANCE, cursor_name: LPCWSTR) callconv(.winapi) HCURSOR;
@@ -337,6 +338,7 @@ const App = struct {
     output_read: ?HANDLE = null,
     pseudoconsole: ?HPCON = null,
     process_info: ?win.PROCESS.INFORMATION = null,
+    reader_thread: ?std.Thread = null,
     status: Status = .{},
     scroll_offset: usize = 0,
     wheel_remainder: i32 = 0,
@@ -344,7 +346,7 @@ const App = struct {
     startup_error_len: usize = 0,
     focused: bool = false,
     settings_open: bool = false,
-    running: bool = true,
+    running: std.atomic.Value(bool) = std.atomic.Value(bool).init(true),
 
     fn init(allocator: Allocator, io: std.Io, env: *std.process.Environ.Map) !App {
         return .{
@@ -504,9 +506,13 @@ const App = struct {
         const cwd_w = try std.unicode.utf8ToUtf16LeAllocZ(self.allocator, cwd);
         defer self.allocator.free(cwd_w);
 
-        _ = SetEnvironmentVariableW(wideLiteral("ZIGGYZAG_APP"), wideLiteral("1"));
-        _ = SetEnvironmentVariableW(wideLiteral("ZIGGYZAG_INTEGRATION"), wideLiteral("1"));
-        _ = SetEnvironmentVariableW(wideLiteral("TERM"), wideLiteral("xterm-256color"));
+        var child_env = try self.env.clone(self.allocator);
+        defer child_env.deinit();
+        try child_env.put("ZIGGYZAG_APP", "1");
+        try child_env.put("ZIGGYZAG_INTEGRATION", "1");
+        try child_env.put("TERM", "xterm-256color");
+        const env_block = try child_env.createWindowsBlock(self.allocator, .{});
+        defer env_block.deinit(self.allocator);
 
         var attr_size: usize = 0;
         _ = InitializeProcThreadAttributeList(null, 1, 0, &attr_size);
@@ -530,20 +536,32 @@ const App = struct {
             null,
             0,
             EXTENDED_STARTUPINFO_PRESENT | CREATE_NO_WINDOW,
-            null,
+            env_block.view().ptr,
             cwd_w.ptr,
             &startup.StartupInfo,
             &process_info,
         ) == 0) return error.CreateProcessFailed;
+        errdefer {
+            if (WaitForSingleObject(process_info.hProcess, CHILD_SHUTDOWN_GRACE_MS) == WAIT_TIMEOUT) {
+                _ = TerminateProcess(process_info.hProcess, 0);
+                _ = WaitForSingleObject(process_info.hProcess, CHILD_SHUTDOWN_KILL_GRACE_MS);
+            }
+            _ = CloseHandle(process_info.hThread);
+            _ = CloseHandle(process_info.hProcess);
+        }
+
+        self.running.store(true, .release);
+        const thread = std.Thread.spawn(.{}, readLoop, .{ self, app_output_read }) catch |err| {
+            self.running.store(false, .release);
+            return err;
+        };
 
         _ = CloseHandle(pty_input_read);
         _ = CloseHandle(pty_output_write);
         self.input_write = app_input_write;
         self.output_read = app_output_read;
         self.process_info = process_info;
-
-        const thread = try std.Thread.spawn(.{}, readLoop, .{self});
-        thread.detach();
+        self.reader_thread = thread;
     }
 
     fn resolveShellPath(self: *App) ![]u8 {
@@ -585,14 +603,10 @@ const App = struct {
     }
 
     fn shutdownPty(self: *App) void {
-        self.running = false;
+        self.running.store(false, .release);
         if (self.input_write) |handle| {
             _ = CloseHandle(handle);
             self.input_write = null;
-        }
-        if (self.output_read) |handle| {
-            _ = CloseHandle(handle);
-            self.output_read = null;
         }
         if (self.pseudoconsole) |hpc| {
             ClosePseudoConsole(hpc);
@@ -606,6 +620,14 @@ const App = struct {
             _ = CloseHandle(info.hThread);
             _ = CloseHandle(info.hProcess);
             self.process_info = null;
+        }
+        if (self.reader_thread) |thread| {
+            thread.join();
+            self.reader_thread = null;
+        }
+        if (self.output_read) |handle| {
+            _ = CloseHandle(handle);
+            self.output_read = null;
         }
     }
 
@@ -1114,6 +1136,11 @@ const App = struct {
         wide[len] = 0;
         _ = SetWindowTextW(hwnd, @ptrCast(&wide));
     }
+
+    fn requestUiRefresh(self: *App) void {
+        const hwnd = self.hwnd orelse return;
+        _ = PostMessageW(hwnd, WM_APP_OUTPUT_READY, 0, 0);
+    }
 };
 
 pub fn run(init_data: std.process.Init) !void {
@@ -1189,12 +1216,14 @@ pub fn run(init_data: std.process.Init) !void {
     }
 }
 
-fn readLoop(app: *App) void {
+fn readLoop(app: *App, output_read: HANDLE) void {
+    var parser = integration.Parser.init(std.heap.page_allocator);
+    defer parser.deinit();
+
     var buffer: [8192]u8 = undefined;
-    while (app.running) {
-        const handle = app.output_read orelse break;
+    while (app.running.load(.acquire)) {
         var available: DWORD = 0;
-        if (PeekNamedPipe(handle, null, 0, null, &available, null) == 0) break;
+        if (PeekNamedPipe(output_read, null, 0, null, &available, null) == 0) break;
         if (available == 0) {
             Sleep(16);
             continue;
@@ -1202,19 +1231,30 @@ fn readLoop(app: *App) void {
 
         var read: DWORD = 0;
         const requested: DWORD = @intCast(@min(buffer.len, available));
-        if (ReadFile(handle, &buffer, requested, &read, null) == 0 or read == 0) break;
+        if (ReadFile(output_read, &buffer, requested, &read, null) == 0 or read == 0) break;
 
-        var extracted = integration.extract(std.heap.page_allocator, buffer[0..read]) catch continue;
+        var extracted = parser.feed(buffer[0..read]) catch continue;
         defer extracted.deinit(std.heap.page_allocator);
 
         app.mutex.lock();
         app.resetScroll();
         app.grid.feed(extracted.display);
         app.handleEvents(extracted.events.items);
-        app.updateTitle();
         app.mutex.unlock();
 
-        if (app.hwnd) |hwnd| _ = InvalidateRect(hwnd, null, 0);
+        app.requestUiRefresh();
+    }
+
+    var extracted = parser.flush() catch return;
+    defer extracted.deinit(std.heap.page_allocator);
+    if (extracted.display.len > 0 or extracted.events.items.len > 0) {
+        app.mutex.lock();
+        app.resetScroll();
+        app.grid.feed(extracted.display);
+        app.handleEvents(extracted.events.items);
+        app.mutex.unlock();
+
+        app.requestUiRefresh();
     }
 }
 
@@ -1264,6 +1304,13 @@ fn windowProc(hwnd: HWND, msg: UINT, wparam: WPARAM, lparam: LPARAM) callconv(.w
         },
         WM_MOUSEWHEEL => {
             app.handleMouseWheel(hwnd, wparam);
+            return 0;
+        },
+        WM_APP_OUTPUT_READY => {
+            app.mutex.lock();
+            app.updateTitle();
+            app.mutex.unlock();
+            _ = InvalidateRect(hwnd, null, 0);
             return 0;
         },
         WM_CHAR => {

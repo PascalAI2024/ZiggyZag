@@ -153,6 +153,7 @@ pie title ZiggyZag capability mix
 |-- docs/
 |   |-- ALL_ZIG_TERMINAL.md
 |   |-- ARCHITECTURE.md
+|   |-- DAILY_DRIVER_QA.md
 |   |-- FEATURES.md
 |   |-- NEXT_20_FEATURES.md
 |   |-- QA_TOMORROW.md
@@ -161,6 +162,9 @@ pie title ZiggyZag capability mix
 |   |-- SCOPE.md
 |   `-- TERMINAL_APP.md
 |-- scripts/
+|   |-- build-release.ps1
+|   |-- daily-driver-qa.ps1
+|   |-- qa-release-artifacts.ps1
 |   |-- qa-tomorrow.ps1
 |   |-- smoke.sh
 |   `-- smoke.ps1
@@ -176,6 +180,7 @@ pie title ZiggyZag capability mix
 - [Architecture](docs/ARCHITECTURE.md)
 - [Features and roadmap](docs/FEATURES.md)
 - [Next 20 features](docs/NEXT_20_FEATURES.md)
+- [Daily-driver QA](docs/DAILY_DRIVER_QA.md)
 - [All-Zig terminal direction](docs/ALL_ZIG_TERMINAL.md)
 - [Agent runtime](apps/agentd/README.md)
 - [Product scope](docs/SCOPE.md)

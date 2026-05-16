@@ -7,6 +7,8 @@ Zig version: `0.16.0`
 
 This checklist is for the current alpha line. Windows testers get the full native desktop host. macOS/Linux testers get the ZiggyZag shell, AgentD, smoke script, and a terminal-attached desktop launcher that uses `script(1)` when available; a native POSIX graphical window is not expected yet.
 
+For main-terminal readiness, use [DAILY_DRIVER_QA.md](DAILY_DRIVER_QA.md) after this alpha smoke checklist passes. That pass covers multi-hour sessions, large output, Ctrl+C/Ctrl+D, full-screen TUIs, background jobs, prompt latency, crash recovery, install/rollback, AgentD approval safety, and platform runtime expectations.
+
 ## Fast Rerun On Windows
 
 Run this from the repo root:
@@ -20,12 +22,12 @@ The script keeps running after failures, summarizes each step, and detects the W
 For release artifacts, set `$Version` to the release tag you are validating:
 
 ```powershell
-$Version = "v0.1.0-alpha.1"
+$Version = "v0.1.0-alpha.2"
 .\scripts\build-release.ps1 -Version $Version
 .\scripts\qa-release-artifacts.ps1 -Version $Version
 ```
 
-Use a temporary version such as `v0.1.0-alpha.1-local-qa` when validating packaging without touching the published artifact directory.
+Use a temporary version such as `v0.1.0-alpha.2-local-qa` when validating packaging without touching the published artifact directory.
 
 ## Fast Rerun On macOS/Linux
 
@@ -69,7 +71,7 @@ zig build test
 Run from the repo root on Windows:
 
 ```powershell
-$Version = "v0.1.0-alpha.1"
+$Version = "v0.1.0-alpha.2"
 .\scripts\build-release.ps1 -Version $Version
 .\scripts\qa-release-artifacts.ps1 -Version $Version
 ```
@@ -111,8 +113,8 @@ The AgentD health check returned valid `ok:true` JSON. The real provider call re
 Latest release artifact run:
 
 ```powershell
-.\scripts\build-release.ps1 -Version "v0.1.0-alpha.1-local-qa"
-.\scripts\qa-release-artifacts.ps1 -Version "v0.1.0-alpha.1-local-qa"
+.\scripts\build-release.ps1 -Version "v0.1.0-alpha.2-local-qa"
+.\scripts\qa-release-artifacts.ps1 -Version "v0.1.0-alpha.2-local-qa"
 ```
 
 Result: all five cross-built zips were produced; archive expansion, expected-binary checks, binary-header checks, extracted Windows shell smoke, extracted Windows AgentD smoke, and extracted Windows desktop launch/close smoke passed.
@@ -181,7 +183,7 @@ Stdio health and a host action:
 Use PowerShell:
 
 ```powershell
-$Version = "v0.1.0-alpha.1"
+$Version = "v0.1.0-alpha.2"
 $Zip = "ZiggyZag-$Version-windows-x86_64.zip"
 $Dest = "$env:TEMP\ziggyzag-$Version-windows-x86_64"
 Remove-Item -Recurse -Force $Dest -ErrorAction SilentlyContinue
@@ -206,7 +208,7 @@ Expected:
 Use a Linux x86_64 host or runner:
 
 ```sh
-VERSION=v0.1.0-alpha.1
+VERSION=v0.1.0-alpha.2
 ZIP=ZiggyZag-$VERSION-linux-x86_64.zip
 DEST=/tmp/ziggyzag-$VERSION-linux-x86_64
 rm -rf "$DEST"
@@ -232,7 +234,7 @@ Expected:
 Use a Linux aarch64 host or runner. The commands match Linux x86_64 except the zip name and destination:
 
 ```sh
-VERSION=v0.1.0-alpha.1
+VERSION=v0.1.0-alpha.2
 ZIP=ZiggyZag-$VERSION-linux-aarch64.zip
 DEST=/tmp/ziggyzag-$VERSION-linux-aarch64
 rm -rf "$DEST"
@@ -251,7 +253,7 @@ printf 'exit\n' | ./bin/ziggyzag-desktop
 Use an Intel macOS host:
 
 ```sh
-VERSION=v0.1.0-alpha.1
+VERSION=v0.1.0-alpha.2
 ZIP=ZiggyZag-$VERSION-macos-x86_64.zip
 DEST=/tmp/ziggyzag-$VERSION-macos-x86_64
 rm -rf "$DEST"
@@ -273,7 +275,7 @@ Expected behavior matches Linux: shell and AgentD should run; POSIX desktop laun
 Use an Apple Silicon macOS host. The commands match macOS x86_64 except the zip name and destination:
 
 ```sh
-VERSION=v0.1.0-alpha.1
+VERSION=v0.1.0-alpha.2
 ZIP=ZiggyZag-$VERSION-macos-aarch64.zip
 DEST=/tmp/ziggyzag-$VERSION-macos-aarch64
 rm -rf "$DEST"
@@ -332,6 +334,6 @@ Ask testers to note:
 - The native graphical desktop host is Windows-only in this alpha. macOS/Linux desktop support is currently a terminal-attached launcher, plus fully usable shell and AgentD binaries.
 - Linux/macOS release zips may need `chmod +x ZiggyZag bin/ziggyzag-launcher bin/ziggyzag bin/ziggyzag-agentd bin/ziggyzag-desktop` after unzip because the zips are produced on Windows.
 - macOS browser downloads may be quarantined; the smoke commands include `xattr -dr com.apple.quarantine .`.
-- Desktop config parsing exists, but persisted config loading into the Win32 host is still a near-term integration task.
+- Desktop config loading is implemented for the Win32 host, but there is not yet a graphical settings editor that writes `desktop.conf`.
 - Mouse selection is not yet implemented; copy-visible uses Ctrl+Shift+C.
 - Deeper Unicode width, ligatures, GPU rendering, and broader ANSI/xterm coverage are future hardening work.

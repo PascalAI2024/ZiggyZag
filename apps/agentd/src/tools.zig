@@ -52,8 +52,8 @@ pub const specs = [_]Spec{
     },
     .{
         .name = "terminal.write",
-        .description = "Ask the terminal host to write text into the active PTY.",
-        .approval = .host,
+        .description = "Ask the terminal host to write text into the active PTY after approval.",
+        .approval = .ask,
     },
 };
 
@@ -122,13 +122,17 @@ pub fn run(
     request: protocol.Request,
 ) !Result {
     const tool = request.tool orelse return error.MissingTool;
-    _ = findSpec(tool) orelse return error.UnknownTool;
+    const spec = findSpec(tool) orelse return error.UnknownTool;
+    if (spec.approval == .ask) {
+        if (std.mem.eql(u8, tool, "zig.build")) return .{ .json = try zigBuildAskJsonAlloc(allocator, request.command) };
+        if (std.mem.eql(u8, tool, "terminal.write")) return .{ .json = try terminalWriteJsonAlloc(allocator, request.text orelse return error.MissingText) };
+        unreachable;
+    }
+
     if (std.mem.eql(u8, tool, "project.info")) return .{ .json = try projectInfoJsonAlloc(allocator, io) };
     if (std.mem.eql(u8, tool, "file.read")) return .{ .json = try readFileJsonAlloc(allocator, io, request.path orelse return error.MissingPath) };
     if (std.mem.eql(u8, tool, "rg.search")) return .{ .json = try rgSearchJsonAlloc(allocator, io, env, request.query orelse return error.MissingQuery) };
     if (std.mem.eql(u8, tool, "git.diff")) return .{ .json = try commandJsonAlloc(allocator, io, env, &.{ "git", "diff", "--" }) };
-    if (std.mem.eql(u8, tool, "zig.build")) return .{ .json = try runZigBuildJsonAlloc(allocator, io, env, request.command) };
-    if (std.mem.eql(u8, tool, "terminal.write")) return .{ .json = try terminalWriteJsonAlloc(allocator, request.text orelse return error.MissingText) };
     unreachable;
 }
 
@@ -184,6 +188,28 @@ fn runZigBuildJsonAlloc(
     return commandJsonAlloc(allocator, io, env, &argv);
 }
 
+fn zigBuildAskJsonAlloc(allocator: Allocator, command: ?[]const u8) ![]u8 {
+    const normalized = try normalizeZigBuildCommand(command);
+
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(allocator);
+    try out.appendSlice(allocator, "{\"host_action\":\"zig.build\",\"approval\":\"ask\",\"requires_host\":true,\"command\":");
+    try protocol.appendJsonString(allocator, &out, normalized);
+    try out.appendSlice(allocator, ",\"argv\":[\"zig\",\"build\"");
+    if (std.mem.eql(u8, normalized, "test")) try out.appendSlice(allocator, ",\"test\"");
+    try out.appendSlice(allocator, "],\"description\":");
+    try protocol.appendJsonString(allocator, &out, if (std.mem.eql(u8, normalized, "test")) "Run zig build test" else "Run zig build");
+    try out.append(allocator, '}');
+    return out.toOwnedSlice(allocator);
+}
+
+fn normalizeZigBuildCommand(command: ?[]const u8) ![]const u8 {
+    const value = command orelse return "build";
+    if (std.mem.eql(u8, value, "build")) return "build";
+    if (std.mem.eql(u8, value, "test")) return "test";
+    return error.UnsupportedBuildCommand;
+}
+
 fn rgSearchJsonAlloc(
     allocator: Allocator,
     io: std.Io,
@@ -203,7 +229,7 @@ fn terminalWriteJsonAlloc(allocator: Allocator, text: []const u8) ![]u8 {
     if (text.len > 16 * 1024) return error.TextTooLarge;
     var out: std.ArrayList(u8) = .empty;
     errdefer out.deinit(allocator);
-    try out.appendSlice(allocator, "{\"host_action\":\"terminal.write\",\"text\":");
+    try out.appendSlice(allocator, "{\"host_action\":\"terminal.write\",\"approval\":\"ask\",\"text\":");
     try protocol.appendJsonString(allocator, &out, text);
     try out.appendSlice(allocator, ",\"requires_host\":true}");
     return out.toOwnedSlice(allocator);
@@ -422,11 +448,13 @@ fn termStatus(term: std.process.Child.Term) u8 {
     };
 }
 
-test "tool list includes terminal host action" {
+test "tool list describes approval policies for mutating host actions" {
     const json = try listJsonAlloc(std.testing.allocator);
     defer std.testing.allocator.free(json);
-    try std.testing.expect(std.mem.indexOf(u8, json, "terminal.write") != null);
-    try std.testing.expect(std.mem.indexOf(u8, json, "\"approval\":\"host\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"name\":\"zig.build\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"name\":\"terminal.write\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "Run zig build or zig build test. This writes build artifacts and should be approved by the host UI.\",\"approval\":\"ask\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "Ask the terminal host to write text into the active PTY after approval.\",\"approval\":\"ask\"") != null);
 }
 
 test "finds known tools and rejects unknown tools" {
@@ -462,6 +490,33 @@ test "rejects invalid bounded tool inputs before spawning commands" {
     var large_text: [16 * 1024 + 1]u8 = undefined;
     @memset(&large_text, 'z');
     try std.testing.expectError(error.TextTooLarge, terminalWriteJsonAlloc(std.testing.allocator, &large_text));
+}
+
+test "zig.build returns ask action without resolving or running zig" {
+    var env = std.process.Environ.Map.init(std.testing.allocator);
+    defer env.deinit();
+    try env.put("ZIGGYZAG_ZIG_PATH", "missing-zig-for-agentd-test.exe");
+
+    var request = try protocol.parseRequestAlloc(std.testing.allocator, "{\"id\":1,\"method\":\"tools/call\",\"tool\":\"zig.build\",\"command\":\"test\"}");
+    defer request.deinit();
+
+    const result = try run(std.testing.allocator, std.testing.io, &env, request);
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expect(std.mem.indexOf(u8, result.json, "\"host_action\":\"zig.build\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.json, "\"approval\":\"ask\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.json, "\"argv\":[\"zig\",\"build\",\"test\"]") != null);
+}
+
+test "zig.build validates command before returning ask action" {
+    try std.testing.expectError(error.UnsupportedBuildCommand, zigBuildAskJsonAlloc(std.testing.allocator, "fmt"));
+}
+
+test "terminal.write returns ask action payload" {
+    const json = try terminalWriteJsonAlloc(std.testing.allocator, "zig build\n");
+    defer std.testing.allocator.free(json);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"host_action\":\"terminal.write\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"approval\":\"ask\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"text\":\"zig build\\n\"") != null);
 }
 
 test "resolves configured zig path before path lookup" {

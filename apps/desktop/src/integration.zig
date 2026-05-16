@@ -3,6 +3,8 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const prefix = "\x1b]777;ziggyzag:event:";
 const bel: u8 = 0x07;
+pub const default_max_payload_len: usize = 64 * 1024;
+pub const default_max_event_len: usize = prefix.len + default_max_payload_len + 1;
 
 pub const EventKind = enum {
     session_ready,
@@ -33,39 +35,120 @@ pub const Extracted = struct {
 };
 
 pub fn extract(allocator: Allocator, bytes: []const u8) !Extracted {
-    var display: std.ArrayList(u8) = .empty;
-    errdefer display.deinit(allocator);
+    var parser = Parser.init(allocator);
+    defer parser.deinit();
+    return parser.consume(bytes, true);
+}
 
-    var events: std.ArrayList(Event) = .empty;
-    errdefer {
-        for (events.items) |event| event.deinit(allocator);
-        events.deinit(allocator);
+pub const Parser = struct {
+    allocator: Allocator,
+    carry: std.ArrayList(u8) = .empty,
+    max_payload_len: usize = default_max_payload_len,
+
+    pub fn init(allocator: Allocator) Parser {
+        return .{ .allocator = allocator };
     }
 
-    var index: usize = 0;
-    while (index < bytes.len) {
-        if (std.mem.startsWith(u8, bytes[index..], prefix)) {
-            const payload_start = index + prefix.len;
-            const payload_end_offset = std.mem.indexOfScalar(u8, bytes[payload_start..], bel);
-            if (payload_end_offset) |offset| {
-                const payload = bytes[payload_start .. payload_start + offset];
-                try events.append(allocator, .{
-                    .kind = eventKind(payload),
-                    .payload = try allocator.dupe(u8, payload),
-                });
-                index = payload_start + offset + 1;
-                continue;
-            }
+    pub fn initWithMaxPayloadLen(allocator: Allocator, max_payload_len: usize) Parser {
+        return .{
+            .allocator = allocator,
+            .max_payload_len = max_payload_len,
+        };
+    }
+
+    pub fn deinit(self: *Parser) void {
+        self.carry.deinit(self.allocator);
+    }
+
+    pub fn feed(self: *Parser, bytes: []const u8) !Extracted {
+        return self.consume(bytes, false);
+    }
+
+    pub fn flush(self: *Parser) !Extracted {
+        return self.consume("", true);
+    }
+
+    fn maxEventLen(self: *const Parser) usize {
+        return prefix.len + self.max_payload_len + 1;
+    }
+
+    fn consume(self: *Parser, bytes: []const u8, flush_incomplete: bool) !Extracted {
+        var display: std.ArrayList(u8) = .empty;
+        errdefer display.deinit(self.allocator);
+
+        var events: std.ArrayList(Event) = .empty;
+        errdefer {
+            for (events.items) |event| event.deinit(self.allocator);
+            events.deinit(self.allocator);
         }
 
-        try display.append(allocator, bytes[index]);
-        index += 1;
-    }
+        var source_owned: ?[]u8 = null;
+        defer if (source_owned) |source| self.allocator.free(source);
 
-    return .{
-        .display = try display.toOwnedSlice(allocator),
-        .events = events,
-    };
+        const source: []const u8 = if (self.carry.items.len == 0) bytes else source: {
+            var combined: std.ArrayList(u8) = .empty;
+            errdefer combined.deinit(self.allocator);
+            try combined.appendSlice(self.allocator, self.carry.items);
+            try combined.appendSlice(self.allocator, bytes);
+            source_owned = try combined.toOwnedSlice(self.allocator);
+            break :source source_owned.?;
+        };
+        self.carry.clearRetainingCapacity();
+
+        var index: usize = 0;
+        while (index < source.len) {
+            if (std.mem.startsWith(u8, source[index..], prefix)) {
+                const payload_start = index + prefix.len;
+                const payload_end_offset = std.mem.indexOfScalar(u8, source[payload_start..], bel);
+                if (payload_end_offset) |offset| {
+                    const payload = source[payload_start .. payload_start + offset];
+                    if (payload.len <= self.max_payload_len and isValidEventPayload(payload)) {
+                        try events.append(self.allocator, .{
+                            .kind = eventKind(payload),
+                            .payload = try self.allocator.dupe(u8, payload),
+                        });
+                    }
+                    index = payload_start + offset + 1;
+                    continue;
+                }
+
+                if (source.len - index > self.maxEventLen()) {
+                    index = source.len;
+                    continue;
+                }
+
+                if (flush_incomplete) {
+                    try display.appendSlice(self.allocator, source[index..]);
+                } else {
+                    try self.carry.appendSlice(self.allocator, source[index..]);
+                }
+                break;
+            }
+
+            if (!flush_incomplete and isPrefixFragment(source[index..])) {
+                try self.carry.appendSlice(self.allocator, source[index..]);
+                break;
+            }
+
+            try display.append(self.allocator, source[index]);
+            index += 1;
+        }
+
+        return .{
+            .display = try display.toOwnedSlice(self.allocator),
+            .events = events,
+        };
+    }
+};
+
+fn isPrefixFragment(bytes: []const u8) bool {
+    return bytes.len > 0 and bytes.len < prefix.len and std.mem.startsWith(u8, prefix, bytes);
+}
+
+fn isValidEventPayload(payload: []const u8) bool {
+    const trimmed = std.mem.trim(u8, payload, " \n\r\t");
+    if (trimmed.len < 2 or trimmed[0] != '{' or trimmed[trimmed.len - 1] != '}') return false;
+    return jsonStringValue(trimmed, "type") != null;
 }
 
 pub fn eventKind(payload: []const u8) EventKind {
@@ -150,6 +233,70 @@ test "keeps incomplete integration events visible" {
 
     try std.testing.expectEqualStrings(input, extracted.display);
     try std.testing.expectEqual(@as(usize, 0), extracted.events.items.len);
+}
+
+test "streaming parser extracts events split across chunks" {
+    var parser = Parser.init(std.testing.allocator);
+    defer parser.deinit();
+
+    var first = try parser.feed("a\x1b]777;zig");
+    defer first.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings("a", first.display);
+    try std.testing.expectEqual(@as(usize, 0), first.events.items.len);
+
+    var second = try parser.feed("gyzag:event:{\"type\":\"session");
+    defer second.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings("", second.display);
+    try std.testing.expectEqual(@as(usize, 0), second.events.items.len);
+
+    var third = try parser.feed(".ready\"}\x07b");
+    defer third.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings("b", third.display);
+    try std.testing.expectEqual(@as(usize, 1), third.events.items.len);
+    try std.testing.expectEqual(EventKind.session_ready, third.events.items[0].kind);
+}
+
+test "streaming parser discards oversized and malformed events" {
+    var parser = Parser.initWithMaxPayloadLen(std.testing.allocator, 16);
+    defer parser.deinit();
+
+    var oversized = try parser.feed("a\x1b]777;ziggyzag:event:{\"type\":\"session.ready\"}\x07b");
+    defer oversized.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings("ab", oversized.display);
+    try std.testing.expectEqual(@as(usize, 0), oversized.events.items.len);
+
+    var malformed = try parser.feed("c\x1b]777;ziggyzag:event:{\"status\":0}\x07d");
+    defer malformed.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings("cd", malformed.display);
+    try std.testing.expectEqual(@as(usize, 0), malformed.events.items.len);
+
+    var small_parser = Parser.initWithMaxPayloadLen(std.testing.allocator, 4);
+    defer small_parser.deinit();
+
+    var unterminated = try small_parser.feed("e\x1b]777;ziggyzag:event:123456");
+    defer unterminated.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings("e", unterminated.display);
+    try std.testing.expectEqual(@as(usize, 0), unterminated.events.items.len);
+
+    var recovered = try small_parser.feed("f");
+    defer recovered.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings("f", recovered.display);
+    try std.testing.expectEqual(@as(usize, 0), recovered.events.items.len);
+}
+
+test "streaming parser keeps normal display bytes passing through" {
+    var parser = Parser.init(std.testing.allocator);
+    defer parser.deinit();
+
+    var first = try parser.feed("hello \x1b[31mred");
+    defer first.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings("hello \x1b[31mred", first.display);
+    try std.testing.expectEqual(@as(usize, 0), first.events.items.len);
+
+    var second = try parser.feed(" world");
+    defer second.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings(" world", second.display);
+    try std.testing.expectEqual(@as(usize, 0), second.events.items.len);
 }
 
 test "reads simple JSON string values" {

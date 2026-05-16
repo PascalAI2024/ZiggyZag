@@ -39,18 +39,27 @@ pub const HistoryLine = struct {
     cells: []Cell,
 };
 
+pub const default_max_scrollback: usize = 10_000;
+
 pub const Grid = struct {
     allocator: Allocator,
     width: usize,
     height: usize,
     cursor_x: usize = 0,
     cursor_y: usize = 0,
+    saved_cursor_x: usize = 0,
+    saved_cursor_y: usize = 0,
     wrap_pending: bool = false,
     cells: []Cell,
     current_style: Style = .{},
     history: std.ArrayList(HistoryLine) = .empty,
+    max_scrollback: usize = default_max_scrollback,
 
     pub fn init(allocator: Allocator, width: usize, height: usize) !Grid {
+        return initWithMaxScrollback(allocator, width, height, default_max_scrollback);
+    }
+
+    pub fn initWithMaxScrollback(allocator: Allocator, width: usize, height: usize, max_scrollback: usize) !Grid {
         if (width == 0 or height == 0) return error.InvalidGridSize;
         const cells = try allocator.alloc(Cell, width * height);
         @memset(cells, .{});
@@ -59,6 +68,7 @@ pub const Grid = struct {
             .width = width,
             .height = height,
             .cells = cells,
+            .max_scrollback = max_scrollback,
         };
     }
 
@@ -123,6 +133,11 @@ pub const Grid = struct {
 
     pub fn historyLen(self: *const Grid) usize {
         return self.history.items.len;
+    }
+
+    pub fn setMaxScrollback(self: *Grid, max_scrollback: usize) void {
+        self.max_scrollback = max_scrollback;
+        self.trimHistory();
     }
 
     pub fn historyLineAlloc(self: *const Grid, allocator: Allocator, row: usize) ![]u8 {
@@ -246,7 +261,19 @@ pub const Grid = struct {
     }
 
     fn consumeEscape(self: *Grid, bytes: []const u8, start: usize) usize {
-        if (start + 1 >= bytes.len or bytes[start + 1] != '[') return start + 1;
+        if (start + 1 >= bytes.len) return start + 1;
+        switch (bytes[start + 1]) {
+            '[' => {},
+            '7' => {
+                self.saveCursor();
+                return start + 2;
+            },
+            '8' => {
+                self.restoreCursor();
+                return start + 2;
+            },
+            else => return start + 2,
+        }
         var index = start + 2;
         while (index < bytes.len) : (index += 1) {
             const final = bytes[index];
@@ -261,11 +288,17 @@ pub const Grid = struct {
     fn applyCsi(self: *Grid, params: []const u8, final: u8) void {
         if (final != 'm') self.wrap_pending = false;
         switch (final) {
+            '@' => self.insertCharacters(csiParam(params, 0, 1)),
             'A', 'B', 'C', 'D' => self.cursorMove(params, final),
+            'L' => self.insertLines(csiParam(params, 0, 1)),
+            'M' => self.deleteLines(csiParam(params, 0, 1)),
+            'P' => self.deleteCharacters(csiParam(params, 0, 1)),
             'H', 'f' => self.cursorHome(params),
             'J' => self.clearScreen(csiParam(params, 0, 0)),
             'K' => self.clearLineByMode(csiParam(params, 0, 0)),
             'm' => self.applySgr(params),
+            's' => self.saveCursor(),
+            'u' => self.restoreCursor(),
             else => {},
         }
     }
@@ -294,6 +327,17 @@ pub const Grid = struct {
         self.cursor_x = @min(if (col == 0) 0 else col - 1, self.width - 1);
     }
 
+    fn saveCursor(self: *Grid) void {
+        self.saved_cursor_x = self.cursor_x;
+        self.saved_cursor_y = self.cursor_y;
+    }
+
+    fn restoreCursor(self: *Grid) void {
+        self.cursor_x = @min(self.saved_cursor_x, self.width - 1);
+        self.cursor_y = @min(self.saved_cursor_y, self.height - 1);
+        self.wrap_pending = false;
+    }
+
     fn tab(self: *Grid) void {
         if (self.wrap_pending) {
             self.cursor_x = 0;
@@ -319,6 +363,56 @@ pub const Grid = struct {
             self.wrap_pending = true;
         } else {
             self.cursor_x += 1;
+        }
+    }
+
+    fn insertCharacters(self: *Grid, requested_count: usize) void {
+        const row_start = self.cursor_y * self.width;
+        const count = @min(requested_count, self.width - self.cursor_x);
+        if (count == 0) return;
+
+        const src = self.cells[row_start + self.cursor_x .. row_start + self.width - count];
+        const dst = self.cells[row_start + self.cursor_x + count .. row_start + self.width];
+        std.mem.copyBackwards(Cell, dst, src);
+        self.clearCells(self.cells[row_start + self.cursor_x .. row_start + self.cursor_x + count]);
+    }
+
+    fn deleteCharacters(self: *Grid, requested_count: usize) void {
+        const row_start = self.cursor_y * self.width;
+        const count = @min(requested_count, self.width - self.cursor_x);
+        if (count == 0) return;
+
+        const src = self.cells[row_start + self.cursor_x + count .. row_start + self.width];
+        const dst = self.cells[row_start + self.cursor_x .. row_start + self.width - count];
+        std.mem.copyForwards(Cell, dst, src);
+        self.clearCells(self.cells[row_start + self.width - count .. row_start + self.width]);
+    }
+
+    fn insertLines(self: *Grid, requested_count: usize) void {
+        const count = @min(requested_count, self.height - self.cursor_y);
+        if (count == 0) return;
+
+        const src = self.cells[self.cursor_y * self.width .. (self.height - count) * self.width];
+        const dst = self.cells[(self.cursor_y + count) * self.width .. self.height * self.width];
+        std.mem.copyBackwards(Cell, dst, src);
+
+        var row = self.cursor_y;
+        while (row < self.cursor_y + count) : (row += 1) {
+            self.clearLine(row);
+        }
+    }
+
+    fn deleteLines(self: *Grid, requested_count: usize) void {
+        const count = @min(requested_count, self.height - self.cursor_y);
+        if (count == 0) return;
+
+        const src = self.cells[(self.cursor_y + count) * self.width .. self.height * self.width];
+        const dst = self.cells[self.cursor_y * self.width .. (self.height - count) * self.width];
+        std.mem.copyForwards(Cell, dst, src);
+
+        var row = self.height - count;
+        while (row < self.height) : (row += 1) {
+            self.clearLine(row);
         }
     }
 
@@ -353,6 +447,7 @@ pub const Grid = struct {
                 self.clearCells(self.cells[0..end]);
             },
             2 => self.clearCells(self.cells),
+            3 => self.clearHistory(),
             else => {},
         }
     }
@@ -378,6 +473,12 @@ pub const Grid = struct {
     }
 
     fn captureHistoryLine(self: *Grid, row: usize) !void {
+        if (self.max_scrollback == 0) return;
+        while (self.history.items.len >= self.max_scrollback) {
+            const line = self.history.orderedRemove(0);
+            self.allocator.free(line.cells);
+        }
+
         const start = row * self.width;
         const cells = try self.allocator.alloc(Cell, self.width);
         @memcpy(cells, self.cells[start .. start + self.width]);
@@ -386,6 +487,20 @@ pub const Grid = struct {
             .width = self.width,
             .cells = cells,
         });
+    }
+
+    fn trimHistory(self: *Grid) void {
+        while (self.history.items.len > self.max_scrollback) {
+            const line = self.history.orderedRemove(0);
+            self.allocator.free(line.cells);
+        }
+    }
+
+    fn clearHistory(self: *Grid) void {
+        for (self.history.items) |line| {
+            self.allocator.free(line.cells);
+        }
+        self.history.clearRetainingCapacity();
     }
 
     fn applySgr(self: *Grid, params: []const u8) void {
@@ -536,6 +651,23 @@ test "supports clear screen variants without moving cursor" {
     const after2 = try grid.lineAlloc(std.testing.allocator, 2);
     defer std.testing.allocator.free(after2);
     try std.testing.expectEqualStrings("    ", after2);
+}
+
+test "clear scrollback variant drops history without clearing visible cells" {
+    var grid = try Grid.initWithMaxScrollback(std.testing.allocator, 4, 2, 4);
+    defer grid.deinit();
+    grid.feed("one\ntwo\ntri");
+
+    try std.testing.expectEqual(@as(usize, 1), grid.historyLen());
+    grid.feed("\x1b[3J");
+
+    try std.testing.expectEqual(@as(usize, 0), grid.historyLen());
+    const first = try grid.lineAlloc(std.testing.allocator, 0);
+    defer std.testing.allocator.free(first);
+    const second = try grid.lineAlloc(std.testing.allocator, 1);
+    defer std.testing.allocator.free(second);
+    try std.testing.expectEqualStrings("two ", first);
+    try std.testing.expectEqualStrings("tri ", second);
 }
 
 test "scrolls when writing past the bottom" {
@@ -696,6 +828,43 @@ test "captures scrolled lines in history with cell styles" {
     try std.testing.expectEqual(Color.red, grid.history.items[0].cells[0].style.fg);
 }
 
+test "scrollback is capped and keeps newest history lines" {
+    var grid = try Grid.initWithMaxScrollback(std.testing.allocator, 8, 1, 3);
+    defer grid.deinit();
+    grid.feed("one\ntwo\nthree\nfour\nfive");
+
+    try std.testing.expectEqual(@as(usize, 3), grid.historyLen());
+    const first = try grid.historyLineTextAlloc(std.testing.allocator, 0);
+    defer std.testing.allocator.free(first);
+    const second = try grid.historyLineTextAlloc(std.testing.allocator, 1);
+    defer std.testing.allocator.free(second);
+    const third = try grid.historyLineTextAlloc(std.testing.allocator, 2);
+    defer std.testing.allocator.free(third);
+    try std.testing.expectEqualStrings("two", first);
+    try std.testing.expectEqualStrings("three", second);
+    try std.testing.expectEqualStrings("four", third);
+}
+
+test "scrollback cap can shrink and disable history" {
+    var grid = try Grid.initWithMaxScrollback(std.testing.allocator, 8, 1, 4);
+    defer grid.deinit();
+    grid.feed("one\ntwo\nthree\nfour");
+
+    grid.setMaxScrollback(2);
+    try std.testing.expectEqual(@as(usize, 2), grid.historyLen());
+    const first = try grid.historyLineTextAlloc(std.testing.allocator, 0);
+    defer std.testing.allocator.free(first);
+    const second = try grid.historyLineTextAlloc(std.testing.allocator, 1);
+    defer std.testing.allocator.free(second);
+    try std.testing.expectEqualStrings("two", first);
+    try std.testing.expectEqualStrings("three", second);
+
+    grid.setMaxScrollback(0);
+    try std.testing.expectEqual(@as(usize, 0), grid.historyLen());
+    grid.feed("\nfive");
+    try std.testing.expectEqual(@as(usize, 0), grid.historyLen());
+}
+
 test "extracts trimmed visible lines and selections" {
     var grid = try Grid.init(std.testing.allocator, 6, 3);
     defer grid.deinit();
@@ -712,4 +881,67 @@ test "extracts trimmed visible lines and selections" {
     const selected = try grid.selectionAlloc(std.testing.allocator, 0, 1, 1, 3);
     defer std.testing.allocator.free(selected);
     try std.testing.expectEqualStrings("ello \nwor", selected);
+}
+
+test "saves and restores cursor with CSI and ESC variants" {
+    var grid = try Grid.init(std.testing.allocator, 8, 2);
+    defer grid.deinit();
+    grid.feed("abc\x1b[sde\x1b[uX");
+
+    const csi_line = try grid.lineAlloc(std.testing.allocator, 0);
+    defer std.testing.allocator.free(csi_line);
+    try std.testing.expectEqualStrings("abcXe   ", csi_line);
+    try std.testing.expectEqual(@as(usize, 4), grid.cursor_x);
+
+    grid.feed("\x1b[2;1H12\x1b" ++ "734\x1b" ++ "8Y");
+    const esc_line = try grid.lineAlloc(std.testing.allocator, 1);
+    defer std.testing.allocator.free(esc_line);
+    try std.testing.expectEqualStrings("12Y4    ", esc_line);
+    try std.testing.expectEqual(@as(usize, 3), grid.cursor_x);
+    try std.testing.expectEqual(@as(usize, 1), grid.cursor_y);
+}
+
+test "inserts and deletes characters on the current line" {
+    var grid = try Grid.init(std.testing.allocator, 8, 1);
+    defer grid.deinit();
+    grid.feed("abcdef\x1b[1;3H\x1b[2@XY\x1b[1;5H\x1b[2P");
+
+    const line = try grid.lineAlloc(std.testing.allocator, 0);
+    defer std.testing.allocator.free(line);
+    try std.testing.expectEqualStrings("abXYef  ", line);
+    try std.testing.expectEqual(@as(usize, 4), grid.cursor_x);
+}
+
+test "inserts and deletes lines below the cursor" {
+    var grid = try Grid.init(std.testing.allocator, 4, 4);
+    defer grid.deinit();
+    grid.feed("aaaa\nbbbb\ncccc\ndddd");
+
+    grid.feed("\x1b[2;1H\x1b[L");
+    const inserted0 = try grid.lineAlloc(std.testing.allocator, 0);
+    defer std.testing.allocator.free(inserted0);
+    const inserted1 = try grid.lineAlloc(std.testing.allocator, 1);
+    defer std.testing.allocator.free(inserted1);
+    const inserted2 = try grid.lineAlloc(std.testing.allocator, 2);
+    defer std.testing.allocator.free(inserted2);
+    const inserted3 = try grid.lineAlloc(std.testing.allocator, 3);
+    defer std.testing.allocator.free(inserted3);
+    try std.testing.expectEqualStrings("aaaa", inserted0);
+    try std.testing.expectEqualStrings("    ", inserted1);
+    try std.testing.expectEqualStrings("bbbb", inserted2);
+    try std.testing.expectEqualStrings("cccc", inserted3);
+
+    grid.feed("\x1b[2;1H\x1b[M");
+    const deleted0 = try grid.lineAlloc(std.testing.allocator, 0);
+    defer std.testing.allocator.free(deleted0);
+    const deleted1 = try grid.lineAlloc(std.testing.allocator, 1);
+    defer std.testing.allocator.free(deleted1);
+    const deleted2 = try grid.lineAlloc(std.testing.allocator, 2);
+    defer std.testing.allocator.free(deleted2);
+    const deleted3 = try grid.lineAlloc(std.testing.allocator, 3);
+    defer std.testing.allocator.free(deleted3);
+    try std.testing.expectEqualStrings("aaaa", deleted0);
+    try std.testing.expectEqualStrings("bbbb", deleted1);
+    try std.testing.expectEqualStrings("cccc", deleted2);
+    try std.testing.expectEqualStrings("    ", deleted3);
 }

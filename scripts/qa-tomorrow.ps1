@@ -277,7 +277,7 @@ Run-Step "top-level launcher smoke" {
 }
 
 Run-Step "git diff whitespace check" {
-    git diff --check
+    git -c core.safecrlf=false diff --check
     Assert-LastExit "git diff --check"
 }
 
