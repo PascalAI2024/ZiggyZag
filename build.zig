@@ -45,6 +45,28 @@ pub fn build(b: *std.Build) void {
     });
     b.installArtifact(agentd_exe);
 
+    const launcher_module = b.createModule(.{
+        .root_source_file = b.path("apps/launcher/src/main.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    launcher_module.addImport("desktop", b.createModule(.{
+        .root_source_file = b.path("apps/desktop/src/lib.zig"),
+        .target = target,
+        .optimize = optimize,
+    }));
+    const launcher_exe = b.addExecutable(.{
+        .name = "ziggyzag-launcher",
+        .root_module = launcher_module,
+    });
+    if (target.result.os.tag == .windows) {
+        launcher_exe.subsystem = .windows;
+        launcher_module.linkSystemLibrary("user32", .{});
+        launcher_module.linkSystemLibrary("gdi32", .{});
+        launcher_module.linkSystemLibrary("kernel32", .{});
+    }
+    b.installArtifact(launcher_exe);
+
     // This *creates* a Run step in the build graph, to be executed when another
     // step is evaluated that depends on it. The next line below will establish
     // such a dependency.
@@ -73,6 +95,10 @@ pub fn build(b: *std.Build) void {
         run_agentd_cmd.addArgs(args);
     }
 
+    const run_launcher_cmd = b.addRunArtifact(launcher_exe);
+    const run_launcher_step = b.step("run-launcher", "Run the ZiggyZag launcher");
+    run_launcher_step.dependOn(&run_launcher_cmd.step);
+
     const shell_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("apps/shell/src/main.zig"),
@@ -97,8 +123,25 @@ pub fn build(b: *std.Build) void {
         }),
     });
     const run_agentd_tests = b.addRunArtifact(agentd_tests);
+    const launcher_tests = b.addTest(.{
+        .root_module = launcher_test_module: {
+            const module = b.createModule(.{
+                .root_source_file = b.path("apps/launcher/src/main.zig"),
+                .target = target,
+                .optimize = optimize,
+            });
+            module.addImport("desktop", b.createModule(.{
+                .root_source_file = b.path("apps/desktop/src/lib.zig"),
+                .target = target,
+                .optimize = optimize,
+            }));
+            break :launcher_test_module module;
+        },
+    });
+    const run_launcher_tests = b.addRunArtifact(launcher_tests);
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_shell_tests.step);
     test_step.dependOn(&run_desktop_tests.step);
     test_step.dependOn(&run_agentd_tests.step);
+    test_step.dependOn(&run_launcher_tests.step);
 }

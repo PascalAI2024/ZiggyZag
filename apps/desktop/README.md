@@ -63,12 +63,13 @@ On Windows PowerShell:
 ```powershell
 zig build
 zig build test
+.\zig-out\bin\ziggyzag-launcher.exe
 .\zig-out\bin\ziggyzag.exe
 .\zig-out\bin\ziggyzag-agentd.exe --describe-tools
 zig build run-desktop
 ```
 
-`zig build run-desktop` expects the shell binary to be available from the same build output.
+`ziggyzag-launcher.exe` is the dev launcher path: it opens the same native terminal host directly from a friendlier app entry. Release zips copy it to top-level `ZiggyZag.exe`, outside `bin`, so Windows does not confuse it with `bin\ziggyzag.exe`. `zig build run-desktop` is still useful while developing and expects the shell binary to be available from the same build output.
 
 - Windows: opens the native terminal host. If the desktop starts but the terminal is blank or exits quickly, run `zig build` again and confirm `zig-out\bin\ziggyzag.exe` exists.
 - macOS/Linux: launches `ziggyzag` in the calling terminal. It uses `script(1)` when available so the shell gets PTY-like behavior, then falls back to direct stdio if that wrapper is unavailable. If the shell binary is not in `zig-out/bin`, put `ziggyzag` beside `ziggyzag-desktop` in the release package or set `ZIGGYZAG_SHELL_PATH` to the shell executable. A native graphical window is not expected in this alpha. Set `ZIGGYZAG_DESKTOP_NO_PTY=1` to skip the `script(1)` wrapper; false-like values such as `0`, `false`, `no`, and `off` leave PTY mode enabled.
@@ -77,7 +78,7 @@ zig build run-desktop
 
 Use this Windows checklist before sharing a build with friends:
 
-1. Launch with `zig build run-desktop`.
+1. Launch with `.\zig-out\bin\ziggyzag-launcher.exe`.
 2. Confirm the shell prompt appears.
 3. Type `help`, press Enter, and confirm output scrolls.
 4. Type a long command line and use Backspace.

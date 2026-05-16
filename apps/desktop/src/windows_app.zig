@@ -83,6 +83,9 @@ const CF_UNICODETEXT = 13;
 const GMEM_MOVEABLE = 0x0002;
 const WHEEL_DELTA = 120;
 const MAX_PASTE_BYTES = 64 * 1024;
+const WAIT_TIMEOUT: DWORD = 0x00000102;
+const CHILD_SHUTDOWN_GRACE_MS: DWORD = 750;
+const CHILD_SHUTDOWN_KILL_GRACE_MS: DWORD = 250;
 
 const COORD = extern struct {
     X: i16,
@@ -175,6 +178,8 @@ extern "kernel32" fn GlobalLock(memory: HGLOBAL) callconv(.winapi) LPVOID;
 extern "kernel32" fn GlobalUnlock(memory: HGLOBAL) callconv(.winapi) BOOL;
 extern "kernel32" fn GlobalFree(memory: HGLOBAL) callconv(.winapi) HGLOBAL;
 extern "kernel32" fn SetEnvironmentVariableW(name: LPCWSTR, value: ?LPCWSTR) callconv(.winapi) BOOL;
+extern "kernel32" fn WaitForSingleObject(handle: HANDLE, milliseconds: DWORD) callconv(.winapi) DWORD;
+extern "kernel32" fn TerminateProcess(handle: HANDLE, exit_code: UINT) callconv(.winapi) BOOL;
 extern "kernel32" fn CreatePseudoConsole(size: COORD, input: HANDLE, output: HANDLE, flags: DWORD, pseudoconsole: *HPCON) callconv(.winapi) HRESULT;
 extern "kernel32" fn ResizePseudoConsole(pseudoconsole: HPCON, size: COORD) callconv(.winapi) HRESULT;
 extern "kernel32" fn ClosePseudoConsole(pseudoconsole: HPCON) callconv(.winapi) void;
@@ -401,6 +406,13 @@ const App = struct {
     fn resolveShellPath(self: *App) ![]u8 {
         if (self.env.get("ZIGGYZAG_SHELL_PATH")) |path| return try self.allocator.dupe(u8, path);
 
+        const exe_dir = std.process.executableDirPathAlloc(self.io, self.allocator) catch null;
+        if (exe_dir) |dir| {
+            defer self.allocator.free(dir);
+            if (try self.existingJoined(&.{ dir, "bin", "ziggyzag.exe" })) |path| return path;
+            if (try self.existingJoined(&.{ dir, "ziggyzag.exe" })) |path| return path;
+        }
+
         const candidates = [_][]const u8{
             "zig-out/bin/ziggyzag.exe",
             "ziggyzag.exe",
@@ -410,6 +422,23 @@ const App = struct {
             return try self.allocator.dupe(u8, candidate);
         }
         return error.ShellBinaryNotFound;
+    }
+
+    fn existingJoined(self: *App, parts: []const []const u8) !?[]u8 {
+        const candidate = try std.fs.path.join(self.allocator, parts);
+        errdefer self.allocator.free(candidate);
+        if (std.fs.path.isAbsolute(candidate)) {
+            std.Io.Dir.accessAbsolute(self.io, candidate, .{}) catch {
+                self.allocator.free(candidate);
+                return null;
+            };
+            return candidate;
+        }
+        std.Io.Dir.cwd().access(self.io, candidate, .{}) catch {
+            self.allocator.free(candidate);
+            return null;
+        };
+        return candidate;
     }
 
     fn shutdownPty(self: *App) void {
@@ -422,14 +451,18 @@ const App = struct {
             _ = CloseHandle(handle);
             self.output_read = null;
         }
-        if (self.process_info) |info| {
-            _ = CloseHandle(info.hThread);
-            _ = CloseHandle(info.hProcess);
-            self.process_info = null;
-        }
         if (self.pseudoconsole) |hpc| {
             ClosePseudoConsole(hpc);
             self.pseudoconsole = null;
+        }
+        if (self.process_info) |info| {
+            if (WaitForSingleObject(info.hProcess, CHILD_SHUTDOWN_GRACE_MS) == WAIT_TIMEOUT) {
+                _ = TerminateProcess(info.hProcess, 0);
+                _ = WaitForSingleObject(info.hProcess, CHILD_SHUTDOWN_KILL_GRACE_MS);
+            }
+            _ = CloseHandle(info.hThread);
+            _ = CloseHandle(info.hProcess);
+            self.process_info = null;
         }
     }
 

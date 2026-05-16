@@ -53,9 +53,10 @@ zig build
 .\zig-out\bin\ziggyzag.exe
 ```
 
-Run the Windows desktop terminal MVP:
+Run the Windows desktop terminal MVP. For normal use, start the top-level launcher; it opens the native desktop host for you:
 
 ```powershell
+.\zig-out\bin\ziggyzag-launcher.exe
 zig build run-desktop
 ```
 
@@ -200,6 +201,9 @@ pie title ZiggyZag capability mix
 |   |-- shell/
 |   |   `-- src/
 |   |       `-- main.zig
+|   |-- launcher/
+|   |   `-- src/
+|   |       `-- main.zig
 |   `-- desktop/
 |       |-- src/
 |       |   `-- main.zig
@@ -258,7 +262,7 @@ Expected files under `dist\$Version`:
 - `checksums.sha256`
 - `release-manifest.json`
 
-Every zip contains `bin/ziggyzag`, `bin/ziggyzag-agentd`, `bin/ziggyzag-desktop`, plus `README.md` and `LICENSE`; Windows binaries use the `.exe` suffix. Use `checksums.sha256` to verify downloads before testing. The archive QA script expands each zip, checks expected binaries and binary headers, and runs extracted Windows shell, AgentD, and desktop smoke tests. Linux/macOS runtime smokes still need real Linux/macOS hosts or CI runners.
+Every zip contains a top-level `ZiggyZag` launcher (`ZiggyZag.exe` on Windows), `bin/ziggyzag-launcher`, `bin/ziggyzag`, `bin/ziggyzag-agentd`, `bin/ziggyzag-desktop`, plus `README.md` and `LICENSE`; Windows binaries use the `.exe` suffix. For Windows friend testing, double-click the top-level `ZiggyZag.exe`. Use `checksums.sha256` to verify downloads before testing. The archive QA script expands each zip, checks expected binaries and binary headers, and runs extracted Windows shell, AgentD, launcher, and desktop smoke tests. Linux/macOS runtime smokes still need real Linux/macOS hosts or CI runners.
 
 ## Development
 
@@ -277,12 +281,13 @@ zig build run
 Run the all-Zig desktop target:
 
 ```sh
+./zig-out/bin/ziggyzag-launcher
 zig build run-desktop
 ```
 
 Platform behavior:
 
-- Windows: opens the native terminal host and launches `ziggyzag` through ConPTY.
+- Windows: `ziggyzag-launcher.exe` opens the native terminal host and launches `ziggyzag` through ConPTY. Release zips copy this launcher to top-level `ZiggyZag.exe` so it is easy to double-click without colliding with `bin\ziggyzag.exe`.
 - macOS/Linux: launches `ziggyzag` in the calling terminal after resolving the shell path; it uses `script(1)` as a PTY wrapper when available, can be forced to direct stdio with `ZIGGYZAG_DESKTOP_NO_PTY=1`, and does not open a separate graphical window yet.
 
 Run the Zig-native agent runtime:
@@ -333,7 +338,7 @@ For a quick Windows test session tomorrow, use this order:
 3. Run `.\scripts\qa-tomorrow.ps1` on Windows for the full scripted pass.
 4. Run `.\zig-out\bin\ziggyzag.exe` and try `help`, `doctor`, `history --stats`, `project`, and `exit`.
 5. Run `.\scripts\smoke.ps1`.
-6. Run `zig build run-desktop` and test typing, Enter, Backspace, Ctrl+C interrupt, Ctrl+V paste, Shift+Insert paste, Ctrl+Shift+C copy-visible text, window resize, and mouse-wheel scrollback.
+6. Run `.\zig-out\bin\ziggyzag-launcher.exe` and test typing, Enter, Backspace, Ctrl+C interrupt, Ctrl+V paste, Shift+Insert paste, Ctrl+Shift+C copy-visible text, window resize, and mouse-wheel scrollback.
 7. Run `zig build run-agentd -- --describe-tools` and confirm the JSON tool list includes `project.info`, `file.read`, `rg.search`, `git.diff`, `zig.build`, and `terminal.write`.
 8. Run `zig build run-agentd -- --stdio` and send `{"id":1,"method":"agent/health"}` to confirm AgentD reports provider readiness.
 9. If Ollama is installed, start it separately and try `zig build run-agentd -- --oneshot "summarize this workspace"`.

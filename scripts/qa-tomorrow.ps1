@@ -245,6 +245,37 @@ Run-Step "desktop launch-close smoke" {
     }
 }
 
+Run-Step "top-level launcher smoke" {
+    $launcher = Join-Path $Root "zig-out\bin\ziggyzag-launcher.exe"
+    if (-not (Test-Path $launcher)) {
+        throw "Missing launcher binary: $launcher"
+    }
+
+    $launcherProcess = Start-Process -FilePath $launcher -PassThru -WindowStyle Normal
+    Start-Sleep -Seconds 2
+    $launcherProcess.Refresh()
+
+    if ($launcherProcess.HasExited) {
+        throw "Launcher exited before the smoke test could interact with it. Exit code: $($launcherProcess.ExitCode)."
+    }
+
+    $closed = $launcherProcess.CloseMainWindow()
+    Start-Sleep -Seconds 2
+    $launcherProcess.Refresh()
+    if (-not $launcherProcess.HasExited) {
+        Stop-Process -Id $launcherProcess.Id -Force
+        throw "Launcher window did not close cleanly and was force-stopped."
+    }
+    if (-not $closed) {
+        throw "Launcher did not accept CloseMainWindow."
+    }
+    if ($launcherProcess.ExitCode -ne 0) {
+        throw "Launcher exited with code $($launcherProcess.ExitCode)."
+    }
+
+    Write-Host "launcher_started=True closed=$closed exited=$($launcherProcess.HasExited) exit=$($launcherProcess.ExitCode)"
+}
+
 Run-Step "git diff whitespace check" {
     git diff --check
     Assert-LastExit "git diff --check"
@@ -254,8 +285,8 @@ Write-Host ""
 Write-Host "== Final Summary ==" -ForegroundColor Cyan
 $Results | Format-Table -AutoSize
 
-$failCount = ($Results | Where-Object { $_.Status -eq "FAIL" }).Count
-$warnCount = ($Results | Where-Object { $_.Status -eq "WARN" }).Count
+$failCount = @($Results | Where-Object { $_.Status -eq "FAIL" }).Count
+$warnCount = @($Results | Where-Object { $_.Status -eq "WARN" }).Count
 
 if ($failCount -gt 0) {
     Write-Host "[FAIL] $failCount blocking check(s) failed. Fix these before friend testing." -ForegroundColor Red

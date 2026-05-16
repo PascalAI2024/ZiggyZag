@@ -76,6 +76,8 @@ function New-RequiredEntries {
     return @(
         "README.md",
         "LICENSE",
+        "ZiggyZag$Exe",
+        "bin/ziggyzag-launcher$Exe",
         "bin/ziggyzag$Exe",
         "bin/ziggyzag-agentd$Exe",
         "bin/ziggyzag-desktop$Exe"
@@ -256,10 +258,13 @@ foreach ($target in $targets) {
 
     Assert-Path -Path (Join-Path $dest "README.md") -Type Leaf
     Assert-Path -Path (Join-Path $dest "LICENSE") -Type Leaf
+    $launcher = Join-Path $dest "ZiggyZag$($target.Exe)"
+    Assert-Path -Path $launcher -Type Leaf
+    Assert-BinaryHeader -Path $launcher -Kind $target.Header -HeaderBytes $target.HeaderBytes
     $bin = Join-Path $dest "bin"
     Assert-Path -Path $bin -Type Container
 
-    foreach ($binary in @("ziggyzag", "ziggyzag-agentd", "ziggyzag-desktop")) {
+    foreach ($binary in @("ziggyzag-launcher", "ziggyzag", "ziggyzag-agentd", "ziggyzag-desktop")) {
         $binaryPath = Join-Path $bin "$binary$($target.Exe)"
         Assert-Path -Path $binaryPath -Type Leaf
         Assert-BinaryHeader -Path $binaryPath -Kind $target.Header -HeaderBytes $target.HeaderBytes
@@ -271,10 +276,12 @@ foreach ($target in $targets) {
 if (-not $SkipWindowsRun) {
     Write-Section "Extracted Windows runtime smoke"
     $windowsBin = Join-Path $TempRoot "windows-x86_64\bin"
+    $launcher = Join-Path $TempRoot "windows-x86_64\ZiggyZag.exe"
     $shell = Join-Path $windowsBin "ziggyzag.exe"
     $agentd = Join-Path $windowsBin "ziggyzag-agentd.exe"
     $desktop = Join-Path $windowsBin "ziggyzag-desktop.exe"
 
+    Assert-Path -Path $launcher -Type Leaf
     Assert-Path -Path $shell -Type Leaf
     Assert-Path -Path $agentd -Type Leaf
     Assert-Path -Path $desktop -Type Leaf
@@ -296,6 +303,25 @@ if (-not $SkipWindowsRun) {
         throw "Extracted Windows AgentD output did not include terminal.write."
     }
     Write-Host "[PASS] extracted Windows AgentD describe-tools."
+
+    $launcherProcess = Start-Process -FilePath $launcher -WorkingDirectory (Split-Path -Parent $launcher) -PassThru -WindowStyle Normal
+    Start-Sleep -Seconds 2
+    $launcherProcess.Refresh()
+    if ($launcherProcess.HasExited) {
+        throw "Top-level Windows launcher exited before the smoke test could interact with it. Exit code: $($launcherProcess.ExitCode)."
+    }
+
+    $launcherClosed = $launcherProcess.CloseMainWindow()
+    Start-Sleep -Seconds 2
+    $launcherProcess.Refresh()
+    if (-not $launcherProcess.HasExited) {
+        Stop-Process -Id $launcherProcess.Id -Force
+        throw "Top-level Windows launcher did not close cleanly and was force-stopped."
+    }
+    if (-not $launcherClosed -or $launcherProcess.ExitCode -ne 0) {
+        throw "Top-level Windows launcher failed: closed=$launcherClosed exit=$($launcherProcess.ExitCode)."
+    }
+    Write-Host "[PASS] extracted Windows top-level launcher opens and closes the desktop host."
 
     $process = Start-Process -FilePath $desktop -WorkingDirectory $windowsBin -PassThru -WindowStyle Normal
     Start-Sleep -Seconds 2

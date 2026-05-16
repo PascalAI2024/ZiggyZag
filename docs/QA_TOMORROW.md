@@ -88,9 +88,9 @@ The archive QA script checks:
 
 - All five expected zips exist.
 - Each zip expands cleanly.
-- Each artifact contains `bin/ziggyzag`, `bin/ziggyzag-agentd`, and `bin/ziggyzag-desktop` with `.exe` suffixes for Windows.
+- Each artifact contains a top-level `ZiggyZag` launcher, `bin/ziggyzag-launcher`, `bin/ziggyzag`, `bin/ziggyzag-agentd`, and `bin/ziggyzag-desktop` with `.exe` suffixes for Windows.
 - Linux binaries have ELF headers, macOS binaries have Mach-O headers, and Windows binaries have PE/MZ headers.
-- The extracted Windows zip can run shell help, AgentD tool discovery, and desktop launch/close smoke.
+- The extracted Windows zip can run shell help, AgentD tool discovery, top-level launcher smoke, and desktop launch/close smoke.
 
 The build script writes `checksums.sha256` and `release-manifest.json` next to the zips. Use those files when uploading or verifying release downloads.
 
@@ -123,7 +123,7 @@ Use this order after the scripted checks:
 
 1. Run `.\zig-out\bin\ziggyzag.exe`.
 2. Try `help`, `doctor`, `history --stats`, `project`, and `exit`.
-3. Launch the desktop host with `zig build run-desktop`.
+3. Launch the desktop host with `.\zig-out\bin\ziggyzag-launcher.exe`.
 4. Confirm a prompt appears in the native window.
 5. Type `help`, edit with Backspace, and press Enter.
 6. Paste with Ctrl+V and Shift+Insert.
@@ -191,7 +191,7 @@ Set-Location $Dest
 "help`nexit`n" | .\bin\ziggyzag.exe
 .\bin\ziggyzag-agentd.exe --describe-tools
 '{"id":1,"method":"agent/health"}' | .\bin\ziggyzag-agentd.exe --stdio
-.\bin\ziggyzag-desktop.exe
+.\ZiggyZag.exe
 ```
 
 Expected:
@@ -199,7 +199,7 @@ Expected:
 - Shell prints help and exits with code 0.
 - AgentD lists `terminal.write`.
 - `agent/health` returns JSON with `"ok":true`.
-- Desktop opens a native Windows terminal window; close button exits cleanly.
+- The top-level launcher opens a native Windows terminal window; close button exits cleanly.
 
 ### Linux x86_64
 
@@ -212,7 +212,7 @@ DEST=/tmp/ziggyzag-$VERSION-linux-x86_64
 rm -rf "$DEST"
 unzip "$ZIP" -d "$DEST"
 cd "$DEST"
-chmod +x bin/ziggyzag bin/ziggyzag-agentd bin/ziggyzag-desktop
+chmod +x ZiggyZag bin/ziggyzag-launcher bin/ziggyzag bin/ziggyzag-agentd bin/ziggyzag-desktop
 
 printf 'help\nexit\n' | ./bin/ziggyzag
 ./bin/ziggyzag-agentd --describe-tools
@@ -238,7 +238,7 @@ DEST=/tmp/ziggyzag-$VERSION-linux-aarch64
 rm -rf "$DEST"
 unzip "$ZIP" -d "$DEST"
 cd "$DEST"
-chmod +x bin/ziggyzag bin/ziggyzag-agentd bin/ziggyzag-desktop
+chmod +x ZiggyZag bin/ziggyzag-launcher bin/ziggyzag bin/ziggyzag-agentd bin/ziggyzag-desktop
 
 printf 'help\nexit\n' | ./bin/ziggyzag
 ./bin/ziggyzag-agentd --describe-tools
@@ -257,7 +257,7 @@ DEST=/tmp/ziggyzag-$VERSION-macos-x86_64
 rm -rf "$DEST"
 unzip "$ZIP" -d "$DEST"
 cd "$DEST"
-chmod +x bin/ziggyzag bin/ziggyzag-agentd bin/ziggyzag-desktop
+chmod +x ZiggyZag bin/ziggyzag-launcher bin/ziggyzag bin/ziggyzag-agentd bin/ziggyzag-desktop
 xattr -dr com.apple.quarantine . 2>/dev/null || true
 
 printf 'help\nexit\n' | ./bin/ziggyzag
@@ -279,7 +279,7 @@ DEST=/tmp/ziggyzag-$VERSION-macos-aarch64
 rm -rf "$DEST"
 unzip "$ZIP" -d "$DEST"
 cd "$DEST"
-chmod +x bin/ziggyzag bin/ziggyzag-agentd bin/ziggyzag-desktop
+chmod +x ZiggyZag bin/ziggyzag-launcher bin/ziggyzag bin/ziggyzag-agentd bin/ziggyzag-desktop
 xattr -dr com.apple.quarantine . 2>/dev/null || true
 
 printf 'help\nexit\n' | ./bin/ziggyzag
@@ -322,7 +322,7 @@ Ask testers to note:
 - Operating system version and terminal used to launch commands.
 - Whether `zig version` prints `0.16.0`.
 - Any build or smoke failures.
-- On Windows, whether the desktop prompt appears.
+- On Windows, whether `ZiggyZag.exe` opens the desktop prompt.
 - On macOS/Linux, whether `zig build run-desktop` launches ZiggyZag in the current terminal.
 - Whether Ctrl+C interrupts and Ctrl+Shift+C copies visible text.
 - Whether AgentD returns valid JSON for `--describe-tools`, `agent/health`, and provider fallback.
@@ -330,7 +330,7 @@ Ask testers to note:
 ## Known Edges
 
 - The native graphical desktop host is Windows-only in this alpha. macOS/Linux desktop support is currently a terminal-attached launcher, plus fully usable shell and AgentD binaries.
-- Linux/macOS release zips may need `chmod +x bin/ziggyzag bin/ziggyzag-agentd bin/ziggyzag-desktop` after unzip because the zips are produced on Windows.
+- Linux/macOS release zips may need `chmod +x ZiggyZag bin/ziggyzag-launcher bin/ziggyzag bin/ziggyzag-agentd bin/ziggyzag-desktop` after unzip because the zips are produced on Windows.
 - macOS browser downloads may be quarantined; the smoke commands include `xattr -dr com.apple.quarantine .`.
 - Desktop config parsing exists, but persisted config loading into the Win32 host is still a near-term integration task.
 - Mouse selection is not yet implemented; copy-visible uses Ctrl+Shift+C.

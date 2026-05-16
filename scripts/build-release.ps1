@@ -175,6 +175,7 @@ function New-RequiredBinaries {
     param([string]$Exe)
 
     return @(
+        "bin/ziggyzag-launcher$Exe",
         "bin/ziggyzag$Exe",
         "bin/ziggyzag-desktop$Exe",
         "bin/ziggyzag-agentd$Exe"
@@ -186,7 +187,8 @@ function New-RequiredPackageEntries {
 
     return @(
         "README.md",
-        "LICENSE"
+        "LICENSE",
+        "ZiggyZag$Exe"
     ) + (New-RequiredBinaries -Exe $Exe)
 }
 
@@ -380,6 +382,7 @@ try {
 
         Copy-Item -LiteralPath (Join-Path $root "README.md") -Destination (Join-Path $prefix "README.md") -Force
         Copy-Item -LiteralPath (Join-Path $root "LICENSE") -Destination (Join-Path $prefix "LICENSE") -Force
+        Copy-Item -LiteralPath (Join-Path $prefix (Convert-ReleasePath "bin/ziggyzag-launcher$($entry.Exe)")) -Destination (Join-Path $prefix "ZiggyZag$($entry.Exe)") -Force
 
         Remove-Item -Force $package -ErrorAction SilentlyContinue
         Compress-Archive -Path (Join-Path $prefix "*") -DestinationPath $package -Force
