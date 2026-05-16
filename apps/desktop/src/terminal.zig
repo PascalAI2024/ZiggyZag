@@ -22,11 +22,42 @@ pub const Color = enum(u8) {
     bright_white,
 };
 
+pub const Rgb = struct {
+    r: u8,
+    g: u8,
+    b: u8,
+};
+
+pub const ExtendedColor = union(enum) {
+    named: Color,
+    indexed: u8,
+    rgb: Rgb,
+};
+
 pub const Style = struct {
     bold: bool = false,
     dim: bool = false,
+    italic: bool = false,
+    underline: bool = false,
+    double_underline: bool = false,
+    blink: bool = false,
+    inverse: bool = false,
+    hidden: bool = false,
+    strikethrough: bool = false,
+    overline: bool = false,
     fg: Color = .default,
     bg: Color = .default,
+    fg_extended: ?ExtendedColor = null,
+    bg_extended: ?ExtendedColor = null,
+    underline_color: ?ExtendedColor = null,
+
+    pub fn foreground(self: Style) ExtendedColor {
+        return self.fg_extended orelse .{ .named = self.fg };
+    }
+
+    pub fn background(self: Style) ExtendedColor {
+        return self.bg_extended orelse .{ .named = self.bg };
+    }
 };
 
 pub const Cell = struct {
@@ -37,6 +68,29 @@ pub const Cell = struct {
 pub const HistoryLine = struct {
     width: usize,
     cells: []Cell,
+};
+
+pub const MouseTracking = enum(u8) {
+    disabled,
+    x10,
+    normal,
+    button_event,
+    any_event,
+};
+
+pub const MouseEncoding = enum(u8) {
+    default,
+    utf8,
+    sgr,
+    urxvt,
+};
+
+const BufferState = struct {
+    cursor_x: usize = 0,
+    cursor_y: usize = 0,
+    saved_cursor_x: usize = 0,
+    saved_cursor_y: usize = 0,
+    wrap_pending: bool = false,
 };
 
 pub const default_max_scrollback: usize = 10_000;
@@ -50,7 +104,16 @@ pub const Grid = struct {
     saved_cursor_x: usize = 0,
     saved_cursor_y: usize = 0,
     wrap_pending: bool = false,
+    primary_cells: []Cell,
+    alternate_cells: []Cell,
     cells: []Cell,
+    primary_state: BufferState = .{},
+    alternate_state: BufferState = .{},
+    alternate_screen: bool = false,
+    bracketed_paste: bool = false,
+    application_cursor: bool = false,
+    mouse_tracking: MouseTracking = .disabled,
+    mouse_encoding: MouseEncoding = .default,
     current_style: Style = .{},
     history: std.ArrayList(HistoryLine) = .empty,
     max_scrollback: usize = default_max_scrollback,
@@ -61,13 +124,18 @@ pub const Grid = struct {
 
     pub fn initWithMaxScrollback(allocator: Allocator, width: usize, height: usize, max_scrollback: usize) !Grid {
         if (width == 0 or height == 0) return error.InvalidGridSize;
-        const cells = try allocator.alloc(Cell, width * height);
-        @memset(cells, .{});
+        const primary_cells = try allocator.alloc(Cell, width * height);
+        errdefer allocator.free(primary_cells);
+        const alternate_cells = try allocator.alloc(Cell, width * height);
+        @memset(primary_cells, .{});
+        @memset(alternate_cells, .{});
         return .{
             .allocator = allocator,
             .width = width,
             .height = height,
-            .cells = cells,
+            .primary_cells = primary_cells,
+            .alternate_cells = alternate_cells,
+            .cells = primary_cells,
             .max_scrollback = max_scrollback,
         };
     }
@@ -77,7 +145,8 @@ pub const Grid = struct {
             self.allocator.free(line.cells);
         }
         self.history.deinit(self.allocator);
-        self.allocator.free(self.cells);
+        self.allocator.free(self.primary_cells);
+        self.allocator.free(self.alternate_cells);
         self.* = undefined;
     }
 
@@ -114,6 +183,26 @@ pub const Grid = struct {
                 },
             }
         }
+    }
+
+    pub fn isAlternateScreen(self: *const Grid) bool {
+        return self.alternate_screen;
+    }
+
+    pub fn isBracketedPasteEnabled(self: *const Grid) bool {
+        return self.bracketed_paste;
+    }
+
+    pub fn isApplicationCursorEnabled(self: *const Grid) bool {
+        return self.application_cursor;
+    }
+
+    pub fn mouseTrackingMode(self: *const Grid) MouseTracking {
+        return self.mouse_tracking;
+    }
+
+    pub fn mouseEncodingMode(self: *const Grid) MouseEncoding {
+        return self.mouse_encoding;
     }
 
     pub fn lineAlloc(self: *const Grid, allocator: Allocator, row: usize) ![]u8 {
@@ -238,25 +327,32 @@ pub const Grid = struct {
 
         const old_width = self.width;
         const old_height = self.height;
-        const old_cells = self.cells;
-        const new_cells = try self.allocator.alloc(Cell, width * height);
-        @memset(new_cells, .{});
+        const old_primary_cells = self.primary_cells;
+        const old_alternate_cells = self.alternate_cells;
+        const new_primary_cells = try self.allocator.alloc(Cell, width * height);
+        errdefer self.allocator.free(new_primary_cells);
+        const new_alternate_cells = try self.allocator.alloc(Cell, width * height);
+        @memset(new_primary_cells, .{});
+        @memset(new_alternate_cells, .{});
 
         const copy_width = @min(old_width, width);
         const copy_height = @min(old_height, height);
-        var row: usize = 0;
-        while (row < copy_height) : (row += 1) {
-            const old_start = row * old_width;
-            const new_start = row * width;
-            @memcpy(new_cells[new_start .. new_start + copy_width], old_cells[old_start .. old_start + copy_width]);
-        }
+        copyResizedCells(new_primary_cells, width, old_primary_cells, old_width, copy_width, copy_height);
+        copyResizedCells(new_alternate_cells, width, old_alternate_cells, old_width, copy_width, copy_height);
 
-        self.allocator.free(old_cells);
+        self.allocator.free(old_primary_cells);
+        self.allocator.free(old_alternate_cells);
         self.width = width;
         self.height = height;
-        self.cells = new_cells;
+        self.primary_cells = new_primary_cells;
+        self.alternate_cells = new_alternate_cells;
+        self.cells = if (self.alternate_screen) self.alternate_cells else self.primary_cells;
         self.cursor_x = @min(self.cursor_x, width - 1);
         self.cursor_y = @min(self.cursor_y, height - 1);
+        self.saved_cursor_x = @min(self.saved_cursor_x, width - 1);
+        self.saved_cursor_y = @min(self.saved_cursor_y, height - 1);
+        clampBufferState(&self.primary_state, width, height);
+        clampBufferState(&self.alternate_state, width, height);
         self.wrap_pending = false;
     }
 
@@ -297,10 +393,108 @@ pub const Grid = struct {
             'J' => self.clearScreen(csiParam(params, 0, 0)),
             'K' => self.clearLineByMode(csiParam(params, 0, 0)),
             'm' => self.applySgr(params),
+            'h' => self.applyPrivateMode(params, true),
+            'l' => self.applyPrivateMode(params, false),
             's' => self.saveCursor(),
             'u' => self.restoreCursor(),
             else => {},
         }
+    }
+
+    fn applyPrivateMode(self: *Grid, params: []const u8, enabled: bool) void {
+        if (params.len == 0 or params[0] != '?') return;
+
+        var index: usize = 1;
+        while (index <= params.len) {
+            const start = index;
+            while (index < params.len and params[index] != ';') : (index += 1) {}
+            const part = params[start..index];
+            index += 1;
+            if (part.len == 0) continue;
+
+            const mode = std.fmt.parseInt(usize, part, 10) catch continue;
+            switch (mode) {
+                1 => self.application_cursor = enabled,
+                9 => self.setMouseTracking(if (enabled) .x10 else .disabled),
+                47, 1047 => {
+                    if (enabled) {
+                        self.enterAlternateScreen(false);
+                    } else {
+                        self.exitAlternateScreen(false);
+                    }
+                },
+                1000 => self.setMouseTracking(if (enabled) .normal else .disabled),
+                1002 => self.setMouseTracking(if (enabled) .button_event else .disabled),
+                1003 => self.setMouseTracking(if (enabled) .any_event else .disabled),
+                1005 => self.mouse_encoding = if (enabled) .utf8 else .default,
+                1006 => self.mouse_encoding = if (enabled) .sgr else .default,
+                1015 => self.mouse_encoding = if (enabled) .urxvt else .default,
+                1048 => {
+                    if (enabled) {
+                        self.saveCursor();
+                    } else {
+                        self.restoreCursor();
+                    }
+                },
+                1049 => {
+                    if (enabled) {
+                        self.saveCursor();
+                        self.enterAlternateScreen(true);
+                    } else {
+                        self.exitAlternateScreen(true);
+                    }
+                },
+                2004 => self.bracketed_paste = enabled,
+                else => {},
+            }
+        }
+    }
+
+    fn setMouseTracking(self: *Grid, mode: MouseTracking) void {
+        self.mouse_tracking = mode;
+        if (mode == .disabled) self.mouse_encoding = .default;
+    }
+
+    fn enterAlternateScreen(self: *Grid, clear: bool) void {
+        if (!self.alternate_screen) {
+            self.primary_state = self.activeState();
+            self.alternate_screen = true;
+            self.cells = self.alternate_cells;
+            self.loadState(self.alternate_state);
+        }
+        if (clear) {
+            self.clearCells(self.cells);
+            self.cursor_x = 0;
+            self.cursor_y = 0;
+            self.wrap_pending = false;
+        }
+    }
+
+    fn exitAlternateScreen(self: *Grid, clear: bool) void {
+        if (!self.alternate_screen) return;
+        self.alternate_state = self.activeState();
+        if (clear) self.clearCells(self.alternate_cells);
+        self.alternate_screen = false;
+        self.cells = self.primary_cells;
+        self.loadState(self.primary_state);
+    }
+
+    fn activeState(self: *const Grid) BufferState {
+        return .{
+            .cursor_x = self.cursor_x,
+            .cursor_y = self.cursor_y,
+            .saved_cursor_x = self.saved_cursor_x,
+            .saved_cursor_y = self.saved_cursor_y,
+            .wrap_pending = self.wrap_pending,
+        };
+    }
+
+    fn loadState(self: *Grid, state: BufferState) void {
+        self.cursor_x = @min(state.cursor_x, self.width - 1);
+        self.cursor_y = @min(state.cursor_y, self.height - 1);
+        self.saved_cursor_x = @min(state.saved_cursor_x, self.width - 1);
+        self.saved_cursor_y = @min(state.saved_cursor_y, self.height - 1);
+        self.wrap_pending = state.wrap_pending;
     }
 
     fn cursorMove(self: *Grid, params: []const u8, final: u8) void {
@@ -473,6 +667,7 @@ pub const Grid = struct {
     }
 
     fn captureHistoryLine(self: *Grid, row: usize) !void {
+        if (self.alternate_screen) return;
         if (self.max_scrollback == 0) return;
         while (self.history.items.len >= self.max_scrollback) {
             const line = self.history.orderedRemove(0);
@@ -509,28 +704,109 @@ pub const Grid = struct {
             return;
         }
 
-        var split = std.mem.splitScalar(u8, params, ';');
-        while (split.next()) |part| {
-            const code = std.fmt.parseInt(u16, part, 10) catch 0;
+        var index: usize = 0;
+        while (nextSgrParam(params, &index)) |code| {
             switch (code) {
                 0 => self.current_style = .{},
                 1 => self.current_style.bold = true,
                 2 => self.current_style.dim = true,
+                3 => self.current_style.italic = true,
+                4 => {
+                    self.current_style.underline = true;
+                    self.current_style.double_underline = false;
+                },
+                5, 6 => self.current_style.blink = true,
+                7 => self.current_style.inverse = true,
+                8 => self.current_style.hidden = true,
+                9 => self.current_style.strikethrough = true,
+                21 => {
+                    self.current_style.bold = false;
+                    self.current_style.double_underline = true;
+                    self.current_style.underline = true;
+                },
                 22 => {
                     self.current_style.bold = false;
                     self.current_style.dim = false;
                 },
-                30...37 => self.current_style.fg = sgrColor(code - 30, false),
-                39 => self.current_style.fg = .default,
-                40...47 => self.current_style.bg = sgrColor(code - 40, false),
-                49 => self.current_style.bg = .default,
-                90...97 => self.current_style.fg = sgrColor(code - 90, true),
-                100...107 => self.current_style.bg = sgrColor(code - 100, true),
+                23 => self.current_style.italic = false,
+                24 => {
+                    self.current_style.underline = false;
+                    self.current_style.double_underline = false;
+                },
+                25 => self.current_style.blink = false,
+                27 => self.current_style.inverse = false,
+                28 => self.current_style.hidden = false,
+                29 => self.current_style.strikethrough = false,
+                30...37 => self.setForeground(.{ .named = sgrColor(code - 30, false) }),
+                38 => self.applyExtendedSgrColor(params, &index, true),
+                39 => self.resetForeground(),
+                40...47 => self.setBackground(.{ .named = sgrColor(code - 40, false) }),
+                48 => self.applyExtendedSgrColor(params, &index, false),
+                49 => self.resetBackground(),
+                53 => self.current_style.overline = true,
+                55 => self.current_style.overline = false,
+                58 => self.current_style.underline_color = parseExtendedSgrColor(params, &index),
+                59 => self.current_style.underline_color = null,
+                90...97 => self.setForeground(.{ .named = sgrColor(code - 90, true) }),
+                100...107 => self.setBackground(.{ .named = sgrColor(code - 100, true) }),
                 else => {},
             }
         }
     }
+
+    fn setForeground(self: *Grid, color: ExtendedColor) void {
+        self.current_style.fg_extended = extendedOverride(color);
+        self.current_style.fg = legacyColor(color);
+    }
+
+    fn resetForeground(self: *Grid) void {
+        self.current_style.fg = .default;
+        self.current_style.fg_extended = null;
+    }
+
+    fn setBackground(self: *Grid, color: ExtendedColor) void {
+        self.current_style.bg_extended = extendedOverride(color);
+        self.current_style.bg = legacyColor(color);
+    }
+
+    fn resetBackground(self: *Grid) void {
+        self.current_style.bg = .default;
+        self.current_style.bg_extended = null;
+    }
+
+    fn applyExtendedSgrColor(self: *Grid, params: []const u8, index: *usize, foreground: bool) void {
+        const color = parseExtendedSgrColor(params, index) orelse return;
+        if (foreground) {
+            self.setForeground(color);
+        } else {
+            self.setBackground(color);
+        }
+    }
 };
+
+fn copyResizedCells(
+    new_cells: []Cell,
+    new_width: usize,
+    old_cells: []const Cell,
+    old_width: usize,
+    copy_width: usize,
+    copy_height: usize,
+) void {
+    var row: usize = 0;
+    while (row < copy_height) : (row += 1) {
+        const old_start = row * old_width;
+        const new_start = row * new_width;
+        @memcpy(new_cells[new_start .. new_start + copy_width], old_cells[old_start .. old_start + copy_width]);
+    }
+}
+
+fn clampBufferState(state: *BufferState, width: usize, height: usize) void {
+    state.cursor_x = @min(state.cursor_x, width - 1);
+    state.cursor_y = @min(state.cursor_y, height - 1);
+    state.saved_cursor_x = @min(state.saved_cursor_x, width - 1);
+    state.saved_cursor_y = @min(state.saved_cursor_y, height - 1);
+    state.wrap_pending = false;
+}
 
 fn sgrColor(index: u16, bright: bool) Color {
     return if (bright) switch (index) {
@@ -552,6 +828,83 @@ fn sgrColor(index: u16, bright: bool) Color {
         6 => .cyan,
         else => .white,
     };
+}
+
+fn legacyColor(color: ExtendedColor) Color {
+    return switch (color) {
+        .named => |named| named,
+        .indexed => |index| indexedAnsiFallback(index),
+        .rgb => .default,
+    };
+}
+
+fn extendedOverride(color: ExtendedColor) ?ExtendedColor {
+    return switch (color) {
+        .named => null,
+        .indexed, .rgb => color,
+    };
+}
+
+fn indexedAnsiFallback(index: u8) Color {
+    return switch (index) {
+        0 => .black,
+        1 => .red,
+        2 => .green,
+        3 => .yellow,
+        4 => .blue,
+        5 => .magenta,
+        6 => .cyan,
+        7 => .white,
+        8 => .bright_black,
+        9 => .bright_red,
+        10 => .bright_green,
+        11 => .bright_yellow,
+        12 => .bright_blue,
+        13 => .bright_magenta,
+        14 => .bright_cyan,
+        15 => .bright_white,
+        else => .default,
+    };
+}
+
+fn parseExtendedSgrColor(params: []const u8, index: *usize) ?ExtendedColor {
+    const mode = nextSgrParam(params, index) orelse return null;
+    switch (mode) {
+        5 => {
+            const color_index = nextSgrParam(params, index) orelse return null;
+            if (color_index > 255) return null;
+            return .{ .indexed = @intCast(color_index) };
+        },
+        2 => {
+            const r = nextSgrByte(params, index) orelse return null;
+            const g = nextSgrByte(params, index) orelse return null;
+            const b = nextSgrByte(params, index) orelse return null;
+            return .{ .rgb = .{ .r = r, .g = g, .b = b } };
+        },
+        else => return null,
+    }
+}
+
+fn nextSgrByte(params: []const u8, index: *usize) ?u8 {
+    const value = nextSgrParam(params, index) orelse return null;
+    if (value > 255) return null;
+    return @intCast(value);
+}
+
+fn nextSgrParam(params: []const u8, index: *usize) ?u16 {
+    if (index.* > params.len) return null;
+
+    const start = index.*;
+    if (start == params.len) {
+        index.* = params.len + 1;
+        return 0;
+    }
+
+    var end = start;
+    while (end < params.len and params[end] != ';') : (end += 1) {}
+    index.* = if (end < params.len) end + 1 else params.len + 1;
+    if (end == start) return 0;
+    return std.fmt.parseInt(u16, params[start..end], 10) catch 0;
 }
 
 fn trimmedCellLen(cells: []const Cell) usize {
@@ -779,6 +1132,42 @@ test "applies SGR foreground background and intensity to new cells" {
     try std.testing.expectEqual(Style{}, grid.cells[2].style);
 }
 
+test "applies richer SGR attributes and targeted resets" {
+    var grid = try Grid.init(std.testing.allocator, 4, 1);
+    defer grid.deinit();
+    grid.feed("\x1b[3;4;5;7;8;9;53mA\x1b[23;24;25;27;28;29;55mB");
+
+    try std.testing.expect(grid.cells[0].style.italic);
+    try std.testing.expect(grid.cells[0].style.underline);
+    try std.testing.expect(grid.cells[0].style.blink);
+    try std.testing.expect(grid.cells[0].style.inverse);
+    try std.testing.expect(grid.cells[0].style.hidden);
+    try std.testing.expect(grid.cells[0].style.strikethrough);
+    try std.testing.expect(grid.cells[0].style.overline);
+
+    try std.testing.expect(!grid.cells[1].style.italic);
+    try std.testing.expect(!grid.cells[1].style.underline);
+    try std.testing.expect(!grid.cells[1].style.blink);
+    try std.testing.expect(!grid.cells[1].style.inverse);
+    try std.testing.expect(!grid.cells[1].style.hidden);
+    try std.testing.expect(!grid.cells[1].style.strikethrough);
+    try std.testing.expect(!grid.cells[1].style.overline);
+}
+
+test "applies indexed RGB and underline SGR colors" {
+    var grid = try Grid.init(std.testing.allocator, 4, 1);
+    defer grid.deinit();
+    grid.feed("\x1b[38;5;196;48;2;1;2;3;58;5;45mA\x1b[39;49;59mB");
+
+    try std.testing.expectEqual(ExtendedColor{ .indexed = 196 }, grid.cells[0].style.foreground());
+    try std.testing.expectEqual(Color.default, grid.cells[0].style.fg);
+    try std.testing.expectEqual(ExtendedColor{ .rgb = .{ .r = 1, .g = 2, .b = 3 } }, grid.cells[0].style.background());
+    try std.testing.expectEqual(ExtendedColor{ .indexed = 45 }, grid.cells[0].style.underline_color.?);
+    try std.testing.expectEqual(ExtendedColor{ .named = .default }, grid.cells[1].style.foreground());
+    try std.testing.expectEqual(ExtendedColor{ .named = .default }, grid.cells[1].style.background());
+    try std.testing.expectEqual(@as(?ExtendedColor, null), grid.cells[1].style.underline_color);
+}
+
 test "SGR does not cancel deferred wrap" {
     var grid = try Grid.init(std.testing.allocator, 3, 2);
     defer grid.deinit();
@@ -814,6 +1203,55 @@ test "empty and explicit SGR reset restore default style" {
     try std.testing.expectEqual(Style{}, grid.cells[1].style);
     try std.testing.expectEqual(Color.blue, grid.cells[2].style.bg);
     try std.testing.expectEqual(Style{}, grid.cells[3].style);
+}
+
+test "tracks alternate screen buffer and restores primary contents" {
+    var grid = try Grid.init(std.testing.allocator, 6, 2);
+    defer grid.deinit();
+    grid.feed("main\x1b[?1049halt\x1b[2;4HZ");
+
+    try std.testing.expect(grid.isAlternateScreen());
+    const alt0 = try grid.lineAlloc(std.testing.allocator, 0);
+    defer std.testing.allocator.free(alt0);
+    const alt1 = try grid.lineAlloc(std.testing.allocator, 1);
+    defer std.testing.allocator.free(alt1);
+    try std.testing.expectEqualStrings("alt   ", alt0);
+    try std.testing.expectEqualStrings("   Z  ", alt1);
+
+    grid.feed("\x1b[?1049l!");
+    try std.testing.expect(!grid.isAlternateScreen());
+    const primary = try grid.lineAlloc(std.testing.allocator, 0);
+    defer std.testing.allocator.free(primary);
+    try std.testing.expectEqualStrings("main! ", primary);
+    try std.testing.expectEqual(@as(usize, 5), grid.cursor_x);
+    try std.testing.expectEqual(@as(usize, 0), grid.cursor_y);
+}
+
+test "alternate screen scrolls without appending primary scrollback" {
+    var grid = try Grid.initWithMaxScrollback(std.testing.allocator, 3, 1, 8);
+    defer grid.deinit();
+    grid.feed("one\ntwo");
+    try std.testing.expectEqual(@as(usize, 1), grid.historyLen());
+
+    grid.feed("\x1b[?1049habc\ndef\nghi\x1b[?1049l");
+    try std.testing.expectEqual(@as(usize, 1), grid.historyLen());
+}
+
+test "tracks bracketed paste application cursor and mouse private modes" {
+    var grid = try Grid.init(std.testing.allocator, 4, 1);
+    defer grid.deinit();
+    grid.feed("\x1b[?1;2004;1002;1006h");
+
+    try std.testing.expect(grid.isApplicationCursorEnabled());
+    try std.testing.expect(grid.isBracketedPasteEnabled());
+    try std.testing.expectEqual(MouseTracking.button_event, grid.mouseTrackingMode());
+    try std.testing.expectEqual(MouseEncoding.sgr, grid.mouseEncodingMode());
+
+    grid.feed("\x1b[?1002l\x1b[?1;2004l");
+    try std.testing.expect(!grid.isApplicationCursorEnabled());
+    try std.testing.expect(!grid.isBracketedPasteEnabled());
+    try std.testing.expectEqual(MouseTracking.disabled, grid.mouseTrackingMode());
+    try std.testing.expectEqual(MouseEncoding.default, grid.mouseEncodingMode());
 }
 
 test "captures scrolled lines in history with cell styles" {

@@ -10,12 +10,20 @@ pub const Options = struct {
     show_status_bar: bool = true,
     smooth_scroll: bool = true,
     bell: bool = false,
+    scrollback_lines: usize = 10_000,
+};
+
+pub const Profile = struct {
+    shell_path: []const u8 = "",
+    startup_directory: []const u8 = "",
+    term: []const u8 = "xterm-256color",
 };
 
 pub const Config = struct {
     selected_theme: theme.Theme = theme.ziggy,
     font: Font = .{},
     options: Options = .{},
+    profile: Profile = .{},
 
     pub fn defaults() Config {
         return .{};
@@ -31,6 +39,7 @@ pub const ParseError = error{
     InvalidFontSize,
     InvalidHexColor,
     InvalidInteger,
+    InvalidScrollback,
 };
 
 pub fn parse(contents: []const u8) ParseError!Config {
@@ -71,12 +80,22 @@ fn apply(config: *Config, key: []const u8, value: []const u8) ParseError!void {
         const size = std.fmt.parseInt(u8, value, 10) catch return error.InvalidFontSize;
         if (size < 6 or size > 72) return error.InvalidFontSize;
         config.font.size = size;
+    } else if (std.ascii.eqlIgnoreCase(key, "profile.shell") or std.ascii.eqlIgnoreCase(key, "shell.path")) {
+        config.profile.shell_path = value;
+    } else if (std.ascii.eqlIgnoreCase(key, "profile.cwd") or std.ascii.eqlIgnoreCase(key, "startup_directory")) {
+        config.profile.startup_directory = value;
+    } else if (std.ascii.eqlIgnoreCase(key, "profile.term") or std.ascii.eqlIgnoreCase(key, "term")) {
+        config.profile.term = value;
     } else if (std.ascii.eqlIgnoreCase(key, "show_status_bar")) {
         config.options.show_status_bar = try parseBool(value);
     } else if (std.ascii.eqlIgnoreCase(key, "smooth_scroll")) {
         config.options.smooth_scroll = try parseBool(value);
     } else if (std.ascii.eqlIgnoreCase(key, "bell")) {
         config.options.bell = try parseBool(value);
+    } else if (std.ascii.eqlIgnoreCase(key, "scrollback") or std.ascii.eqlIgnoreCase(key, "scrollback.lines")) {
+        const lines = std.fmt.parseInt(usize, value, 10) catch return error.InvalidScrollback;
+        if (lines > 250_000) return error.InvalidScrollback;
+        config.options.scrollback_lines = lines;
     } else {
         return error.UnknownKey;
     }
@@ -127,6 +146,10 @@ test "parses key value desktop config" {
         \\show_status_bar = off
         \\smooth_scroll = yes
         \\bell = true
+        \\scrollback.lines = 50000
+        \\profile.shell = "C:\Tools\ziggyzag.exe"
+        \\profile.cwd = "C:\dev"
+        \\profile.term = xterm-256color
         \\
     );
 
@@ -136,6 +159,10 @@ test "parses key value desktop config" {
     try std.testing.expect(!parsed.options.show_status_bar);
     try std.testing.expect(parsed.options.smooth_scroll);
     try std.testing.expect(parsed.options.bell);
+    try std.testing.expectEqual(@as(usize, 50_000), parsed.options.scrollback_lines);
+    try std.testing.expectEqualStrings("C:\\Tools\\ziggyzag.exe", parsed.profile.shell_path);
+    try std.testing.expectEqualStrings("C:\\dev", parsed.profile.startup_directory);
+    try std.testing.expectEqualStrings("xterm-256color", parsed.profile.term);
 }
 
 test "parses theme color overrides" {
@@ -163,4 +190,5 @@ test "rejects unknown keys and invalid values" {
     try std.testing.expectError(error.UnknownTheme, parse("theme=neon\n"));
     try std.testing.expectError(error.InvalidFontSize, parse("font.size=3\n"));
     try std.testing.expectError(error.InvalidBoolean, parse("bell=maybe\n"));
+    try std.testing.expectError(error.InvalidScrollback, parse("scrollback=999999999\n"));
 }

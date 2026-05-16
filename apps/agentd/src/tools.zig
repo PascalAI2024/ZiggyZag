@@ -3,6 +3,9 @@ const builtin = @import("builtin");
 const protocol = @import("protocol.zig");
 
 const Allocator = std.mem.Allocator;
+const max_file_output_bytes = 64 * 1024;
+const max_command_stdout_bytes = 96 * 1024;
+const max_command_stderr_bytes = 24 * 1024;
 
 pub const Approval = enum {
     none,
@@ -22,6 +25,11 @@ pub const Spec = struct {
     name: []const u8,
     description: []const u8,
     approval: Approval,
+    input_schema: []const u8,
+    output_schema: []const u8,
+    effect: []const u8,
+    approval_reason: []const u8,
+    context_policy: []const u8,
 };
 
 pub const specs = [_]Spec{
@@ -29,31 +37,61 @@ pub const specs = [_]Spec{
         .name = "project.info",
         .description = "Report the current workspace and known ZiggyZag binaries.",
         .approval = .none,
+        .input_schema = "{\"type\":\"object\",\"additionalProperties\":false}",
+        .output_schema = "{\"type\":\"object\",\"required\":[\"cwd\",\"binaries\"]}",
+        .effect = "read_workspace_metadata",
+        .approval_reason = "Read-only workspace metadata.",
+        .context_policy = "minimal",
     },
     .{
         .name = "file.read",
         .description = "Read a bounded UTF-8-ish file from the current workspace. Requires a flat JSON path field.",
         .approval = .none,
+        .input_schema = "{\"type\":\"object\",\"required\":[\"path\"],\"properties\":{\"path\":{\"type\":\"string\",\"maxLength\":4096}},\"additionalProperties\":false}",
+        .output_schema = "{\"type\":\"object\",\"required\":[\"path\",\"content\",\"bytes_read\",\"content_truncated\",\"redacted\"]}",
+        .effect = "read_file",
+        .approval_reason = "Read-only bounded file access within the workspace.",
+        .context_policy = "bounded_64k_redacted",
     },
     .{
         .name = "rg.search",
         .description = "Run ripgrep for a query in the current workspace.",
         .approval = .none,
+        .input_schema = "{\"type\":\"object\",\"required\":[\"query\"],\"properties\":{\"query\":{\"type\":\"string\",\"maxLength\":1024}},\"additionalProperties\":false}",
+        .output_schema = "{\"type\":\"object\",\"required\":[\"status\",\"stdout\",\"stderr\",\"stdout_truncated\",\"stderr_truncated\",\"redacted\"]}",
+        .effect = "read_search_index",
+        .approval_reason = "Read-only bounded search output.",
+        .context_policy = "bounded_redacted_command_output",
     },
     .{
         .name = "git.diff",
         .description = "Return the current git diff.",
         .approval = .none,
+        .input_schema = "{\"type\":\"object\",\"additionalProperties\":false}",
+        .output_schema = "{\"type\":\"object\",\"required\":[\"status\",\"stdout\",\"stderr\",\"stdout_truncated\",\"stderr_truncated\",\"redacted\"]}",
+        .effect = "read_git_diff",
+        .approval_reason = "Read-only git inspection.",
+        .context_policy = "bounded_redacted_command_output",
     },
     .{
         .name = "zig.build",
         .description = "Run zig build or zig build test. This writes build artifacts and should be approved by the host UI.",
         .approval = .ask,
+        .input_schema = "{\"type\":\"object\",\"properties\":{\"command\":{\"enum\":[\"build\",\"test\"]}},\"additionalProperties\":false}",
+        .output_schema = "{\"type\":\"object\",\"required\":[\"host_action\",\"approval\",\"requires_host\",\"command\",\"argv\",\"audit\",\"event\"]}",
+        .effect = "write_build_artifacts",
+        .approval_reason = "Build commands can write artifacts and execute build scripts.",
+        .context_policy = "host_action_only_no_execution",
     },
     .{
         .name = "terminal.write",
         .description = "Ask the terminal host to write text into the active PTY after approval.",
         .approval = .ask,
+        .input_schema = "{\"type\":\"object\",\"required\":[\"text\"],\"properties\":{\"text\":{\"type\":\"string\",\"maxLength\":16384}},\"additionalProperties\":false}",
+        .output_schema = "{\"type\":\"object\",\"required\":[\"host_action\",\"approval\",\"requires_host\",\"text\",\"preview\",\"audit\",\"event\"]}",
+        .effect = "write_terminal_input",
+        .approval_reason = "Writing to the active PTY can execute commands or mutate state.",
+        .context_policy = "host_action_preview_only",
     },
 };
 
@@ -109,6 +147,18 @@ pub fn listJsonAlloc(allocator: Allocator) ![]u8 {
         try protocol.appendJsonString(allocator, &out, spec.description);
         try out.appendSlice(allocator, ",\"approval\":");
         try protocol.appendJsonString(allocator, &out, spec.approval.text());
+        try out.appendSlice(allocator, ",\"requires_approval\":");
+        try out.appendSlice(allocator, if (spec.approval == .ask) "true" else "false");
+        try out.appendSlice(allocator, ",\"approval_reason\":");
+        try protocol.appendJsonString(allocator, &out, spec.approval_reason);
+        try out.appendSlice(allocator, ",\"effect\":");
+        try protocol.appendJsonString(allocator, &out, spec.effect);
+        try out.appendSlice(allocator, ",\"context_policy\":");
+        try protocol.appendJsonString(allocator, &out, spec.context_policy);
+        try out.appendSlice(allocator, ",\"input_schema\":");
+        try out.appendSlice(allocator, spec.input_schema);
+        try out.appendSlice(allocator, ",\"output_schema\":");
+        try out.appendSlice(allocator, spec.output_schema);
         try out.append(allocator, '}');
     }
     try out.appendSlice(allocator, "]}");
@@ -157,35 +207,25 @@ fn readFileJsonAlloc(allocator: Allocator, io: std.Io, path: []const u8) ![]u8 {
     var reader = file.readerStreaming(io, &read_buffer);
     const contents = try reader.interface.allocRemaining(allocator, .limited(128 * 1024));
     defer allocator.free(contents);
+    const redacted = try redactSecretsAlloc(allocator, contents);
+    defer redacted.deinit(allocator);
+    const clipped = clippedView(redacted.text, max_file_output_bytes);
 
     var out: std.ArrayList(u8) = .empty;
     errdefer out.deinit(allocator);
     try out.appendSlice(allocator, "{\"path\":");
     try protocol.appendJsonString(allocator, &out, path);
     try out.appendSlice(allocator, ",\"content\":");
-    try protocol.appendJsonString(allocator, &out, contents);
+    try protocol.appendJsonString(allocator, &out, clipped.text);
+    try out.appendSlice(allocator, ",\"bytes_read\":");
+    try appendUsize(allocator, &out, contents.len);
+    try out.appendSlice(allocator, ",\"content_truncated\":");
+    try out.appendSlice(allocator, if (clipped.truncated) "true" else "false");
+    try out.appendSlice(allocator, ",\"redacted\":");
+    try out.appendSlice(allocator, if (redacted.changed) "true" else "false");
+    try out.appendSlice(allocator, ",\"context_policy\":\"bounded_64k_redacted\"");
     try out.append(allocator, '}');
     return out.toOwnedSlice(allocator);
-}
-
-fn runZigBuildJsonAlloc(
-    allocator: Allocator,
-    io: std.Io,
-    env: *std.process.Environ.Map,
-    command: ?[]const u8,
-) ![]u8 {
-    const zig = try resolveZigExeAlloc(allocator, io, env);
-    defer zig.deinit(allocator);
-
-    if (command) |value| {
-        if (std.mem.eql(u8, value, "test")) {
-            const argv = [_][]const u8{ zig.path, "build", "test" };
-            return commandJsonAlloc(allocator, io, env, &argv);
-        }
-        if (!std.mem.eql(u8, value, "build")) return error.UnsupportedBuildCommand;
-    }
-    const argv = [_][]const u8{ zig.path, "build" };
-    return commandJsonAlloc(allocator, io, env, &argv);
 }
 
 fn zigBuildAskJsonAlloc(allocator: Allocator, command: ?[]const u8) ![]u8 {
@@ -199,6 +239,10 @@ fn zigBuildAskJsonAlloc(allocator: Allocator, command: ?[]const u8) ![]u8 {
     if (std.mem.eql(u8, normalized, "test")) try out.appendSlice(allocator, ",\"test\"");
     try out.appendSlice(allocator, "],\"description\":");
     try protocol.appendJsonString(allocator, &out, if (std.mem.eql(u8, normalized, "test")) "Run zig build test" else "Run zig build");
+    try out.appendSlice(allocator, ",\"audit\":");
+    try appendAuditObject(allocator, &out, "zig.build", "write_build_artifacts", true, "approval_required");
+    try out.appendSlice(allocator, ",\"event\":");
+    try appendEventObject(allocator, &out, "host_action.requested", "zig.build", "ask", "pending_host_approval");
     try out.append(allocator, '}');
     return out.toOwnedSlice(allocator);
 }
@@ -231,7 +275,17 @@ fn terminalWriteJsonAlloc(allocator: Allocator, text: []const u8) ![]u8 {
     errdefer out.deinit(allocator);
     try out.appendSlice(allocator, "{\"host_action\":\"terminal.write\",\"approval\":\"ask\",\"text\":");
     try protocol.appendJsonString(allocator, &out, text);
-    try out.appendSlice(allocator, ",\"requires_host\":true}");
+    try out.appendSlice(allocator, ",\"preview\":");
+    try protocol.appendJsonString(allocator, &out, clippedView(text, 512).text);
+    try out.appendSlice(allocator, ",\"text_bytes\":");
+    try appendUsize(allocator, &out, text.len);
+    try out.appendSlice(allocator, ",\"preview_truncated\":");
+    try out.appendSlice(allocator, if (text.len > 512) "true" else "false");
+    try out.appendSlice(allocator, ",\"requires_host\":true,\"audit\":");
+    try appendAuditObject(allocator, &out, "terminal.write", "write_terminal_input", true, "approval_required");
+    try out.appendSlice(allocator, ",\"event\":");
+    try appendEventObject(allocator, &out, "host_action.requested", "terminal.write", "ask", "pending_host_approval");
+    try out.append(allocator, '}');
     return out.toOwnedSlice(allocator);
 }
 
@@ -247,6 +301,12 @@ fn commandJsonAlloc(
     });
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
+    const stdout_redacted = try redactSecretsAlloc(allocator, result.stdout);
+    defer stdout_redacted.deinit(allocator);
+    const stderr_redacted = try redactSecretsAlloc(allocator, result.stderr);
+    defer stderr_redacted.deinit(allocator);
+    const stdout_clipped = clippedView(stdout_redacted.text, max_command_stdout_bytes);
+    const stderr_clipped = clippedView(stderr_redacted.text, max_command_stderr_bytes);
 
     var out: std.ArrayList(u8) = .empty;
     errdefer out.deinit(allocator);
@@ -255,11 +315,132 @@ fn commandJsonAlloc(
     const status_text = std.fmt.bufPrint(&status_buffer, "{d}", .{termStatus(result.term)}) catch unreachable;
     try out.appendSlice(allocator, status_text);
     try out.appendSlice(allocator, ",\"stdout\":");
-    try protocol.appendJsonString(allocator, &out, result.stdout);
+    try protocol.appendJsonString(allocator, &out, stdout_clipped.text);
     try out.appendSlice(allocator, ",\"stderr\":");
-    try protocol.appendJsonString(allocator, &out, result.stderr);
+    try protocol.appendJsonString(allocator, &out, stderr_clipped.text);
+    try out.appendSlice(allocator, ",\"stdout_truncated\":");
+    try out.appendSlice(allocator, if (stdout_clipped.truncated) "true" else "false");
+    try out.appendSlice(allocator, ",\"stderr_truncated\":");
+    try out.appendSlice(allocator, if (stderr_clipped.truncated) "true" else "false");
+    try out.appendSlice(allocator, ",\"redacted\":");
+    try out.appendSlice(allocator, if (stdout_redacted.changed or stderr_redacted.changed) "true" else "false");
+    try out.appendSlice(allocator, ",\"audit\":");
+    try appendAuditObject(allocator, &out, argv[0], "read_command_output", false, "completed");
+    try out.appendSlice(allocator, ",\"event\":");
+    try appendEventObject(allocator, &out, "tool.completed", argv[0], "none", if (termStatus(result.term) == 0) "ok" else "nonzero_exit");
     try out.append(allocator, '}');
     return out.toOwnedSlice(allocator);
+}
+
+const RedactedText = struct {
+    text: []u8,
+    changed: bool,
+
+    fn deinit(self: RedactedText, allocator: Allocator) void {
+        allocator.free(self.text);
+    }
+};
+
+const Clip = struct {
+    text: []const u8,
+    truncated: bool,
+};
+
+fn clippedView(text: []const u8, limit: usize) Clip {
+    if (text.len <= limit) return .{ .text = text, .truncated = false };
+    return .{ .text = text[0..limit], .truncated = true };
+}
+
+fn redactSecretsAlloc(allocator: Allocator, text: []const u8) !RedactedText {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(allocator);
+    var changed = false;
+
+    var line_iterator = std.mem.splitScalar(u8, text, '\n');
+    var first = true;
+    while (line_iterator.next()) |line| {
+        if (!first) try out.append(allocator, '\n');
+        first = false;
+
+        if (looksSecretLine(line)) {
+            try out.appendSlice(allocator, "[redacted secret-like line]");
+            changed = true;
+        } else {
+            try out.appendSlice(allocator, line);
+        }
+    }
+
+    return .{ .text = try out.toOwnedSlice(allocator), .changed = changed };
+}
+
+fn looksSecretLine(line: []const u8) bool {
+    const trimmed = std.mem.trim(u8, line, " \t\r\n");
+    if (trimmed.len == 0) return false;
+    if (containsAnyIgnoreCase(trimmed, &.{ "api_key", "apikey", "auth_token", "access_token", "secret", "password", "bearer " })) {
+        return std.mem.indexOfAny(u8, trimmed, "=:") != null or containsIgnoreCase(trimmed, "bearer ");
+    }
+    return false;
+}
+
+fn containsAnyIgnoreCase(haystack: []const u8, needles: []const []const u8) bool {
+    for (needles) |needle| {
+        if (containsIgnoreCase(haystack, needle)) return true;
+    }
+    return false;
+}
+
+fn containsIgnoreCase(haystack: []const u8, needle: []const u8) bool {
+    if (needle.len == 0) return true;
+    if (needle.len > haystack.len) return false;
+    var index: usize = 0;
+    while (index + needle.len <= haystack.len) : (index += 1) {
+        if (std.ascii.eqlIgnoreCase(haystack[index .. index + needle.len], needle)) return true;
+    }
+    return false;
+}
+
+fn appendAuditObject(
+    allocator: Allocator,
+    out: *std.ArrayList(u8),
+    action: []const u8,
+    effect: []const u8,
+    requires_host: bool,
+    outcome: []const u8,
+) !void {
+    try out.appendSlice(allocator, "{\"action\":");
+    try protocol.appendJsonString(allocator, out, action);
+    try out.appendSlice(allocator, ",\"effect\":");
+    try protocol.appendJsonString(allocator, out, effect);
+    try out.appendSlice(allocator, ",\"requires_host\":");
+    try out.appendSlice(allocator, if (requires_host) "true" else "false");
+    try out.appendSlice(allocator, ",\"outcome\":");
+    try protocol.appendJsonString(allocator, out, outcome);
+    try out.append(allocator, '}');
+}
+
+fn appendEventObject(
+    allocator: Allocator,
+    out: *std.ArrayList(u8),
+    event_type: []const u8,
+    action: []const u8,
+    approval: []const u8,
+    status: []const u8,
+) !void {
+    try out.appendSlice(allocator, "{\"type\":");
+    try protocol.appendJsonString(allocator, out, event_type);
+    try out.appendSlice(allocator, ",\"action\":");
+    try protocol.appendJsonString(allocator, out, action);
+    try out.appendSlice(allocator, ",\"approval\":");
+    try protocol.appendJsonString(allocator, out, approval);
+    try out.appendSlice(allocator, ",\"status\":");
+    try protocol.appendJsonString(allocator, out, status);
+    try out.append(allocator, '}');
+}
+
+fn appendUsize(allocator: Allocator, out: *std.ArrayList(u8), value: usize) !void {
+    var buffer: [32]u8 = undefined;
+    const text = std.fmt.bufPrint(&buffer, "{d}", .{value}) catch unreachable;
+    try out.appendSlice(allocator, text);
 }
 
 const ZigExe = struct {
@@ -453,8 +634,12 @@ test "tool list describes approval policies for mutating host actions" {
     defer std.testing.allocator.free(json);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"name\":\"zig.build\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"name\":\"terminal.write\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, json, "Run zig build or zig build test. This writes build artifacts and should be approved by the host UI.\",\"approval\":\"ask\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, json, "Ask the terminal host to write text into the active PTY after approval.\",\"approval\":\"ask\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"approval\":\"ask\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"requires_approval\":true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"effect\":\"write_build_artifacts\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"context_policy\":\"host_action_only_no_execution\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"input_schema\":{\"type\":\"object\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"output_schema\":{\"type\":\"object\"") != null);
 }
 
 test "finds known tools and rejects unknown tools" {
@@ -517,6 +702,49 @@ test "terminal.write returns ask action payload" {
     try std.testing.expect(std.mem.indexOf(u8, json, "\"host_action\":\"terminal.write\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"approval\":\"ask\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"text\":\"zig build\\n\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"audit\":{\"action\":\"terminal.write\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"event\":{\"type\":\"host_action.requested\"") != null);
+}
+
+test "host action payloads include audit and event metadata" {
+    const json = try zigBuildAskJsonAlloc(std.testing.allocator, "test");
+    defer std.testing.allocator.free(json);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"requires_host\":true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"audit\":{\"action\":\"zig.build\",\"effect\":\"write_build_artifacts\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"event\":{\"type\":\"host_action.requested\",\"action\":\"zig.build\",\"approval\":\"ask\",\"status\":\"pending_host_approval\"}") != null);
+}
+
+test "redacts secret-like lines and reports clipping" {
+    const redacted = try redactSecretsAlloc(std.testing.allocator, "ok\napi_key = abc123\nAuthorization: Bearer token\n");
+    defer redacted.deinit(std.testing.allocator);
+    try std.testing.expect(redacted.changed);
+    try std.testing.expect(std.mem.indexOf(u8, redacted.text, "abc123") == null);
+    try std.testing.expect(std.mem.indexOf(u8, redacted.text, "[redacted secret-like line]") != null);
+
+    const clipped = clippedView("abcdef", 3);
+    try std.testing.expect(clipped.truncated);
+    try std.testing.expectEqualStrings("abc", clipped.text);
+}
+
+test "file read returns minimized redacted metadata" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "agentd-redact-test.txt", .data = "hello\npassword: hunter2\n" });
+    const path = try std.fs.path.join(std.testing.allocator, &.{
+        ".zig-cache",
+        "tmp",
+        &tmp.sub_path,
+        "agentd-redact-test.txt",
+    });
+    defer std.testing.allocator.free(path);
+
+    const json = try readFileJsonAlloc(std.testing.allocator, std.testing.io, path);
+    defer std.testing.allocator.free(json);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"redacted\":true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"content_truncated\":false") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "hunter2") == null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"context_policy\":\"bounded_64k_redacted\"") != null);
 }
 
 test "resolves configured zig path before path lookup" {

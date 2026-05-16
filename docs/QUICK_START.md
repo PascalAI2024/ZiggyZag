@@ -46,7 +46,7 @@ zig build run-desktop
 
 ## Desktop Themes And Settings
 
-On Windows, press `Ctrl+,` in the native desktop window to open the settings overlay. Press `Ctrl+Shift+T` to cycle the built-in themes live.
+On Windows, press `Ctrl+,` in the native desktop window to open the settings overlay. Press `Ctrl+Shift+P` for the command palette, `Ctrl+Shift+F` for scrollback search, `Ctrl+Shift+O` for quick select, and `Ctrl+Shift+T` to cycle the built-in themes live.
 
 Built-in theme ids:
 
@@ -77,6 +77,12 @@ font.size = 14
 show_status_bar = true
 smooth_scroll = true
 bell = false
+scrollback.lines = 10000
+
+# Optional host profile
+profile.shell = C:\path\to\ziggyzag.exe
+profile.cwd = C:\Users\you\dev
+profile.term = xterm-256color
 
 # Optional per-theme overrides
 theme.background = #1e1e2e
@@ -186,6 +192,8 @@ project
 run --list
 dirs
 history --stats
+history status
+history export .ziggyzag-history.json --json
 
 inspect echo hello | grep hello
 doctor
@@ -256,7 +264,7 @@ Windows order:
 3. Run `.\scripts\qa-tomorrow.ps1`.
 4. Run `.\zig-out\bin\ziggyzag.exe` and try `help`, `doctor`, `history --stats`, `project`, and `exit`.
 5. Run `.\scripts\smoke.ps1`.
-6. Run `.\zig-out\bin\ziggyzag-launcher.exe` and test typing, Enter, Backspace, Ctrl+C interrupt, paste, copy-visible text, resize, scrollback, `Ctrl+,` settings, and `Ctrl+Shift+T` theme cycling.
+6. Run `.\zig-out\bin\ziggyzag-launcher.exe` and test typing, Enter, Backspace, Ctrl+C interrupt, paste, copy-visible text, resize, scrollback, `Ctrl+,` settings, `Ctrl+Shift+P` palette, `Ctrl+Shift+F` search, `Ctrl+Shift+O` quick select, and `Ctrl+Shift+T` theme cycling.
 7. Run `zig build run-agentd -- --describe-tools`.
 8. Run `zig build run-agentd -- --stdio` and send `{"id":1,"method":"agent/health"}`.
 

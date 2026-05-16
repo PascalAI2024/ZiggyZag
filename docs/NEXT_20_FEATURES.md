@@ -16,6 +16,7 @@ The conclusion is clear: stay all-Zig, keep ZiggyZag's shell as the source of tr
 
 - [ ] 1. Terminal compatibility harness and VT parser decision
   Build conformance tests around the current grid, CSI/OSC parsing, cursor state, scroll regions, erase behavior, save/restore cursor, private modes, and malformed sequence recovery. Decide whether to keep expanding the local parser or integrate `libghostty-vt` after the boundary is proven.
+  Progress: focused terminal/integration unit coverage now includes split OSC events, scrollback caps, cursor save/restore, insert/delete, richer SGR colors/attributes, alternate screen, bracketed paste, app cursor, and mouse private modes. A standalone conformance harness and parser decision remain open.
   Primary paths: `apps/desktop/src/terminal.zig`, `apps/desktop/src/integration.zig`.
 
 - [ ] 2. Unicode/grapheme cell model
@@ -24,18 +25,22 @@ The conclusion is clear: stay all-Zig, keep ZiggyZag's shell as the source of tr
 
 - [ ] 3. Truecolor, render attributes, and honest `TERM`
   Add 256-color and truecolor SGR, underline, double underline, italic, inverse, strikethrough, blink handling, reset variants, and a documented capability profile. Until then, stop overpromising with `xterm-256color` where unsupported.
+  Progress: terminal core parses/stores 256-color, RGB color, underline color, italic, underline, double underline, inverse, hidden, strikethrough, blink, overline, and targeted resets; the Windows renderer consumes 16/256/RGB colors plus dim/bold/inverse/hidden. Visual underline/italic drawing remains open.
   Primary paths: `apps/desktop/src/terminal.zig`, `apps/desktop/src/windows_app.zig`.
 
 - [ ] 4. Alternate screen, scroll margins, insert/delete, and resize reflow
   Support full-screen apps properly: alternate buffer, main scrollback separation, cursor/state restore, origin mode, insert/delete character and line, soft-wrap tracking, bottom anchoring, and reflow-aware resize.
+  Progress: alternate buffer/state restore, no-alt-screen scrollback capture, insert/delete character and line, and resize preservation are implemented. Scroll margins, origin mode, and reflow-aware resize remain open.
   Primary paths: `apps/desktop/src/terminal.zig`, `apps/desktop/src/windows_app.zig`.
 
 - [ ] 5. Bracketed paste, keyboard modes, and mouse reporting
   Track bracketed paste mode, application cursor/keypad mode, modifier-aware key encoding, Alt/meta input, function keys, IME/dead-key behavior, focus events, xterm/SGR mouse reporting, and wheel events inside alternate screen apps.
+  Progress: bracketed paste wrapping, application cursor arrows, DEC mouse tracking/encoding state, and alternate-screen wheel reports are implemented. Modifier/function keys, IME/dead-key behavior, focus events, and full mouse button reports remain open.
   Primary paths: `apps/desktop/src/windows_app.zig`.
 
-- [ ] 6. PTY lifecycle hardening
+- [x] 6. PTY lifecycle hardening
   Store and join the reader thread, signal shutdown atomically, unblock reads safely, move UI work back onto the window thread, stop mutating process-global environment, and pass per-session environment blocks into child processes.
+  Shipped: reader thread ownership/join, atomic shutdown flag, child-only environment block, UI-thread refresh posting, startup cleanup, and launch/close smoke coverage.
   Primary paths: `apps/desktop/src/windows_app.zig`, `apps/desktop/src/pty.zig`.
 
 - [ ] 7. Shared POSIX native desktop host
@@ -46,24 +51,29 @@ The conclusion is clear: stay all-Zig, keep ZiggyZag's shell as the source of tr
   Implement the Windows side of interactive raw mode so cursor editing, redraw, suggestions, tab UX, Ctrl-R, and manual echo are first-class when ZiggyZag runs directly in a Windows terminal.
   Primary paths: `apps/shell/src/main.zig`.
 
-- [ ] 9. Parser diagnostics and status correctness
+- [x] 9. Parser diagnostics and status correctness
   Make unterminated quotes, missing redirect targets, invalid builtins, failed `type`/`which`, and config errors set meaningful statuses and show precise messages. Preserve learning-friendly output while making scripts trustworthy.
+  Shipped: parse errors keep the shell alive with status 2, redirect-target validation happens before mutation, and `type`/`which` set useful failure statuses.
   Primary paths: `apps/shell/src/main.zig`.
 
 - [ ] 10. Streaming pipelines and bounded captures
   Replace buffered native pipelines with real pipe handles, concurrent stdout/stderr draining, bounded capture, spill-to-temp behavior for huge output, and deadlock tests.
+  Progress: native stages now bound input, drain stdout/stderr together, and fail safely on oversized captures. A true streaming pipe chain with spill-to-temp remains open.
   Primary paths: `apps/shell/src/main.zig`.
 
 - [ ] 11. Cross-platform background jobs
   Implement nonblocking child status on Windows, macOS, Linux, and BSD; add `fg`, `bg`, `wait`, `kill`, and `disown` or clearly document which job-control features are intentionally absent.
+  Progress: practical `wait`, `kill`, `disown`, `fg`, and `bg` builtins are implemented around ZiggyZag's background job table. Full process-group job control is intentionally not claimed yet.
   Primary paths: `apps/shell/src/main.zig`.
 
-- [ ] 12. Fast prompt and git status cache
+- [x] 12. Fast prompt and git status cache
   Add prompt timeouts, cached git/project state, stale-then-refresh rendering, branch-only fallback for slow repos, and tests around large repos and network paths.
+  Shipped: prompt snapshots cache briefly, git status output is bounded, slow git status has an env-configurable timeout, and branch-only fallback remains available.
   Primary paths: `apps/shell/src/main.zig`.
 
 - [ ] 13. Durable history backend with privacy controls
   Make metadata history durable by default, reload it on startup, keep `HISTFILE` import/export, add clear/export/disable commands, document storage paths, and redact secrets from app/agent context.
+  Progress: history now has clear/export/enable/disable/status/private controls, JSON/meta export, and env privacy switches. A default durable metadata backend and stronger secret redaction for shell history remain open.
   Primary paths: `apps/shell/src/main.zig`, `docs/QUICK_START.md`.
 
 - [ ] 14. Completion engine v2
@@ -72,26 +82,31 @@ The conclusion is clear: stay all-Zig, keep ZiggyZag's shell as the source of tr
 
 - [ ] 15. Bounded searchable scrollback and copy mode
   Add a configurable scrollback ring, Ctrl+Shift+F search, keyboard copy mode, selection-aware copy, rectangular selection later, and prompt-jump using ZiggyZag integration events.
+  Progress: configurable scrollback ring, `Ctrl+Shift+F` search, and copy-visible are implemented. Keyboard copy mode, selection-aware copy, and prompt-jump remain open.
   Primary paths: `apps/desktop/src/terminal.zig`, `apps/desktop/src/windows_app.zig`.
 
 - [ ] 16. Quick select, hyperlinks, and open actions
   Detect URLs, paths, IPs, git hashes, issue keys, and command output ranges; let users copy, paste, open, or search them without dragging a mouse. Add OSC 8 hyperlink parsing once the cell model can represent it.
+  Progress: `Ctrl+Shift+O` quick select detects and copies URLs, path-like strings, issue keys, and git-hash-like tokens from the current viewport. Open actions, IPs, command ranges, and OSC 8 remain open.
   Primary paths: `apps/desktop/src/terminal.zig`, `apps/desktop/src/windows_app.zig`.
 
 - [ ] 17. Tabs, split panes, and session restore
   Introduce `Session` objects with one PTY/grid per tab or split, keyboard navigation, close confirmation, persisted titles, startup cwd inheritance, and a minimal restore file for last window layout.
   Primary paths: `apps/desktop/src/windows_app.zig`, `apps/desktop/src/config.zig`.
 
-- [ ] 18. Command palette and action registry
+- [x] 18. Command palette and action registry
   Create a searchable modal for new tab, split, close, copy, paste, search, theme, font size, settings, restart shell, open config, run project task, and agent actions. Track frecency after the first version works.
+  Shipped first version: `Ctrl+Shift+P` searchable palette runs copy, paste, search, quick select, settings, theme cycle, config reload, restart shell, clear scrollback, copy cwd/config path, and AgentD command insertion. Tabs/splits and frecency remain future actions.
   Primary paths: `apps/desktop/src/windows_app.zig`, `apps/desktop/src/config.zig`.
 
 - [ ] 19. Profiles, keybindings, settings, and theme sync
   Expand desktop config into profiles for shell path, startup directory, environment, font, scrollback, keybindings, and theme. Add live reload, settings UI editing, light/dark theme pairs, and prompt/terminal color sync.
+  Progress: desktop config now applies profile shell path, startup cwd, TERM, and scrollback lines; `Ctrl+Shift+R` reloads safe settings. Environment arrays, keybindings, settings editing, light/dark pairs, and prompt/theme sync remain open.
   Primary paths: `apps/desktop/src/config.zig`, `apps/desktop/src/theme.zig`, `apps/shell/src/main.zig`.
 
 - [ ] 20. Approval-aware agent panel
   Spawn `ziggyzag-agentd --stdio` from the desktop host, list tools, run read-only tools automatically, require approval for terminal writes/builds, preview exact text before insertion, audit every decision, minimize context, redact secrets, and harden OSC 777 as UI context rather than a trust boundary.
+  Progress: AgentD now exposes richer tool schemas, approval metadata, audit/event host actions, and redacted bounded read/search/git output. The desktop sidecar panel/spawn/approval UI remains open.
   Primary paths: `apps/agentd/src/main.zig`, `apps/agentd/src/tools.zig`, `apps/desktop/src/integration.zig`, `apps/desktop/src/windows_app.zig`.
 
 ## Execution Waves

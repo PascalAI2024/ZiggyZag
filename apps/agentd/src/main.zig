@@ -72,11 +72,11 @@ fn printHelp(writer: *std.Io.Writer) !void {
         \\
         \\JSON-line methods:
         \\  {"id":0,"method":"agent/health"}
-        \\  {"id":1,"method":"tools/list"}
+        \\  {"id":1,"method":"tools/list"}    # includes schemas, approval, effect, and context policy
         \\  {"id":2,"method":"tools/call","tool":"project.info"}
         \\  {"id":3,"method":"tools/call","tool":"file.read","path":"README.md"}
         \\  {"id":4,"method":"tools/call","tool":"rg.search","query":"TODO"}
-        \\  {"id":5,"method":"tools/call","tool":"terminal.write","text":"zig build\n"}
+        \\  {"id":5,"method":"tools/call","tool":"terminal.write","text":"zig build\n"}  # approval-shaped host action
         \\  {"id":6,"method":"agent/run","prompt":"summarize the workspace"}
         \\
     );

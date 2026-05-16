@@ -7,6 +7,10 @@ const max_config_file_bytes = 256 * 1024;
 const max_source_file_bytes = 512 * 1024;
 const max_history_file_bytes = 8 * 1024 * 1024;
 const max_pipeline_capture_bytes = 8 * 1024 * 1024;
+const max_pipeline_stage_input_bytes = 64 * 1024;
+const max_prompt_git_output_bytes = 256 * 1024;
+const default_prompt_cache_ms = 1000;
+const default_prompt_git_timeout_ms = 150;
 
 const CompletionEntry = struct {
     text: []u8,
@@ -103,6 +107,7 @@ const PromptSnapshot = struct {
     cwd_len: usize = 0,
     project_kind: ?ProjectKind = null,
     git: GitPromptStatus = .{},
+    generated_at_ms: i64 = 0,
 
     fn cwdSlice(self: *const PromptSnapshot) []const u8 {
         return self.cwd[0..self.cwd_len];
@@ -127,6 +132,7 @@ const Shell = struct {
     history: std.ArrayList([]u8),
     history_meta: std.ArrayList(HistoryMeta),
     history_append_index: usize,
+    history_enabled: bool,
     completion_specs: std.ArrayList(CompletionSpec),
     completion_candidates: std.ArrayList(CompletionCandidateSpec),
     aliases: std.ArrayList(AliasSpec),
@@ -150,6 +156,7 @@ const Shell = struct {
             .history = .empty,
             .history_meta = .empty,
             .history_append_index = 0,
+            .history_enabled = true,
             .completion_specs = .empty,
             .completion_candidates = .empty,
             .aliases = .empty,
@@ -227,7 +234,7 @@ const Shell = struct {
 
         const histfile = self.env.get("HISTFILE");
         const history_meta_file = self.env.get("ZIGGYZAG_HISTORY_DB");
-        if (histfile) |path| {
+        if (self.history_enabled) if (histfile) |path| {
             self.readHistoryFile(path) catch |err| switch (err) {
                 error.FileNotFound => {},
                 error.HistoryFileTooLarge => {
@@ -237,9 +244,13 @@ const Shell = struct {
                 else => |e| return e,
             };
             self.history_append_index = self.history.items.len;
-        }
-        defer if (histfile) |path| self.writeHistoryFile(path, false, 0) catch {};
-        defer if (history_meta_file) |path| self.writeHistoryMetaFile(path) catch {};
+        };
+        defer if (histfile) |path| {
+            if (self.history_enabled) self.writeHistoryFile(path, false, 0) catch {};
+        };
+        defer if (history_meta_file) |path| {
+            if (self.history_enabled) self.writeHistoryMetaFile(path) catch {};
+        };
 
         try self.writeIntegrationSessionReady(&stdout.interface);
 
@@ -255,14 +266,17 @@ const Shell = struct {
             defer if (expanded_abbreviation_line) |owned| self.allocator.free(owned);
             const submitted_line = expanded_abbreviation_line orelse owned_line;
 
-            try self.history.append(self.allocator, try self.allocator.dupe(u8, submitted_line));
-            const command_id = self.history.items.len;
+            if (self.history_enabled) {
+                try self.history.append(self.allocator, try self.allocator.dupe(u8, submitted_line));
+            }
+            const command_id = if (self.history_enabled) self.history.items.len else self.history.items.len + 1;
             const started_at = std.Io.Clock.real.now(self.io).toMilliseconds();
             try self.writeIntegrationCommandStarted(&stdout.interface, command_id, submitted_line, started_at);
             const keep_running = try self.execute(submitted_line);
             self.last_duration_ms = std.Io.Clock.real.now(self.io).toMilliseconds() - started_at;
-            self.prompt_snapshot_valid = false;
-            try self.recordHistoryMeta(submitted_line, started_at, self.last_duration_ms, self.last_status);
+            if (self.history_enabled) {
+                try self.recordHistoryMeta(submitted_line, started_at, self.last_duration_ms, self.last_status);
+            }
             try self.writeIntegrationCommandFinished(&stdout.interface, command_id, self.last_status, self.last_duration_ms);
             if (!keep_running) break;
         }
@@ -571,7 +585,9 @@ const Shell = struct {
     }
 
     fn promptSnapshot(self: *Shell, cwd: []const u8) *const PromptSnapshot {
-        if (self.prompt_snapshot_valid and std.mem.eql(u8, cwd, self.prompt_snapshot.cwdSlice())) {
+        const now_ms = std.Io.Clock.real.now(self.io).toMilliseconds();
+        const cache_ms = envI64Bounded(self.env.get("ZIGGYZAG_PROMPT_CACHE_MS"), default_prompt_cache_ms, 0, 60_000);
+        if (self.prompt_snapshot_valid and std.mem.eql(u8, cwd, self.prompt_snapshot.cwdSlice()) and now_ms - self.prompt_snapshot.generated_at_ms <= cache_ms) {
             return &self.prompt_snapshot;
         }
 
@@ -579,6 +595,7 @@ const Shell = struct {
         self.prompt_snapshot.cwd_len = copyBounded(self.prompt_snapshot.cwd[0..], cwd);
         self.prompt_snapshot.project_kind = self.detectProjectKindFrom(cwd) catch null;
         self.prompt_snapshot.git = self.gitPromptStatus(cwd) catch .{};
+        self.prompt_snapshot.generated_at_ms = now_ms;
         self.prompt_snapshot_valid = true;
         return &self.prompt_snapshot;
     }
@@ -814,9 +831,15 @@ const Shell = struct {
             return try self.gitBranchOnlyStatus();
         }
 
+        const timeout_ms = envI64Bounded(self.env.get("ZIGGYZAG_PROMPT_GIT_TIMEOUT_MS"), default_prompt_git_timeout_ms, 0, 2000);
+        if (timeout_ms == 0) return try self.gitBranchOnlyStatus();
+
         const result = std.process.run(self.allocator, self.io, .{
             .argv = &.{ "git", "-C", cwd, "status", "--porcelain=v1", "--branch" },
             .environ_map = self.env,
+            .stdout_limit = .limited(max_prompt_git_output_bytes),
+            .stderr_limit = .limited(max_prompt_git_output_bytes),
+            .timeout = .{ .duration = .{ .raw = std.Io.Duration.fromMilliseconds(timeout_ms), .clock = .awake } },
         }) catch {
             return try self.gitBranchOnlyStatus();
         };
@@ -1536,6 +1559,21 @@ const Shell = struct {
             return true;
         }
 
+        if (std.mem.eql(u8, command, "wait") or
+            std.mem.eql(u8, command, "kill") or
+            std.mem.eql(u8, command, "disown") or
+            std.mem.eql(u8, command, "fg") or
+            std.mem.eql(u8, command, "bg"))
+        {
+            var stdout_buffer: std.ArrayList(u8) = .empty;
+            defer stdout_buffer.deinit(self.allocator);
+            var stderr_buffer: std.ArrayList(u8) = .empty;
+            defer stderr_buffer.deinit(self.allocator);
+            try self.jobControlCommand(parsed.argv.items, &stdout_buffer, &stderr_buffer);
+            try self.emitCommandOutput(&parsed, stdout_buffer.items, stderr_buffer.items);
+            return true;
+        }
+
         if (std.mem.eql(u8, command, "repeat")) {
             var stdout_buffer: std.ArrayList(u8) = .empty;
             defer stdout_buffer.deinit(self.allocator);
@@ -2027,10 +2065,15 @@ const Shell = struct {
             \\  env [NAME]         Show environment variables
             \\  export NAME=VALUE  Store an environment variable
             \\  forward [N]        Move forward in directory history
-            \\  history [N]        View command history
+            \\  history [N]        View, clear, export, or disable command history
             \\  inspect COMMAND    Explain how ZiggyZag would parse a command
             \\  jump QUERY         Fuzzy-jump to a visited directory
             \\  jobs               List background jobs
+            \\  wait [JOB...]      Wait for background jobs
+            \\  kill [-SIG] TGT    Kill a job (%N) or process id
+            \\  disown [JOB...]    Remove jobs from shell tracking
+            \\  fg [JOB]           Wait for a job in the foreground
+            \\  bg [JOB]           Show/resume a tracked background job
             \\  mkcd DIR           Create and enter a directory
             \\  path [--json]      Show PATH entries
             \\  project [--json]   Detect project kind, root, and tasks
@@ -2130,6 +2173,38 @@ const Shell = struct {
     }
 
     fn historyCommand(self: *Shell, argv: []const []const u8, stdout_buffer: *std.ArrayList(u8)) !void {
+        if (argv.len >= 2 and (std.mem.eql(u8, argv[1], "clear") or std.mem.eql(u8, argv[1], "-c"))) {
+            self.clearHistory();
+            return;
+        }
+
+        if (argv.len >= 2 and std.mem.eql(u8, argv[1], "disable")) {
+            self.history_enabled = false;
+            if (hasArg(argv, "--clear")) self.clearHistory();
+            try stdout_buffer.appendSlice(self.allocator, "history: disabled\n");
+            return;
+        }
+
+        if (argv.len >= 2 and std.mem.eql(u8, argv[1], "enable")) {
+            self.history_enabled = true;
+            try stdout_buffer.appendSlice(self.allocator, "history: enabled\n");
+            return;
+        }
+
+        if (argv.len >= 2 and std.mem.eql(u8, argv[1], "status")) {
+            try appendFmt(self.allocator, stdout_buffer, "history: {s}\ncommands: {d}\nmetadata: {d}\n", .{
+                if (self.history_enabled) "enabled" else "disabled",
+                self.history.items.len,
+                self.history_meta.items.len,
+            });
+            return;
+        }
+
+        if (argv.len >= 3 and std.mem.eql(u8, argv[1], "export")) {
+            try self.exportHistoryFile(argv[2], hasArg(argv, "--json"), hasArg(argv, "--meta"));
+            return;
+        }
+
         if (argv.len >= 3 and std.mem.eql(u8, argv[1], "-r")) {
             try self.readHistoryFile(argv[2]);
             return;
@@ -2144,18 +2219,6 @@ const Shell = struct {
         if (argv.len >= 3 and std.mem.eql(u8, argv[1], "-a")) {
             try self.writeHistoryFile(argv[2], true, self.history_append_index);
             self.history_append_index = self.history.items.len;
-            return;
-        }
-
-        if (argv.len >= 2 and std.mem.eql(u8, argv[1], "-c")) {
-            for (self.history.items) |entry| self.allocator.free(entry);
-            self.history.clearRetainingCapacity();
-            for (self.history_meta.items) |entry| {
-                self.allocator.free(entry.command);
-                self.allocator.free(entry.cwd);
-            }
-            self.history_meta.clearRetainingCapacity();
-            self.history_append_index = 0;
             return;
         }
 
@@ -2203,6 +2266,37 @@ const Shell = struct {
         try self.printHistory(argv, stdout_buffer);
     }
 
+    fn clearHistory(self: *Shell) void {
+        for (self.history.items) |entry| self.allocator.free(entry);
+        self.history.clearRetainingCapacity();
+        for (self.history_meta.items) |entry| {
+            self.allocator.free(entry.command);
+            self.allocator.free(entry.cwd);
+        }
+        self.history_meta.clearRetainingCapacity();
+        self.history_append_index = 0;
+    }
+
+    fn exportHistoryFile(self: *Shell, path: []const u8, json: bool, meta: bool) !void {
+        if (meta and !json) {
+            try self.writeHistoryMetaFile(path);
+            return;
+        }
+        if (!meta and !json) {
+            try self.writeHistoryFile(path, false, 0);
+            return;
+        }
+
+        var output: std.ArrayList(u8) = .empty;
+        defer output.deinit(self.allocator);
+        if (meta) {
+            try self.printHistoryMetaJson(&output);
+        } else {
+            try self.printHistoryJson(&output);
+        }
+        try self.writeFilePath(path, output.items);
+    }
+
     fn printHistory(self: *Shell, argv: []const []const u8, stdout_buffer: *std.ArrayList(u8)) !void {
         const limit = if (argv.len >= 2) std.fmt.parseInt(usize, argv[1], 10) catch self.history.items.len else self.history.items.len;
         const start = if (limit < self.history.items.len) self.history.items.len - limit else 0;
@@ -2215,6 +2309,9 @@ const Shell = struct {
     fn loadStartupConfig(self: *Shell) !void {
         if (self.env.get("ZIGGYZAG_PROMPT")) |mode| {
             if (promptModeByName(mode)) |prompt_mode| self.prompt_mode = prompt_mode;
+        }
+        if (isFalseyEnv(self.env.get("ZIGGYZAG_HISTORY")) or isTruthyEnv(self.env.get("ZIGGYZAG_HISTORY_PRIVATE"))) {
+            self.history_enabled = false;
         }
 
         const path = try self.configPathAlloc();
@@ -2272,6 +2369,8 @@ const Shell = struct {
             try self.completeBuiltin(parsed.argv.items, &output);
         } else if (std.mem.eql(u8, command, "prompt")) {
             try self.promptCommand(parsed.argv.items, &output);
+        } else if (std.mem.eql(u8, command, "history")) {
+            try self.historyCommand(parsed.argv.items, &output);
         }
     }
 
@@ -2371,12 +2470,16 @@ const Shell = struct {
             try output.append(self.allocator, '\n');
         }
 
+        try self.writeFilePath(path, output.items);
+    }
+
+    fn writeFilePath(self: *Shell, path: []const u8, bytes: []const u8) !void {
         if (std.fs.path.isAbsolute(path)) {
             var file = try std.Io.Dir.createFileAbsolute(self.io, path, .{});
             defer file.close(self.io);
-            try file.writeStreamingAll(self.io, output.items);
+            try file.writeStreamingAll(self.io, bytes);
         } else {
-            try std.Io.Dir.cwd().writeFile(self.io, .{ .sub_path = path, .data = output.items });
+            try std.Io.Dir.cwd().writeFile(self.io, .{ .sub_path = path, .data = bytes });
         }
     }
 
@@ -2530,13 +2633,7 @@ const Shell = struct {
             try output.append(self.allocator, '\n');
         }
 
-        if (std.fs.path.isAbsolute(path)) {
-            var file = try std.Io.Dir.createFileAbsolute(self.io, path, .{});
-            defer file.close(self.io);
-            try file.writeStreamingAll(self.io, output.items);
-        } else {
-            try std.Io.Dir.cwd().writeFile(self.io, .{ .sub_path = path, .data = output.items });
-        }
+        try self.writeFilePath(path, output.items);
     }
 
     fn declareVariable(self: *Shell, argv: []const []const u8, stdout_buffer: *std.ArrayList(u8)) !void {
@@ -3258,6 +3355,215 @@ const Shell = struct {
         self.removeDoneJobs();
     }
 
+    fn jobControlCommand(self: *Shell, argv: []const []const u8, stdout_buffer: *std.ArrayList(u8), stderr_buffer: *std.ArrayList(u8)) !void {
+        const command = argv[0];
+        self.refreshBackgroundJobs();
+
+        if (std.mem.eql(u8, command, "wait")) {
+            try self.waitCommand(argv, stdout_buffer, stderr_buffer);
+        } else if (std.mem.eql(u8, command, "kill")) {
+            try self.killCommand(argv, stdout_buffer, stderr_buffer);
+        } else if (std.mem.eql(u8, command, "disown")) {
+            try self.disownCommand(argv, stdout_buffer, stderr_buffer);
+        } else if (std.mem.eql(u8, command, "fg")) {
+            try self.fgCommand(argv, stdout_buffer, stderr_buffer);
+        } else if (std.mem.eql(u8, command, "bg")) {
+            try self.bgCommand(argv, stdout_buffer, stderr_buffer);
+        }
+    }
+
+    fn waitCommand(self: *Shell, argv: []const []const u8, stdout_buffer: *std.ArrayList(u8), stderr_buffer: *std.ArrayList(u8)) !void {
+        _ = stdout_buffer;
+        if (argv.len == 1) {
+            while (self.background_jobs.items.len > 0) {
+                self.last_status = try self.waitJobAtIndex(0);
+            }
+            return;
+        }
+
+        var status: u8 = 0;
+        for (argv[1..]) |spec| {
+            const index = self.findJobIndexBySpec(spec) orelse {
+                try appendFmt(self.allocator, stderr_buffer, "wait: {s}: no such job\n", .{spec});
+                status = 127;
+                continue;
+            };
+            status = try self.waitJobAtIndex(index);
+        }
+        self.last_status = status;
+    }
+
+    fn killCommand(self: *Shell, argv: []const []const u8, stdout_buffer: *std.ArrayList(u8), stderr_buffer: *std.ArrayList(u8)) !void {
+        _ = stdout_buffer;
+        if (argv.len < 2) {
+            try stderr_buffer.appendSlice(self.allocator, "kill: usage: kill [-SIGNAL] %JOB|PID ...\n");
+            self.last_status = 2;
+            return;
+        }
+
+        var signal: []const u8 = "";
+        var index: usize = 1;
+        if (argv[index].len > 1 and argv[index][0] == '-') {
+            signal = argv[index][1..];
+            index += 1;
+        }
+        if (index >= argv.len) {
+            try stderr_buffer.appendSlice(self.allocator, "kill: missing job or pid\n");
+            self.last_status = 2;
+            return;
+        }
+
+        var status: u8 = 0;
+        while (index < argv.len) : (index += 1) {
+            const target = argv[index];
+            if (std.mem.startsWith(u8, target, "%")) {
+                const job_index = self.findJobIndexBySpec(target) orelse {
+                    try appendFmt(self.allocator, stderr_buffer, "kill: {s}: no such job\n", .{target});
+                    status = 127;
+                    continue;
+                };
+                var removed = self.background_jobs.orderedRemove(job_index);
+                removed.child.kill(self.io);
+                self.allocator.free(removed.command);
+                continue;
+            }
+
+            if (!isDecimalNumber(target)) {
+                try appendFmt(self.allocator, stderr_buffer, "kill: {s}: expected %%JOB or PID\n", .{target});
+                status = 2;
+                continue;
+            }
+            const term = self.killPid(target, signal) catch |err| {
+                try appendFmt(self.allocator, stderr_buffer, "kill: {s}: {s}\n", .{ target, @errorName(err) });
+                status = 1;
+                continue;
+            };
+            if (termExitCode(term) != 0) status = termExitCode(term);
+        }
+        self.last_status = status;
+    }
+
+    fn disownCommand(self: *Shell, argv: []const []const u8, stdout_buffer: *std.ArrayList(u8), stderr_buffer: *std.ArrayList(u8)) !void {
+        _ = stdout_buffer;
+        if (self.background_jobs.items.len == 0) {
+            if (argv.len == 1) try stderr_buffer.appendSlice(self.allocator, "disown: no current job\n");
+            self.last_status = if (argv.len == 1) 1 else 0;
+            return;
+        }
+
+        if (argv.len == 1) {
+            self.disownJobAtIndex(self.currentJobIndex().?);
+            self.last_status = 0;
+            return;
+        }
+
+        var status: u8 = 0;
+        var arg_index: usize = 1;
+        while (arg_index < argv.len) : (arg_index += 1) {
+            const job_index = self.findJobIndexBySpec(argv[arg_index]) orelse {
+                try appendFmt(self.allocator, stderr_buffer, "disown: {s}: no such job\n", .{argv[arg_index]});
+                status = 127;
+                continue;
+            };
+            self.disownJobAtIndex(job_index);
+        }
+        self.last_status = status;
+    }
+
+    fn fgCommand(self: *Shell, argv: []const []const u8, stdout_buffer: *std.ArrayList(u8), stderr_buffer: *std.ArrayList(u8)) !void {
+        const spec = if (argv.len >= 2) argv[1] else "%%";
+        const index = self.findJobIndexBySpec(spec) orelse {
+            try appendFmt(self.allocator, stderr_buffer, "fg: {s}: no such job\n", .{spec});
+            self.last_status = 127;
+            return;
+        };
+        try appendFmt(self.allocator, stdout_buffer, "{s}\n", .{self.background_jobs.items[index].command});
+        self.last_status = try self.waitJobAtIndex(index);
+    }
+
+    fn bgCommand(self: *Shell, argv: []const []const u8, stdout_buffer: *std.ArrayList(u8), stderr_buffer: *std.ArrayList(u8)) !void {
+        const spec = if (argv.len >= 2) argv[1] else "%%";
+        const index = self.findJobIndexBySpec(spec) orelse {
+            try appendFmt(self.allocator, stderr_buffer, "bg: {s}: no such job\n", .{spec});
+            self.last_status = 127;
+            return;
+        };
+        try self.appendJobLine(stdout_buffer, &self.background_jobs.items[index]);
+        self.last_status = 0;
+    }
+
+    fn waitJobAtIndex(self: *Shell, index: usize) !u8 {
+        var removed = self.background_jobs.orderedRemove(index);
+        defer self.allocator.free(removed.command);
+        if (removed.child.id == null) return 0;
+        const term = try removed.child.wait(self.io);
+        return termExitCode(term);
+    }
+
+    fn disownJobAtIndex(self: *Shell, index: usize) void {
+        const removed = self.background_jobs.orderedRemove(index);
+        self.allocator.free(removed.command);
+    }
+
+    fn findJobIndexBySpec(self: *Shell, spec: []const u8) ?usize {
+        if (std.mem.eql(u8, spec, "%%") or std.mem.eql(u8, spec, "%+")) return self.currentJobIndex();
+        if (std.mem.eql(u8, spec, "%-")) return self.previousJobIndex();
+
+        const number_text = if (std.mem.startsWith(u8, spec, "%")) spec[1..] else spec;
+        const number = std.fmt.parseInt(usize, number_text, 10) catch return null;
+        for (self.background_jobs.items, 0..) |job, index| {
+            if (job.number == number) return index;
+        }
+        return null;
+    }
+
+    fn currentJobIndex(self: *Shell) ?usize {
+        var result: ?usize = null;
+        for (self.background_jobs.items, 0..) |job, index| {
+            if (result == null or job.number > self.background_jobs.items[result.?].number) result = index;
+        }
+        return result;
+    }
+
+    fn previousJobIndex(self: *Shell) ?usize {
+        const current = self.currentJobIndex() orelse return null;
+        var result: ?usize = null;
+        for (self.background_jobs.items, 0..) |job, index| {
+            if (index == current) continue;
+            if (result == null or job.number > self.background_jobs.items[result.?].number) result = index;
+        }
+        return result;
+    }
+
+    fn killPid(self: *Shell, pid: []const u8, signal: []const u8) !std.process.Child.Term {
+        const result = if (builtin.os.tag == .windows) result: {
+            var argv = [_][]const u8{ "taskkill", "/PID", pid, "/T", "/F" };
+            break :result try std.process.run(self.allocator, self.io, .{
+                .argv = &argv,
+                .environ_map = self.env,
+                .stdout_limit = .limited(32 * 1024),
+                .stderr_limit = .limited(32 * 1024),
+            });
+        } else result: {
+            var argv_with_signal = [_][]const u8{ "kill", "", pid };
+            var argv_plain = [_][]const u8{ "kill", pid };
+            const argv = if (signal.len > 0) blk: {
+                argv_with_signal[1] = try std.fmt.allocPrint(self.allocator, "-{s}", .{signal});
+                break :blk &argv_with_signal;
+            } else &argv_plain;
+            defer if (signal.len > 0) self.allocator.free(argv_with_signal[1]);
+            break :result try std.process.run(self.allocator, self.io, .{
+                .argv = argv,
+                .environ_map = self.env,
+                .stdout_limit = .limited(32 * 1024),
+                .stderr_limit = .limited(32 * 1024),
+            });
+        };
+        defer self.allocator.free(result.stdout);
+        defer self.allocator.free(result.stderr);
+        return result.term;
+    }
+
     fn printJobs(self: *Shell, stdout_buffer: *std.ArrayList(u8)) !void {
         for (self.background_jobs.items) |*job| {
             try self.appendJobLine(stdout_buffer, job);
@@ -3661,6 +3967,13 @@ const Shell = struct {
                     status = 1;
                     continue;
                 },
+                error.PipelineInputTooLarge => {
+                    try appendFmt(self.allocator, &stderr_output, "{s}: pipeline input exceeded safe native stage limit ({d} bytes)\n", .{ parsed.argv.items[0], max_pipeline_stage_input_bytes });
+                    self.allocator.free(input);
+                    input = try self.allocator.dupe(u8, "");
+                    status = 1;
+                    continue;
+                },
                 else => |e| return e,
             };
             defer result.deinit(self.allocator);
@@ -3714,32 +4027,43 @@ const Shell = struct {
             .stdout = .pipe,
             .stderr = .pipe,
         });
-        errdefer child.kill(self.io);
+        defer child.kill(self.io);
 
         if (input.len > 0) {
+            if (input.len > max_pipeline_stage_input_bytes) return error.PipelineInputTooLarge;
             var stdin_file = child.stdin.?;
             try stdin_file.writeStreamingAll(self.io, input);
             stdin_file.close(self.io);
             child.stdin = null;
         }
 
-        var stdout_buffer: [4096]u8 = undefined;
-        var stdout_reader = child.stdout.?.readerStreaming(self.io, &stdout_buffer);
-        const stdout_bytes = stdout_reader.interface.allocRemaining(self.allocator, .limited(max_pipeline_capture_bytes)) catch |err| switch (err) {
-            error.StreamTooLong => return error.PipelineOutputTooLarge,
-            else => |e| return e,
-        };
-        errdefer self.allocator.free(stdout_bytes);
+        var multi_reader_buffer: std.Io.File.MultiReader.Buffer(2) = undefined;
+        var multi_reader: std.Io.File.MultiReader = undefined;
+        multi_reader.init(self.allocator, self.io, multi_reader_buffer.toStreams(), &.{ child.stdout.?, child.stderr.? });
+        defer multi_reader.deinit();
 
-        var stderr_buffer: [4096]u8 = undefined;
-        var stderr_reader = child.stderr.?.readerStreaming(self.io, &stderr_buffer);
-        const stderr_bytes = stderr_reader.interface.allocRemaining(self.allocator, .limited(max_pipeline_capture_bytes)) catch |err| switch (err) {
-            error.StreamTooLong => return error.PipelineOutputTooLarge,
-            else => |e| return e,
-        };
-        errdefer self.allocator.free(stderr_bytes);
+        const stdout_reader = multi_reader.reader(0);
+        const stderr_reader = multi_reader.reader(1);
+
+        while (multi_reader.fill(4096, .none)) |_| {
+            if (stdout_reader.buffered().len > max_pipeline_capture_bytes) return error.PipelineOutputTooLarge;
+            if (stderr_reader.buffered().len > max_pipeline_capture_bytes) return error.PipelineOutputTooLarge;
+        } else |err| {
+            switch (err) {
+                error.EndOfStream => {},
+                else => return err,
+            }
+        }
+
+        try multi_reader.checkAnyError();
 
         const term = try child.wait(self.io);
+
+        const stdout_bytes = try multi_reader.toOwnedSlice(0);
+        errdefer self.allocator.free(stdout_bytes);
+        const stderr_bytes = try multi_reader.toOwnedSlice(1);
+        errdefer self.allocator.free(stderr_bytes);
+
         return .{
             .stdout = stdout_bytes,
             .stderr = stderr_bytes,
@@ -4391,7 +4715,8 @@ fn isConfigDirective(command: []const u8) bool {
         std.mem.eql(u8, command, "abbr") or
         std.mem.eql(u8, command, "export") or
         std.mem.eql(u8, command, "complete") or
-        std.mem.eql(u8, command, "prompt");
+        std.mem.eql(u8, command, "prompt") or
+        std.mem.eql(u8, command, "history");
 }
 
 fn isTruthyEnv(value: ?[]const u8) bool {
@@ -4408,6 +4733,20 @@ fn isFalseyEnv(value: ?[]const u8) bool {
         std.ascii.eqlIgnoreCase(text, "false") or
         std.ascii.eqlIgnoreCase(text, "no") or
         std.ascii.eqlIgnoreCase(text, "off");
+}
+
+fn envI64Bounded(value: ?[]const u8, default_value: i64, min_value: i64, max_value: i64) i64 {
+    const text = value orelse return default_value;
+    const parsed = std.fmt.parseInt(i64, text, 10) catch return default_value;
+    return std.math.clamp(parsed, min_value, max_value);
+}
+
+fn isDecimalNumber(text: []const u8) bool {
+    if (text.len == 0) return false;
+    for (text) |c| {
+        if (!std.ascii.isDigit(c)) return false;
+    }
+    return true;
 }
 
 fn slashCommandReplacement(command: []const u8) ?[]const u8 {
@@ -4481,22 +4820,26 @@ fn builtinDescription(name: []const u8) ?[]const u8 {
     if (std.mem.eql(u8, name, "abbr")) return "manage visible command abbreviations";
     if (std.mem.eql(u8, name, "alias")) return "manage command aliases";
     if (std.mem.eql(u8, name, "back")) return "return to an earlier directory";
+    if (std.mem.eql(u8, name, "bg")) return "show or resume a background job";
     if (std.mem.eql(u8, name, "cd")) return "change directory";
     if (std.mem.eql(u8, name, "complete")) return "register completions";
     if (std.mem.eql(u8, name, "config")) return "show, reload, and validate startup config";
     if (std.mem.eql(u8, name, "declare")) return "set shell variables";
+    if (std.mem.eql(u8, name, "disown")) return "remove jobs from shell tracking";
     if (std.mem.eql(u8, name, "dirs")) return "show directory history";
     if (std.mem.eql(u8, name, "doctor")) return "inspect shell runtime state";
     if (std.mem.eql(u8, name, "echo")) return "print arguments";
     if (std.mem.eql(u8, name, "env")) return "show environment variables";
     if (std.mem.eql(u8, name, "exit")) return "leave the shell";
     if (std.mem.eql(u8, name, "export")) return "set environment variables";
+    if (std.mem.eql(u8, name, "fg")) return "wait for a job in the foreground";
     if (std.mem.eql(u8, name, "forward")) return "move forward in directory history";
     if (std.mem.eql(u8, name, "help")) return "show shell help";
     if (std.mem.eql(u8, name, "history")) return "show and search history";
     if (std.mem.eql(u8, name, "inspect")) return "explain command parsing and execution path";
     if (std.mem.eql(u8, name, "jump")) return "fuzzy-jump to a visited directory";
     if (std.mem.eql(u8, name, "jobs")) return "list background jobs";
+    if (std.mem.eql(u8, name, "kill")) return "terminate a job or pid";
     if (std.mem.eql(u8, name, "mkcd")) return "create and enter a directory";
     if (std.mem.eql(u8, name, "path")) return "show PATH entries";
     if (std.mem.eql(u8, name, "project")) return "detect project tasks";
@@ -4512,6 +4855,7 @@ fn builtinDescription(name: []const u8) ?[]const u8 {
     if (std.mem.eql(u8, name, "up")) return "move up parent directories";
     if (std.mem.eql(u8, name, "unset")) return "remove a variable";
     if (std.mem.eql(u8, name, "vars")) return "show shell variable map";
+    if (std.mem.eql(u8, name, "wait")) return "wait for background jobs";
     if (std.mem.eql(u8, name, "which")) return "resolve command paths";
     return null;
 }
@@ -4719,10 +5063,13 @@ fn sortCompletionEntries(items: []CompletionEntry) void {
 const shell_builtin_names = [_][]const u8{
     "about",
     "back",
+    "bg",
     "dirs",
+    "disown",
     "echo",
     "env",
     "exit",
+    "fg",
     "forward",
     "type",
     "pwd",
@@ -4731,6 +5078,7 @@ const shell_builtin_names = [_][]const u8{
     "jump",
     "declare",
     "jobs",
+    "kill",
     "complete",
     "help",
     "alias",
@@ -4752,6 +5100,7 @@ const shell_builtin_names = [_][]const u8{
     "up",
     "unset",
     "vars",
+    "wait",
     "which",
 };
 
@@ -4850,9 +5199,42 @@ test "prompt modes and git status parsing" {
 test "config directives and names" {
     try std.testing.expect(isConfigDirective("alias"));
     try std.testing.expect(isConfigDirective("complete"));
+    try std.testing.expect(isConfigDirective("history"));
     try std.testing.expect(!isConfigDirective("rm"));
     try std.testing.expect(isValidName("ZIGGYZAG_1"));
     try std.testing.expect(!isValidName("1ZIGGYZAG"));
+}
+
+test "runtime helper knobs" {
+    try std.testing.expectEqual(@as(i64, 150), envI64Bounded(null, 150, 0, 2000));
+    try std.testing.expectEqual(@as(i64, 2000), envI64Bounded("9999", 150, 0, 2000));
+    try std.testing.expectEqual(@as(i64, 0), envI64Bounded("-5", 150, 0, 2000));
+    try std.testing.expectEqual(@as(i64, 150), envI64Bounded("nope", 150, 0, 2000));
+    try std.testing.expect(isDecimalNumber("12345"));
+    try std.testing.expect(!isDecimalNumber(""));
+    try std.testing.expect(!isDecimalNumber("%1"));
+}
+
+test "history privacy commands toggle and clear state" {
+    var env = std.process.Environ.Map.init(std.testing.allocator);
+    defer env.deinit();
+
+    var shell = Shell.init(std.testing.allocator, undefined, &env);
+    defer shell.deinit();
+
+    try shell.history.append(std.testing.allocator, try std.testing.allocator.dupe(u8, "echo secret"));
+
+    var output: std.ArrayList(u8) = .empty;
+    defer output.deinit(std.testing.allocator);
+    try shell.historyCommand(&.{ "history", "disable", "--clear" }, &output);
+    try std.testing.expect(!shell.history_enabled);
+    try std.testing.expectEqual(@as(usize, 0), shell.history.items.len);
+    try std.testing.expect(std.mem.indexOf(u8, output.items, "disabled") != null);
+
+    output.clearRetainingCapacity();
+    try shell.historyCommand(&.{ "history", "enable" }, &output);
+    try std.testing.expect(shell.history_enabled);
+    try std.testing.expect(std.mem.indexOf(u8, output.items, "enabled") != null);
 }
 
 pub fn main(init_data: std.process.Init) !void {

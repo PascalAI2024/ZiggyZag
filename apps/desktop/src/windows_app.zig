@@ -47,9 +47,16 @@ const WM_CLOSE = 0x0010;
 const WM_MOUSEWHEEL = 0x020A;
 const WM_APP_OUTPUT_READY = 0x8000;
 const VK_C = 0x43;
+const VK_F = 0x46;
+const VK_O = 0x4F;
+const VK_P = 0x50;
+const VK_R = 0x52;
 const VK_T = 0x54;
 const VK_V = 0x56;
 const VK_INSERT = 0x2D;
+const VK_ESCAPE = 0x1B;
+const VK_RETURN = 0x0D;
+const VK_BACK = 0x08;
 const VK_CONTROL = 0x11;
 const VK_SHIFT = 0x10;
 const VK_OEM_COMMA = 0xBC;
@@ -313,6 +320,70 @@ const SpinLock = struct {
     }
 };
 
+const QuickItem = struct {
+    text: [160]u8 = undefined,
+    len: usize = 0,
+
+    fn set(self: *QuickItem, value: []const u8) void {
+        self.len = @min(value.len, self.text.len);
+        @memcpy(self.text[0..self.len], value[0..self.len]);
+    }
+
+    fn slice(self: *const QuickItem) []const u8 {
+        return self.text[0..self.len];
+    }
+};
+
+const PaletteActionKind = enum {
+    copy_visible,
+    paste_clipboard,
+    search_scrollback,
+    quick_select,
+    toggle_settings,
+    next_theme,
+    reload_config,
+    restart_shell,
+    clear_scrollback,
+    copy_cwd,
+    copy_config_path,
+    insert_agent_health,
+};
+
+const PaletteAction = struct {
+    title: []const u8,
+    detail: []const u8,
+    kind: PaletteActionKind,
+};
+
+const palette_actions = [_]PaletteAction{
+    .{ .title = "Copy visible text", .detail = "Copy current viewport or scrollback view", .kind = .copy_visible },
+    .{ .title = "Paste clipboard", .detail = "Paste clipboard text into the active shell", .kind = .paste_clipboard },
+    .{ .title = "Search scrollback", .detail = "Find text in visible output and bounded history", .kind = .search_scrollback },
+    .{ .title = "Quick select", .detail = "Copy URLs, paths, issue keys, and hashes", .kind = .quick_select },
+    .{ .title = "Settings", .detail = "Toggle the settings and theme overlay", .kind = .toggle_settings },
+    .{ .title = "Next theme", .detail = "Cycle through built-in terminal themes", .kind = .next_theme },
+    .{ .title = "Reload config", .detail = "Reload desktop.conf and apply safe settings", .kind = .reload_config },
+    .{ .title = "Restart shell", .detail = "Restart the current ZiggyZag PTY session", .kind = .restart_shell },
+    .{ .title = "Clear scrollback", .detail = "Clear terminal history without clearing the screen", .kind = .clear_scrollback },
+    .{ .title = "Copy current directory", .detail = "Copy shell integration cwd from the status bar", .kind = .copy_cwd },
+    .{ .title = "Copy config path", .detail = "Copy the active desktop config path", .kind = .copy_config_path },
+    .{ .title = "Insert AgentD health check", .detail = "Write a local AgentD JSON health command", .kind = .insert_agent_health },
+};
+
+const Overlay = enum {
+    none,
+    settings,
+    command_palette,
+    search,
+    quick_select,
+};
+
+const MouseModeSnapshot = struct {
+    alternate_screen: bool,
+    tracking: terminal.MouseTracking,
+    encoding: terminal.MouseEncoding,
+};
+
 const App = struct {
     allocator: Allocator,
     io: std.Io,
@@ -345,7 +416,17 @@ const App = struct {
     startup_error: [96]u8 = undefined,
     startup_error_len: usize = 0,
     focused: bool = false,
-    settings_open: bool = false,
+    overlay: Overlay = .none,
+    palette_query: [128]u8 = undefined,
+    palette_query_len: usize = 0,
+    palette_selected: usize = 0,
+    search_query: [128]u8 = undefined,
+    search_query_len: usize = 0,
+    search_match_label: [192]u8 = undefined,
+    search_match_label_len: usize = 0,
+    quick_items: [32]QuickItem = undefined,
+    quick_item_count: usize = 0,
+    quick_selected: usize = 0,
     running: std.atomic.Value(bool) = std.atomic.Value(bool).init(true),
 
     fn init(allocator: Allocator, io: std.Io, env: *std.process.Environ.Map) !App {
@@ -402,6 +483,7 @@ const App = struct {
         self.config = parsed;
         self.selected_theme = parsed.selected_theme;
         self.status_height = if (parsed.options.show_status_bar) 28 else 0;
+        self.grid.setMaxScrollback(parsed.options.scrollback_lines);
     }
 
     fn desktopConfigPathAlloc(self: *App) ![]u8 {
@@ -501,7 +583,10 @@ const App = struct {
 
         const command_line = try std.unicode.utf8ToUtf16LeAllocZ(self.allocator, shell_path);
         defer self.allocator.free(command_line);
-        const cwd = try std.process.currentPathAlloc(self.io, self.allocator);
+        const cwd = if (self.config.profile.startup_directory.len > 0)
+            try self.allocator.dupe(u8, self.config.profile.startup_directory)
+        else
+            try std.process.currentPathAlloc(self.io, self.allocator);
         defer self.allocator.free(cwd);
         const cwd_w = try std.unicode.utf8ToUtf16LeAllocZ(self.allocator, cwd);
         defer self.allocator.free(cwd_w);
@@ -510,7 +595,7 @@ const App = struct {
         defer child_env.deinit();
         try child_env.put("ZIGGYZAG_APP", "1");
         try child_env.put("ZIGGYZAG_INTEGRATION", "1");
-        try child_env.put("TERM", "xterm-256color");
+        try child_env.put("TERM", if (self.config.profile.term.len > 0) self.config.profile.term else "xterm-256color");
         const env_block = try child_env.createWindowsBlock(self.allocator, .{});
         defer env_block.deinit(self.allocator);
 
@@ -565,6 +650,7 @@ const App = struct {
     }
 
     fn resolveShellPath(self: *App) ![]u8 {
+        if (self.config.profile.shell_path.len > 0) return try self.allocator.dupe(u8, self.config.profile.shell_path);
         if (self.env.get("ZIGGYZAG_SHELL_PATH")) |path| return try self.allocator.dupe(u8, path);
 
         const exe_dir = std.process.executableDirPathAlloc(self.io, self.allocator) catch null;
@@ -713,8 +799,246 @@ const App = struct {
             if (normalized.items.len >= MAX_PASTE_BYTES) break;
         }
         if (normalized.items.len == 0) return;
+        self.mutex.lock();
+        const bracketed_paste = self.grid.isBracketedPasteEnabled();
         self.resetScroll();
-        self.writeInput(normalized.items);
+        self.mutex.unlock();
+        if (bracketed_paste) {
+            self.writeInput("\x1b[200~");
+            self.writeInput(normalized.items);
+            self.writeInput("\x1b[201~");
+        } else {
+            self.writeInput(normalized.items);
+        }
+    }
+
+    fn appendOverlayChar(self: *App, char: u21) void {
+        var buf: [4]u8 = undefined;
+        const len = std.unicode.utf8Encode(char, &buf) catch return;
+        switch (self.overlay) {
+            .command_palette => appendBounded(self.palette_query[0..], &self.palette_query_len, buf[0..len]),
+            .search => {
+                appendBounded(self.search_query[0..], &self.search_query_len, buf[0..len]);
+                self.updateSearchMatch();
+            },
+            else => {},
+        }
+    }
+
+    fn overlayBackspace(self: *App) void {
+        switch (self.overlay) {
+            .command_palette => {
+                if (self.palette_query_len > 0) self.palette_query_len -= 1;
+            },
+            .search => {
+                if (self.search_query_len > 0) self.search_query_len -= 1;
+                self.updateSearchMatch();
+            },
+            else => {},
+        }
+    }
+
+    fn openPalette(self: *App) void {
+        self.overlay = .command_palette;
+        self.palette_query_len = 0;
+        self.palette_selected = 0;
+    }
+
+    fn openSearch(self: *App) void {
+        self.overlay = .search;
+        self.search_query_len = 0;
+        self.search_match_label_len = 0;
+    }
+
+    fn openQuickSelect(self: *App) void {
+        self.populateQuickItems();
+        self.quick_selected = 0;
+        self.overlay = .quick_select;
+    }
+
+    fn closeOverlay(self: *App) void {
+        self.overlay = .none;
+    }
+
+    fn overlayMove(self: *App, delta: i32) void {
+        switch (self.overlay) {
+            .command_palette => {
+                const count = self.paletteMatchCount();
+                if (count == 0) return;
+                if (delta > 0) self.palette_selected = @min(self.palette_selected + 1, count - 1);
+                if (delta < 0) self.palette_selected = if (self.palette_selected == 0) count - 1 else self.palette_selected - 1;
+            },
+            .quick_select => {
+                if (self.quick_item_count == 0) return;
+                if (delta > 0) self.quick_selected = @min(self.quick_selected + 1, self.quick_item_count - 1);
+                if (delta < 0) self.quick_selected = if (self.quick_selected == 0) self.quick_item_count - 1 else self.quick_selected - 1;
+            },
+            else => {},
+        }
+    }
+
+    fn acceptOverlay(self: *App, hwnd: HWND) void {
+        switch (self.overlay) {
+            .command_palette => {
+                const action = self.paletteActionAt(self.palette_selected) orelse return;
+                self.overlay = .none;
+                self.dispatchAction(hwnd, action.kind);
+            },
+            .search => {},
+            .quick_select => {
+                if (self.quick_selected < self.quick_item_count) {
+                    const item = self.quick_items[self.quick_selected].slice();
+                    if (item.len > 0) setClipboardText(hwnd, self.allocator, item) catch {};
+                }
+                self.overlay = .none;
+            },
+            else => {},
+        }
+    }
+
+    fn dispatchAction(self: *App, hwnd: HWND, kind: PaletteActionKind) void {
+        switch (kind) {
+            .copy_visible => self.copyVisibleText(hwnd),
+            .paste_clipboard => self.pasteClipboardText(hwnd),
+            .search_scrollback => self.openSearch(),
+            .quick_select => self.openQuickSelect(),
+            .toggle_settings => self.overlay = if (self.overlay == .settings) .none else .settings,
+            .next_theme => self.cycleTheme(),
+            .reload_config => self.reloadDesktopConfig(hwnd),
+            .restart_shell => self.restartShell(hwnd),
+            .clear_scrollback => {
+                self.mutex.lock();
+                self.grid.feed("\x1b[3J");
+                self.scroll_offset = 0;
+                self.mutex.unlock();
+            },
+            .copy_cwd => if (self.status.cwd_len > 0) setClipboardText(hwnd, self.allocator, self.status.cwdSlice()) catch {},
+            .copy_config_path => if (self.config_path_len > 0) setClipboardText(hwnd, self.allocator, self.configPathSlice()) catch {},
+            .insert_agent_health => self.writeInput("zig build run-agentd -- --stdio\n"),
+        }
+        _ = InvalidateRect(hwnd, null, 0);
+    }
+
+    fn cycleTheme(self: *App) void {
+        self.selected_theme = theme.next(self.selected_theme);
+        self.config.selected_theme = self.selected_theme;
+        self.rebuildThemeBrushes();
+    }
+
+    fn reloadDesktopConfig(self: *App, hwnd: HWND) void {
+        self.loadDesktopConfig();
+        self.rebuildThemeBrushes();
+        if (self.pseudoconsole) |hpc| {
+            _ = ResizePseudoConsole(hpc, .{ .X = @intCast(@min(self.grid.width, 300)), .Y = @intCast(@min(self.grid.height, 120)) });
+        }
+        _ = InvalidateRect(hwnd, null, 0);
+    }
+
+    fn restartShell(self: *App, hwnd: HWND) void {
+        self.shutdownPty();
+        self.mutex.lock();
+        self.grid.feed("\x1b[2J\x1b[HRestarting ZiggyZag shell...\n");
+        self.startup_error_len = 0;
+        self.status = .{};
+        self.mutex.unlock();
+        self.startPty() catch |err| {
+            self.mutex.lock();
+            defer self.mutex.unlock();
+            self.setStartupError(err);
+        };
+        _ = InvalidateRect(hwnd, null, 0);
+    }
+
+    fn paletteMatchCount(self: *const App) usize {
+        var count: usize = 0;
+        for (palette_actions) |action| {
+            if (self.paletteActionMatches(action)) count += 1;
+        }
+        return count;
+    }
+
+    fn paletteActionAt(self: *const App, selected: usize) ?PaletteAction {
+        var count: usize = 0;
+        for (palette_actions) |action| {
+            if (!self.paletteActionMatches(action)) continue;
+            if (count == selected) return action;
+            count += 1;
+        }
+        return null;
+    }
+
+    fn paletteActionMatches(self: *const App, action: PaletteAction) bool {
+        const query = self.palette_query[0..self.palette_query_len];
+        return query.len == 0 or containsIgnoreCase(action.title, query) or containsIgnoreCase(action.detail, query);
+    }
+
+    fn scrollbackTextAlloc(self: *App) ![]u8 {
+        var text: std.ArrayList(u8) = .empty;
+        errdefer text.deinit(self.allocator);
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        for (self.grid.history.items) |line| {
+            try appendCellsText(self.allocator, &text, line.cells);
+            try text.append(self.allocator, '\n');
+        }
+        var row: usize = 0;
+        while (row < self.grid.height) : (row += 1) {
+            const line = self.grid.cells[row * self.grid.width .. (row + 1) * self.grid.width];
+            try appendCellsText(self.allocator, &text, line);
+            if (row + 1 < self.grid.height) try text.append(self.allocator, '\n');
+        }
+        return text.toOwnedSlice(self.allocator);
+    }
+
+    fn updateSearchMatch(self: *App) void {
+        self.search_match_label_len = 0;
+        const query = self.search_query[0..self.search_query_len];
+        if (query.len == 0) return;
+        const text = self.scrollbackTextAlloc() catch return;
+        defer self.allocator.free(text);
+
+        if (indexOfIgnoreCase(text, query)) |index| {
+            const line_no = 1 + countByte(text[0..index], '\n');
+            const label = std.fmt.bufPrint(
+                self.search_match_label[0..],
+                "Found at scrollback line {d}",
+                .{line_no},
+            ) catch return;
+            self.search_match_label_len = label.len;
+        } else {
+            self.search_match_label_len = copyBounded(self.search_match_label[0..], "No match");
+        }
+    }
+
+    fn populateQuickItems(self: *App) void {
+        self.quick_item_count = 0;
+        self.mutex.lock();
+        const text = self.visibleTextAlloc() catch {
+            self.mutex.unlock();
+            return;
+        };
+        self.mutex.unlock();
+        defer self.allocator.free(text);
+        var index: usize = 0;
+        while (index < text.len and self.quick_item_count < self.quick_items.len) {
+            while (index < text.len and isTokenSeparator(text[index])) : (index += 1) {}
+            const start = index;
+            while (index < text.len and !isTokenSeparator(text[index])) : (index += 1) {}
+            const token = trimQuickToken(text[start..index]);
+            if (isQuickToken(token) and !self.quickItemExists(token)) {
+                self.quick_items[self.quick_item_count].set(token);
+                self.quick_item_count += 1;
+            }
+        }
+    }
+
+    fn quickItemExists(self: *const App, token: []const u8) bool {
+        var index: usize = 0;
+        while (index < self.quick_item_count) : (index += 1) {
+            if (std.mem.eql(u8, self.quick_items[index].slice(), token)) return true;
+        }
+        return false;
     }
 
     fn resetScroll(self: *App) void {
@@ -741,6 +1065,11 @@ const App = struct {
 
     fn handleMouseWheel(self: *App, hwnd: HWND, wparam: WPARAM) void {
         const delta = mouseWheelDelta(wparam);
+        const mouse_mode = self.mouseModeSnapshot();
+        if (mouse_mode.alternate_screen and mouse_mode.tracking != .disabled) {
+            self.writeMouseWheel(delta, mouse_mode.encoding);
+            return;
+        }
         self.wheel_remainder += delta;
         const lines = @divTrunc(self.wheel_remainder, WHEEL_DELTA) * 3;
         self.wheel_remainder = @rem(self.wheel_remainder, WHEEL_DELTA);
@@ -751,6 +1080,34 @@ const App = struct {
             self.updateCaret(hwnd);
             _ = InvalidateRect(hwnd, null, 0);
         }
+    }
+
+    fn writeMouseWheel(self: *App, delta: i32, encoding: terminal.MouseEncoding) void {
+        const button: u8 = if (delta > 0) 64 else 65;
+        if (encoding == .sgr) {
+            var seq: [32]u8 = undefined;
+            const text = std.fmt.bufPrint(&seq, "\x1b[<{d};1;1M", .{button}) catch return;
+            self.writeInput(text);
+        } else {
+            var seq = [_]u8{ 0x1b, '[', 'M', button + 32, 33, 33 };
+            self.writeInput(&seq);
+        }
+    }
+
+    fn mouseModeSnapshot(self: *App) MouseModeSnapshot {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        return .{
+            .alternate_screen = self.grid.isAlternateScreen(),
+            .tracking = self.grid.mouseTrackingMode(),
+            .encoding = self.grid.mouseEncodingMode(),
+        };
+    }
+
+    fn applicationCursorEnabled(self: *App) bool {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        return self.grid.isApplicationCursorEnabled();
     }
 
     fn resizeForClient(self: *App, rect: RECT) void {
@@ -837,7 +1194,13 @@ const App = struct {
         }
         self.paintScrollIndicator(hdc, rect, scroll_offset, history_len);
         if (self.status_height > 0) self.paintStatus(hdc, rect, status, scroll_offset, history_len);
-        if (self.settings_open) self.paintSettingsOverlay(hdc, rect);
+        switch (self.overlay) {
+            .settings => self.paintSettingsOverlay(hdc, rect),
+            .command_palette => self.paintCommandPaletteOverlay(hdc, rect),
+            .search => self.paintSearchOverlay(hdc, rect),
+            .quick_select => self.paintQuickSelectOverlay(hdc, rect),
+            .none => {},
+        }
     }
 
     fn paintCellRun(self: *App, hdc: HDC, cells: []const terminal.Cell, y: i32) void {
@@ -1050,7 +1413,121 @@ const App = struct {
         }
 
         _ = SetTextColor(hdc, toColorRef(self.selected_theme.muted));
-        drawUtf8TextFitted(hdc, text_x, bottom - self.char_height - 12, "Ctrl+Shift+T cycles theme. Ctrl+, toggles this panel. Edit desktop.conf to persist.", max_width, self.char_width);
+        drawUtf8TextFitted(hdc, text_x, bottom - self.char_height - 12, "Ctrl+Shift+T cycles theme. Ctrl+Shift+P opens palette. Edit desktop.conf to persist.", max_width, self.char_width);
+    }
+
+    fn paintCommandPaletteOverlay(self: *App, hdc: HDC, rect: RECT) void {
+        const panel_width = @min(@max(rect.right - rect.left - 80, 360), 720);
+        const left = @divTrunc(rect.right - rect.left - panel_width, 2);
+        const top: i32 = 48;
+        const bottom = @min(rect.bottom - self.status_height - 24, top + self.char_height * 16 + 44);
+        if (bottom <= top + self.char_height * 5) return;
+        var panel = RECT{ .left = left, .top = top, .right = left + panel_width, .bottom = bottom };
+        _ = FillRect(hdc, &panel, self.panel_brush);
+
+        const x = panel.left + 14;
+        var y = panel.top + 12;
+        const max_width = panel.right - x - 14;
+        _ = SetBkMode(hdc, TRANSPARENT);
+        _ = SetTextColor(hdc, toColorRef(self.selected_theme.accent));
+        drawUtf8TextFitted(hdc, x, y, "Command Palette", max_width, self.char_width);
+        y += self.char_height + 8;
+
+        var query_line: [180]u8 = undefined;
+        const query_text = std.fmt.bufPrint(&query_line, "> {s}", .{self.palette_query[0..self.palette_query_len]}) catch "> ";
+        _ = SetTextColor(hdc, toColorRef(self.selected_theme.foreground));
+        drawUtf8TextFitted(hdc, x, y, query_text, max_width, self.char_width);
+        y += self.char_height + 8;
+
+        var match_index: usize = 0;
+        for (palette_actions) |action| {
+            if (!self.paletteActionMatches(action)) continue;
+            if (y + self.char_height >= bottom - self.char_height - 8) break;
+            if (match_index == self.palette_selected) {
+                var highlight = RECT{ .left = x - 6, .top = y - 2, .right = panel.right - 10, .bottom = y + self.char_height + 2 };
+                const brush = CreateSolidBrush(toColorRef(scaleColor(self.selected_theme.accent, 35)));
+                if (brush) |b| {
+                    _ = FillRect(hdc, &highlight, b);
+                    _ = DeleteObject(@ptrCast(b));
+                }
+            }
+            _ = SetTextColor(hdc, toColorRef(if (match_index == self.palette_selected) self.selected_theme.accent else self.selected_theme.foreground));
+            drawUtf8TextFitted(hdc, x, y, action.title, max_width, self.char_width);
+            y += self.char_height;
+            _ = SetTextColor(hdc, toColorRef(self.selected_theme.muted));
+            drawUtf8TextFitted(hdc, x + 18, y, action.detail, max_width - 18, self.char_width);
+            y += self.char_height + 4;
+            match_index += 1;
+        }
+
+        _ = SetTextColor(hdc, toColorRef(self.selected_theme.muted));
+        drawUtf8TextFitted(hdc, x, bottom - self.char_height - 8, "Enter runs. Escape closes. Ctrl+Shift+F search. Ctrl+Shift+O quick select.", max_width, self.char_width);
+    }
+
+    fn paintSearchOverlay(self: *App, hdc: HDC, rect: RECT) void {
+        const panel_width = @min(@max(rect.right - rect.left - 80, 360), 680);
+        const left = @divTrunc(rect.right - rect.left - panel_width, 2);
+        const top = @max(rect.bottom - self.status_height - self.char_height * 6 - 32, 24);
+        var panel = RECT{ .left = left, .top = top, .right = left + panel_width, .bottom = top + self.char_height * 5 + 26 };
+        _ = FillRect(hdc, &panel, self.panel_brush);
+        const x = panel.left + 14;
+        var y = panel.top + 12;
+        const max_width = panel.right - x - 14;
+
+        _ = SetBkMode(hdc, TRANSPARENT);
+        _ = SetTextColor(hdc, toColorRef(self.selected_theme.accent));
+        drawUtf8TextFitted(hdc, x, y, "Search Scrollback", max_width, self.char_width);
+        y += self.char_height + 8;
+        var query_line: [180]u8 = undefined;
+        const query_text = std.fmt.bufPrint(&query_line, "/ {s}", .{self.search_query[0..self.search_query_len]}) catch "/ ";
+        _ = SetTextColor(hdc, toColorRef(self.selected_theme.foreground));
+        drawUtf8TextFitted(hdc, x, y, query_text, max_width, self.char_width);
+        y += self.char_height + 8;
+
+        const result = if (self.search_match_label_len > 0) self.search_match_label[0..self.search_match_label_len] else "Type to search visible output and scrollback";
+        _ = SetTextColor(hdc, toColorRef(self.selected_theme.muted));
+        drawUtf8TextFitted(hdc, x, y, result, max_width, self.char_width);
+        y += self.char_height + 4;
+        drawUtf8TextFitted(hdc, x, y, "Escape closes. Ctrl+Shift+C still copies the current viewport.", max_width, self.char_width);
+    }
+
+    fn paintQuickSelectOverlay(self: *App, hdc: HDC, rect: RECT) void {
+        const panel_width = @min(@max(rect.right - rect.left - 80, 360), 720);
+        const left = @divTrunc(rect.right - rect.left - panel_width, 2);
+        const top: i32 = 48;
+        const bottom = @min(rect.bottom - self.status_height - 24, top + self.char_height * 16 + 44);
+        var panel = RECT{ .left = left, .top = top, .right = left + panel_width, .bottom = bottom };
+        _ = FillRect(hdc, &panel, self.panel_brush);
+        const x = panel.left + 14;
+        var y = panel.top + 12;
+        const max_width = panel.right - x - 14;
+
+        _ = SetBkMode(hdc, TRANSPARENT);
+        _ = SetTextColor(hdc, toColorRef(self.selected_theme.accent));
+        drawUtf8TextFitted(hdc, x, y, "Quick Select", max_width, self.char_width);
+        y += self.char_height + 8;
+        if (self.quick_item_count == 0) {
+            _ = SetTextColor(hdc, toColorRef(self.selected_theme.muted));
+            drawUtf8TextFitted(hdc, x, y, "No URLs, paths, hashes, or issue keys found in the current viewport.", max_width, self.char_width);
+        } else {
+            var index: usize = 0;
+            while (index < self.quick_item_count and y + self.char_height < bottom - self.char_height - 8) : (index += 1) {
+                if (index == self.quick_selected) {
+                    var highlight = RECT{ .left = x - 6, .top = y - 2, .right = panel.right - 10, .bottom = y + self.char_height + 2 };
+                    const brush = CreateSolidBrush(toColorRef(scaleColor(self.selected_theme.accent, 35)));
+                    if (brush) |b| {
+                        _ = FillRect(hdc, &highlight, b);
+                        _ = DeleteObject(@ptrCast(b));
+                    }
+                }
+                _ = SetTextColor(hdc, toColorRef(if (index == self.quick_selected) self.selected_theme.accent else self.selected_theme.foreground));
+                drawUtf8TextFitted(hdc, x, y, self.quick_items[index].slice(), max_width, self.char_width);
+                y += self.char_height + 4;
+            }
+        }
+
+        _ = SetTextColor(hdc, toColorRef(self.selected_theme.muted));
+        drawUtf8TextFitted(hdc, x, bottom - self.char_height - 8, "Enter copies selection. Escape closes.", max_width, self.char_width);
     }
 
     fn paintThemeOption(self: *App, hdc: HDC, preset: theme.Theme, x: i32, y: i32, max_width: i32) void {
@@ -1327,6 +1804,15 @@ fn windowProc(hwnd: HWND, msg: UINT, wparam: WPARAM, lparam: LPARAM) callconv(.w
 
 fn handleChar(app: *App, wparam: WPARAM) void {
     const char: u21 = @intCast(wparam);
+    if (app.overlay == .command_palette or app.overlay == .search) {
+        switch (char) {
+            '\r', 0x1b, 0x08, 0x03, 0x16 => {},
+            else => app.appendOverlayChar(char),
+        }
+        if (app.hwnd) |hwnd| _ = InvalidateRect(hwnd, null, 0);
+        return;
+    }
+
     switch (char) {
         '\r' => app.writeInput("\n"),
         0x08 => app.writeInput(&.{0x7f}),
@@ -1340,16 +1826,63 @@ fn handleChar(app: *App, wparam: WPARAM) void {
 }
 
 fn handleKey(app: *App, hwnd: HWND, wparam: WPARAM) bool {
+    if (app.overlay != .none and app.overlay != .settings) {
+        switch (wparam) {
+            VK_ESCAPE => {
+                app.closeOverlay();
+                _ = InvalidateRect(hwnd, null, 0);
+                return true;
+            },
+            VK_RETURN => {
+                app.acceptOverlay(hwnd);
+                _ = InvalidateRect(hwnd, null, 0);
+                return true;
+            },
+            VK_BACK => {
+                app.overlayBackspace();
+                _ = InvalidateRect(hwnd, null, 0);
+                return true;
+            },
+            VK_UP => {
+                app.overlayMove(-1);
+                _ = InvalidateRect(hwnd, null, 0);
+                return true;
+            },
+            VK_DOWN => {
+                app.overlayMove(1);
+                _ = InvalidateRect(hwnd, null, 0);
+                return true;
+            },
+            else => {},
+        }
+    }
+
+    if (keyDown(VK_CONTROL) and keyDown(VK_SHIFT) and wparam == VK_P) {
+        app.openPalette();
+        _ = InvalidateRect(hwnd, null, 0);
+        return true;
+    }
+    if (keyDown(VK_CONTROL) and keyDown(VK_SHIFT) and wparam == VK_F) {
+        app.openSearch();
+        _ = InvalidateRect(hwnd, null, 0);
+        return true;
+    }
+    if (keyDown(VK_CONTROL) and keyDown(VK_SHIFT) and wparam == VK_O) {
+        app.openQuickSelect();
+        _ = InvalidateRect(hwnd, null, 0);
+        return true;
+    }
+    if (keyDown(VK_CONTROL) and keyDown(VK_SHIFT) and wparam == VK_R) {
+        app.dispatchAction(hwnd, .reload_config);
+        return true;
+    }
     if (keyDown(VK_CONTROL) and wparam == VK_OEM_COMMA) {
-        app.settings_open = !app.settings_open;
+        app.dispatchAction(hwnd, .toggle_settings);
         _ = InvalidateRect(hwnd, null, 0);
         return true;
     }
     if (keyDown(VK_CONTROL) and keyDown(VK_SHIFT) and wparam == VK_T) {
-        app.selected_theme = theme.next(app.selected_theme);
-        app.config.selected_theme = app.selected_theme;
-        app.rebuildThemeBrushes();
-        _ = InvalidateRect(hwnd, null, 0);
+        app.dispatchAction(hwnd, .next_theme);
         return true;
     }
     if (keyDown(VK_CONTROL) and keyDown(VK_SHIFT) and wparam == VK_C) {
@@ -1365,11 +1898,12 @@ fn handleKey(app: *App, hwnd: HWND, wparam: WPARAM) bool {
         return true;
     }
 
+    const application_cursor = app.applicationCursorEnabled();
     switch (wparam) {
-        VK_UP => app.writeInput("\x1b[A"),
-        VK_DOWN => app.writeInput("\x1b[B"),
-        VK_RIGHT => app.writeInput("\x1b[C"),
-        VK_LEFT => app.writeInput("\x1b[D"),
+        VK_UP => app.writeInput(if (application_cursor) "\x1bOA" else "\x1b[A"),
+        VK_DOWN => app.writeInput(if (application_cursor) "\x1bOB" else "\x1b[B"),
+        VK_RIGHT => app.writeInput(if (application_cursor) "\x1bOC" else "\x1b[C"),
+        VK_LEFT => app.writeInput(if (application_cursor) "\x1bOD" else "\x1b[D"),
         VK_HOME => app.writeInput("\x1b[H"),
         VK_END => app.writeInput("\x1b[F"),
         VK_DELETE => app.writeInput("\x1b[3~"),
@@ -1465,25 +1999,35 @@ fn visibleCellEnd(cells: []const terminal.Cell) usize {
 }
 
 fn styleIsDefault(style: terminal.Style) bool {
-    return !style.bold and !style.dim and style.fg == .default and style.bg == .default;
+    return std.meta.eql(style, terminal.Style{});
 }
 
 fn styleEql(left: terminal.Style, right: terminal.Style) bool {
-    return left.bold == right.bold and
-        left.dim == right.dim and
-        left.fg == right.fg and
-        left.bg == right.bg;
+    return std.meta.eql(left, right);
 }
 
 fn styleForeground(selected_theme: theme.Theme, style: terminal.Style) theme.Color {
-    var color = terminalColor(selected_theme, style.fg) orelse selected_theme.foreground;
+    if (style.hidden) return selected_theme.background;
+    const source = if (style.inverse) style.background() else style.foreground();
+    const default = if (style.inverse) selected_theme.background else selected_theme.foreground;
+    var color = terminalExtendedColor(selected_theme, source) orelse default;
     if (style.dim) color = scaleColor(color, 65);
-    if (style.bold and style.fg == .default) color = brightenColor(color);
+    if (style.bold and style.fg == .default and style.fg_extended == null) color = brightenColor(color);
     return color;
 }
 
 fn styleBackground(selected_theme: theme.Theme, style: terminal.Style) theme.Color {
-    return terminalColor(selected_theme, style.bg) orelse selected_theme.background;
+    const source = if (style.inverse) style.foreground() else style.background();
+    const default = if (style.inverse) selected_theme.foreground else selected_theme.background;
+    return terminalExtendedColor(selected_theme, source) orelse default;
+}
+
+fn terminalExtendedColor(selected_theme: theme.Theme, color: terminal.ExtendedColor) ?theme.Color {
+    return switch (color) {
+        .named => |named| terminalColor(selected_theme, named),
+        .rgb => |rgb| theme.Color.rgb(rgb.r, rgb.g, rgb.b),
+        .indexed => |index| indexedTerminalColor(selected_theme, index),
+    };
 }
 
 fn terminalColor(selected_theme: theme.Theme, color: terminal.Color) ?theme.Color {
@@ -1506,6 +2050,23 @@ fn terminalColor(selected_theme: theme.Theme, color: terminal.Color) ?theme.Colo
         .bright_cyan => selected_theme.ansi[14],
         .bright_white => selected_theme.ansi[15],
     };
+}
+
+fn indexedTerminalColor(selected_theme: theme.Theme, index: u8) theme.Color {
+    if (index < 16) return selected_theme.ansi[@intCast(index)];
+    if (index >= 232) {
+        const level: u8 = @intCast(8 + @as(u16, index - 232) * 10);
+        return theme.Color.rgb(level, level, level);
+    }
+    const cube_index = index - 16;
+    const r = colorCubeComponent(cube_index / 36);
+    const g = colorCubeComponent((cube_index / 6) % 6);
+    const b = colorCubeComponent(cube_index % 6);
+    return theme.Color.rgb(r, g, b);
+}
+
+fn colorCubeComponent(value: u8) u8 {
+    return if (value == 0) 0 else @intCast(55 + @as(u16, value) * 40);
 }
 
 fn scaleColor(color: theme.Color, percent: u8) theme.Color {
@@ -1611,4 +2172,88 @@ fn appendFmtBounded(buffer: []u8, index: *usize, comptime fmt: []const u8, args:
         },
     };
     index.* += written.len;
+}
+
+fn appendBounded(buffer: []u8, index: *usize, value: []const u8) void {
+    if (index.* >= buffer.len) return;
+    const len = @min(value.len, buffer.len - index.*);
+    @memcpy(buffer[index.* .. index.* + len], value[0..len]);
+    index.* += len;
+}
+
+fn copyBounded(buffer: []u8, value: []const u8) usize {
+    const len = @min(buffer.len, value.len);
+    @memcpy(buffer[0..len], value[0..len]);
+    return len;
+}
+
+fn appendCellsText(allocator: Allocator, out: *std.ArrayList(u8), cells: []const terminal.Cell) !void {
+    const end = visibleCellEnd(cells);
+    for (cells[0..end]) |cell| try out.append(allocator, cell.ch);
+}
+
+fn containsIgnoreCase(haystack: []const u8, needle: []const u8) bool {
+    return indexOfIgnoreCase(haystack, needle) != null;
+}
+
+fn indexOfIgnoreCase(haystack: []const u8, needle: []const u8) ?usize {
+    if (needle.len == 0) return 0;
+    if (needle.len > haystack.len) return null;
+    var index: usize = 0;
+    while (index + needle.len <= haystack.len) : (index += 1) {
+        var matched = true;
+        var offset: usize = 0;
+        while (offset < needle.len) : (offset += 1) {
+            if (std.ascii.toLower(haystack[index + offset]) != std.ascii.toLower(needle[offset])) {
+                matched = false;
+                break;
+            }
+        }
+        if (matched) return index;
+    }
+    return null;
+}
+
+fn countByte(bytes: []const u8, byte: u8) usize {
+    var count: usize = 0;
+    for (bytes) |candidate| {
+        if (candidate == byte) count += 1;
+    }
+    return count;
+}
+
+fn isTokenSeparator(byte: u8) bool {
+    return std.ascii.isWhitespace(byte) or byte == '"' or byte == '\'' or byte == '<' or byte == '>' or byte == '[' or byte == ']';
+}
+
+fn trimQuickToken(token: []const u8) []const u8 {
+    return std.mem.trim(u8, token, " \t\r\n.,;:(){}");
+}
+
+fn isQuickToken(token: []const u8) bool {
+    if (token.len < 4) return false;
+    if (std.mem.startsWith(u8, token, "http://") or std.mem.startsWith(u8, token, "https://")) return true;
+    if (std.mem.indexOfScalar(u8, token, '\\') != null or std.mem.indexOfScalar(u8, token, '/') != null) return true;
+    if (looksLikeIssueKey(token) or looksLikeHexHash(token)) return true;
+    return false;
+}
+
+fn looksLikeIssueKey(token: []const u8) bool {
+    const dash = std.mem.indexOfScalar(u8, token, '-') orelse return false;
+    if (dash == 0 or dash + 1 >= token.len) return false;
+    for (token[0..dash]) |byte| {
+        if (!std.ascii.isUpper(byte)) return false;
+    }
+    for (token[dash + 1 ..]) |byte| {
+        if (!std.ascii.isDigit(byte)) return false;
+    }
+    return true;
+}
+
+fn looksLikeHexHash(token: []const u8) bool {
+    if (token.len < 7 or token.len > 64) return false;
+    for (token) |byte| {
+        if (!std.ascii.isDigit(byte) and !(byte >= 'a' and byte <= 'f') and !(byte >= 'A' and byte <= 'F')) return false;
+    }
+    return true;
 }

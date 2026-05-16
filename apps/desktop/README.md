@@ -12,8 +12,8 @@ The previous Tauri/xterm.js prototype lives in `apps/desktop-tauri-spike` as a p
 
 This directory contains a buildable Zig executable named `ziggyzag-desktop` plus the desktop core modules:
 
-- `windows_app.zig`: Win32 window, GDI renderer, keyboard input, copy/paste, mouse-wheel scrollback, Windows ConPTY bridge, shell lifecycle, and shell-aware status bar with project/git context.
-- `terminal.zig`: terminal grid with printable text, SGR styling, newline, carriage return, deferred wrapping, scrollback capture, resize, and a small CSI subset.
+- `windows_app.zig`: Win32 window, GDI renderer, keyboard input, copy/paste, bracketed paste wrapping, alternate-screen mouse-wheel reports, mouse-wheel scrollback, Windows ConPTY bridge, shell lifecycle, command palette, search/quick-select overlays, and shell-aware status bar with project/git context.
+- `terminal.zig`: terminal grid with printable text, richer SGR styling, 16/256/RGB colors, alternate screen, bracketed paste/app-cursor/mouse mode tracking, newline, carriage return, deferred wrapping, scrollback capture, resize, and a growing CSI/DEC private-mode subset.
 - `integration.zig`: OSC 777 ZiggyZag event extraction that strips app-only events from display bytes.
 - `config.zig`: lightweight desktop settings model and key=value parser.
 - `theme.zig`: typed color, theme presets, lookup, and override primitives.
@@ -29,7 +29,7 @@ Desktop settings are intentionally separate from the shell startup config. The s
 
 The parser in `src/config.zig` accepts small `key=value` files with blank lines and `#` comments. Values are borrowed slices from the loaded file buffer, and the Windows app keeps that buffer alive while the parsed config is used. The Windows host loads `%APPDATA%\ZiggyZag\desktop.conf` by default, or the file named by `ZIGGYZAG_DESKTOP_CONFIG`.
 
-Press `Ctrl+,` in the Windows desktop host to open the settings overlay. Press `Ctrl+Shift+T` to cycle themes live without editing a file.
+Press `Ctrl+,` in the Windows desktop host to open the settings overlay. Press `Ctrl+Shift+P` for the command palette, `Ctrl+Shift+F` for scrollback search, `Ctrl+Shift+O` for quick select, `Ctrl+Shift+R` to reload desktop config, and `Ctrl+Shift+T` to cycle themes live without editing a file.
 
 Supported keys:
 
@@ -46,9 +46,13 @@ font.size = 14
 show_status_bar = true
 smooth_scroll = true
 bell = false
+scrollback.lines = 10000
+profile.shell = C:\path\to\ziggyzag.exe
+profile.cwd = C:\Users\you\dev
+profile.term = xterm-256color
 ```
 
-Known themes are `ziggy`, `catppuccin-mocha`, `tokyo-night`, `dracula`, `nord`, `rose-pine`, `gruvbox-dark`, `everforest-dark`, `kanagawa-wave`, `solarized-dark`, `one-dark`, `paper`, and `ember`. Theme color overrides apply on top of the selected preset. Booleans accept `true/false`, `yes/no`, `on/off`, and `1/0`.
+Known themes are `ziggy`, `catppuccin-mocha`, `tokyo-night`, `dracula`, `nord`, `rose-pine`, `gruvbox-dark`, `everforest-dark`, `kanagawa-wave`, `solarized-dark`, `one-dark`, `paper`, and `ember`. Theme color overrides apply on top of the selected preset. Booleans accept `true/false`, `yes/no`, `on/off`, and `1/0`. `scrollback.lines` is capped at `250000`.
 
 ## Development
 
@@ -93,7 +97,7 @@ Use this Windows checklist before sharing a build with friends:
 9. Run commands that change status, such as `doctor`, `pwd`, `history --stats`, `prompt dev`, and an invalid command.
 10. Use the mouse wheel after producing more output than fits on screen.
 11. Confirm the status bar shows project/git context when launched inside a repo.
-12. Press `Ctrl+,` and confirm the settings overlay opens; press `Ctrl+Shift+T` and confirm the theme changes.
+12. Press `Ctrl+,` and confirm the settings overlay opens; press `Ctrl+Shift+P`, `Ctrl+Shift+F`, and `Ctrl+Shift+O` to check palette/search/quick-select overlays; press `Ctrl+Shift+T` and confirm the theme changes.
 13. Close the window and confirm no stuck `ziggyzag.exe` child process remains.
 
 For macOS/Linux friends, use this alpha checklist:
@@ -114,14 +118,14 @@ For macOS/Linux friends, use this alpha checklist:
 | Clipboard shortcuts do nothing | Make sure the desktop window has focus. Ctrl+V and Shift+Insert paste; Ctrl+Shift+C copies visible text. |
 | Ctrl+C does not copy text | Ctrl+C is reserved for shell interrupt. Use Ctrl+Shift+C for copy-visible. |
 | Mouse wheel does not show old output | Produce enough terminal output first; current scrollback is local and bounded. |
-| Theme/config changes do not affect the current window | Restart the desktop host after editing `desktop.conf`. Use `Ctrl+Shift+T` for live one-session theme cycling. |
+| Theme/config changes do not affect the current window | Press `Ctrl+Shift+R` to reload safe desktop settings or restart the desktop host. Use `Ctrl+Shift+T` for live one-session theme cycling. |
 | macOS/Linux desktop command does not open a window | Expected for this alpha. It should launch ZiggyZag in the calling terminal, preferably through `script(1)`. Use `./zig-out/bin/ziggyzag` directly if you do not want the launcher banner. |
 
 ## Next Milestones
 
 1. Add mouse selection and selection-aware copy.
-2. Improve ANSI/CSI coverage or integrate `libghostty-vt`.
+2. Continue ANSI/CSI coverage or integrate `libghostty-vt` once the boundary is proven.
 3. Add native POSIX graphical hosting with first-party PTY management for Linux/macOS.
 4. Add settings persistence helpers and a first-class settings editor instead of requiring manual `desktop.conf` edits.
-5. Add search, tabs, and split panes.
+5. Add tabs, split panes, and session restore.
 6. Move rendering from GDI to a faster GPU path when the terminal model demands it.

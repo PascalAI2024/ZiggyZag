@@ -49,7 +49,7 @@ For installation and command examples, use the dedicated [Quick Start](docs/QUIC
 
 The alpha is practical but intentionally honest about platform maturity:
 
-- Windows has the first full native desktop host: a Win32 window, ConPTY shell process, terminal grid, copy/paste, wheel scrollback, status bar, live theme switching, and config loading.
+- Windows has the first full native desktop host: a Win32 window, ConPTY shell process, terminal grid, copy/paste, wheel scrollback, status bar, command palette, scrollback search, quick select, live theme switching, and config loading.
 - macOS/Linux build the shell, AgentD, and a terminal-attached desktop launcher. The native graphical host for those platforms is still future work.
 - The Tauri/xterm.js app remains in the repo as a spike, not the primary lane.
 
@@ -57,7 +57,7 @@ The alpha is practical but intentionally honest about platform maturity:
 
 The desktop host now ships with a modern preset collection inspired by popular terminal/editor palettes: `ziggy`, `catppuccin-mocha`, `tokyo-night`, `dracula`, `nord`, `rose-pine`, `gruvbox-dark`, `everforest-dark`, `kanagawa-wave`, `solarized-dark`, `one-dark`, `paper`, and `ember`.
 
-On Windows, press `Ctrl+,` to open the settings overlay and `Ctrl+Shift+T` to cycle themes live. Persistent desktop settings are loaded from `%APPDATA%\ZiggyZag\desktop.conf`, or from `ZIGGYZAG_DESKTOP_CONFIG` when that environment variable is set. Shell startup commands remain separate and still use `$ZIGGYZAG_CONFIG` or `~/.ziggyzagrc`.
+On Windows, press `Ctrl+,` to open the settings overlay, `Ctrl+Shift+P` for the command palette, `Ctrl+Shift+F` for scrollback search, `Ctrl+Shift+O` for quick select, and `Ctrl+Shift+T` to cycle themes live. Persistent desktop settings are loaded from `%APPDATA%\ZiggyZag\desktop.conf`, or from `ZIGGYZAG_DESKTOP_CONFIG` when that environment variable is set. Shell startup commands remain separate and still use `$ZIGGYZAG_CONFIG` or `~/.ziggyzagrc`.
 
 ## Prompt Themes
 
@@ -68,21 +68,21 @@ The shell has prompt themes too: `classic`, `smart`, `compact`, `dev`, and `dash
 | Area | Status | Notes |
 | --- | --- | --- |
 | REPL prompt | Done | Interactive command loop, smart prompt, terminal title/CWD hints, and manual terminal echo support where raw mode is available. |
-| Builtins | Done | `about`, `abbr`, `alias`, `back`, `cd`, `complete`, `config`, `declare`, `dirs`, `doctor`, `echo`, `env`, `exit`, `export`, `forward`, `help`, `history`, `inspect`, `jobs`, `jump`, `mkcd`, `path`, `project`, `prompt`, `pwd`, `repeat`, `run`, `source`, `timeit`, `type`, `unalias`, `unabbr`, `unset`, `up`, `vars`, `which`. |
+| Builtins | Done | `about`, `abbr`, `alias`, `back`, `bg`, `cd`, `complete`, `config`, `declare`, `dirs`, `disown`, `doctor`, `echo`, `env`, `exit`, `export`, `fg`, `forward`, `help`, `history`, `inspect`, `jobs`, `jump`, `kill`, `mkcd`, `path`, `project`, `prompt`, `pwd`, `repeat`, `run`, `source`, `timeit`, `type`, `unalias`, `unabbr`, `unset`, `up`, `vars`, `wait`, `which`. |
 | External programs | Done | PATH lookup and process spawning. |
 | Quoting | Done | Single quotes, double quotes, and backslash behavior. |
 | Redirection | Done | stdout/stderr redirect and append forms. |
-| Pipelines | Done | Native simple pipelines with fallback to the system shell for complex syntax. |
+| Pipelines | Alpha | Native simple pipelines with bounded stage input, concurrent stdout/stderr draining per stage, and fallback to the system shell for complex syntax. A true streaming pipe-chain engine remains future work. |
 | Completion | Done | Builtin, executable, path, programmable, and declarative completion with descriptions. |
-| History | Done | Listing, navigation, command recall, fuzzy search, failed/slow/cwd/stats queries, metadata tracking, read/write/append, and `HISTFILE` persistence. |
-| Job control | Done | Background jobs, `jobs`, reaping, and job number reuse. |
+| History | Done | Listing, navigation, command recall, fuzzy search, failed/slow/cwd/stats queries, metadata tracking, read/write/append/export/clear, enable/disable/private controls, and `HISTFILE` persistence. |
+| Job control | Alpha | Background jobs, `jobs`, reaping, job number reuse, plus practical `wait`, `kill`, `disown`, `fg`, and `bg` builtins. Full POSIX process-group job control is not claimed. |
 | Parameter expansion | Done | `$VAR`, `${VAR}`, missing variables, and shell variable storage. |
 | Modern UX | Done | Cursor-aware line editing, autosuggestion hooks, Ctrl-F accept, Ctrl-R fuzzy recall, syntax highlighting in smart prompt mode, visual prompt themes, abbreviations, and startup config. |
 | Introspection | Done | `about`, `doctor`, `inspect`, `which`, `path`, `project`, slash shortcuts, JSON output for jobs/history/prompt/env/doctor/project/dirs, and config validation/reload. |
 | Convenience commands | Done | `mkcd`, `up`, `back`, `forward`, `jump`, `repeat`, `timeit`, `source`, `env`, `vars`, and project-aware `run`. |
 | Developer polish | Done | Repo docs, diagrams, refactors, smoke script, and user-facing enhancements. |
-| Desktop terminal host | Alpha | Windows-native all-Zig app with Win32 windowing, GDI terminal rendering, ConPTY shell hosting, keyboard input, copy/paste, wheel scrollback, shell-aware status bar, themes, desktop config loading, and OSC 777 shell-event parsing. macOS/Linux currently build a terminal-attached launcher that resolves and starts `ziggyzag` through `script(1)` when available; native POSIX graphical hosting is still in progress. |
-| Agent runtime | Alpha | Slim `ziggyzag-agentd` binary with JSON-lines protocol, tool descriptions/calls, terminal host actions, and OpenAI-compatible/Ollama request shaping on Windows, macOS, and Linux. |
+| Desktop terminal host | Alpha | Windows-native all-Zig app with Win32 windowing, GDI terminal rendering, ConPTY shell hosting, keyboard input, bracketed paste, app-cursor mode, mouse-wheel reporting for alternate-screen apps, bounded scrollback, scrollback search, quick select, command palette, shell-aware status bar, themes, profile config loading, alternate screen, 256/RGB color rendering, and OSC 777 shell-event parsing. macOS/Linux currently build a terminal-attached launcher; native POSIX graphical hosting is still in progress. |
+| Agent runtime | Alpha | Slim `ziggyzag-agentd` binary with JSON-lines protocol, tool schemas, approval metadata, audit/event host actions, redacted bounded read/search/git output, and OpenAI-compatible/Ollama request shaping on Windows, macOS, and Linux. |
 
 ## Architecture
 
