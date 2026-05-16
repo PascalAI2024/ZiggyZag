@@ -2,6 +2,8 @@
 
 This file tracks what ZiggyZag already does and what would make it more useful as an everyday shell experiment.
 
+For navigation across the documentation system, start with [README.md](README.md). For alpha remaining work, use [ALPHA_TASKS.md](ALPHA_TASKS.md); for research traceability, use [RESEARCH.md](RESEARCH.md); for task flow and evidence rules, use [TASK_SYSTEM.md](TASK_SYSTEM.md) and [DATA_MAP.md](DATA_MAP.md).
+
 ## Completed Capabilities
 
 | Capability | Details |
@@ -92,7 +94,7 @@ quadrantChart
     Local test harness: [0.55, 0.65]
 ```
 
-For the longer research list and source links, see [ROADMAP.md](ROADMAP.md). For the current daily-driver execution backlog, see [NEXT_20_FEATURES.md](NEXT_20_FEATURES.md). For the implementation-wave task list and alpha/TODO labels, see [ALPHA_TASKS.md](ALPHA_TASKS.md).
+For the longer research list and source links, see [ROADMAP.md](ROADMAP.md) and [RESEARCH.md](RESEARCH.md). For the current daily-driver execution backlog, see [NEXT_20_FEATURES.md](NEXT_20_FEATURES.md). For the implementation-wave task list and alpha/TODO labels, see [ALPHA_TASKS.md](ALPHA_TASKS.md). Component drill-downs live in [apps/desktop](../apps/desktop/README.md) and [apps/agentd](../apps/agentd/README.md).
 
 ## Open Questions
 

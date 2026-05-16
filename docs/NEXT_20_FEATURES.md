@@ -1,6 +1,6 @@
 # Next 20 Features
 
-This is the daily-driver task list for making ZiggyZag good enough to become a main terminal and shell. It combines the current codebase audit with a fresh reference pass over Ghostty and WezTerm.
+This is the daily-driver task list for making ZiggyZag good enough to become a main terminal and shell. It combines the current codebase audit with a fresh reference pass over Ghostty and WezTerm. For official source traceability, use [RESEARCH.md](RESEARCH.md). For alpha remaining-work priority, use [ALPHA_TASKS.md](ALPHA_TASKS.md).
 
 The conclusion is clear: stay all-Zig, keep ZiggyZag's shell as the source of truth, and borrow the quality bar rather than embedding WezTerm or wrapping another terminal. The next wave should make terminal behavior boringly correct, then make shell context, themes, settings, and agent assistance feel first-party.
 
@@ -74,7 +74,7 @@ The remaining work is concentrated in four buckets:
   Primary paths: `apps/shell/src/main.zig`.
 
 - [ ] 11. Cross-platform background jobs
-  Implement nonblocking child status on Windows, macOS, Linux, and BSD; add `fg`, `bg`, `wait`, `kill`, and `disown` or clearly document which job-control features are intentionally absent.
+  Harden nonblocking child status on Windows, macOS, Linux, and BSD; define which process-group semantics, terminal control, and foreground/background behaviors are intentionally absent.
   Progress: practical `wait`, `kill`, `disown`, `fg`, and `bg` builtins are implemented around ZiggyZag's background job table. Full process-group job control is intentionally not claimed yet.
   Primary paths: `apps/shell/src/main.zig`.
 
@@ -102,7 +102,7 @@ The remaining work is concentrated in four buckets:
   Progress: `Ctrl+Shift+O` quick select detects and copies URLs, path-like strings, issue keys, and git-hash-like tokens from the current viewport. Open actions, IPs, command ranges, and OSC 8 remain open.
   Primary paths: `apps/desktop/src/terminal.zig`, `apps/desktop/src/windows_app.zig`.
 
-- [ ] 17. Tabs, split panes, and session restore
+- [ ] 17. Tabs and richer session restore
   Introduce `Session` objects with one PTY/grid per tab or split, keyboard navigation, close confirmation, persisted titles, startup cwd inheritance, and a minimal restore file for last window layout.
   Progress: PTY-backed vertical/horizontal split panes, next-pane focus, close-active-pane, per-pane status/scrollback, and config-restored pane count/orientation are implemented. Tabs, close confirmation, persisted titles, cwd inheritance per new pane, and richer restore remain open.
   Primary paths: `apps/desktop/src/windows_app.zig`, `apps/desktop/src/config.zig`.

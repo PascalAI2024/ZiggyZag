@@ -8,6 +8,8 @@ ZiggyZag is scoped as a workspace for three related products:
 
 The shell is the source of truth. The desktop app is a host and enhancer.
 
+For the full docs map, start at [README.md](README.md). For alpha remaining work, use [ALPHA_TASKS.md](ALPHA_TASKS.md); for task flow, use [TASK_SYSTEM.md](TASK_SYSTEM.md); for research traceability, use [RESEARCH.md](RESEARCH.md).
+
 ## In Scope
 
 | Area | Commitment |
@@ -42,9 +44,9 @@ The shell is the source of truth. The desktop app is a host and enhancer.
 
 | Path | Owner |
 | --- | --- |
-| `apps/shell` | Zig shell runtime and tests. |
-| `apps/desktop` | All-Zig desktop terminal host MVP. |
-| `apps/agentd` | Zig-native JSON-lines agent runtime. |
+| [`apps/shell`](../apps/shell/README.md) | Zig shell runtime and tests. |
+| [`apps/desktop`](../apps/desktop/README.md) | All-Zig desktop terminal host MVP. |
+| [`apps/agentd`](../apps/agentd/README.md) | Zig-native JSON-lines agent runtime. |
 | `apps/desktop-tauri-spike` | Temporary webview prototype preserved for reference. |
 | `docs` | Architecture, scope, roadmap, and strategy. |
 | `scripts` | Local smoke and verification scripts. |
@@ -52,4 +54,4 @@ The shell is the source of truth. The desktop app is a host and enhancer.
 
 ## Next Scope Gate
 
-The next major scope decision is the all-Zig desktop stack: windowing/rendering layer, PTY abstraction, and whether to use `libghostty-vt` immediately or after a small local ANSI parser proves the host boundary.
+The next major scope decision is the all-Zig desktop stack: windowing/rendering layer, PTY abstraction, and whether to use `libghostty-vt` immediately or after a small local ANSI parser proves the host boundary. The active strategy docs are [ALL_ZIG_TERMINAL.md](ALL_ZIG_TERMINAL.md) and [TERMINAL_APP.md](TERMINAL_APP.md).

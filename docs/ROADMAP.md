@@ -4,7 +4,7 @@ This roadmap is based on a quick survey of modern shells, terminal emulators, an
 
 The first sprints implemented MVP versions of the top interactive ideas: autosuggestion hooks, richer completion output, declarative completions, metadata history, fuzzy recall, smart prompt modules, abbreviations, startup config, native simple pipelines, cursor-aware editing, directory history, and project-aware tasks.
 
-The daily-driver terminal backlog now lives in [NEXT_20_FEATURES.md](NEXT_20_FEATURES.md). That list is the current execution order for the Ghostty/WezTerm-inspired terminal, shell, settings, and agent work.
+The daily-driver terminal backlog now lives in [NEXT_20_FEATURES.md](NEXT_20_FEATURES.md). That list is the current execution order for the Ghostty/WezTerm-inspired terminal, shell, settings, and agent work. The alpha remaining-work source of truth is [ALPHA_TASKS.md](ALPHA_TASKS.md), and official source traceability lives in [RESEARCH.md](RESEARCH.md).
 
 ## Ranked Feature Ideas
 
@@ -59,4 +59,4 @@ That suggests the next five implementation targets should be:
 2. Streaming native pipelines with redirection support.
 3. Completion option schemas for flags, file filters, and dynamic descriptions.
 4. Hardening the versioned shell integration event stream for prompt and command lifecycle metadata.
-5. Hardening the new desktop AgentD side panel with richer tool browsing, audit export, and provider streaming.
+5. Hardening the new desktop AgentD side panel with richer tool browsing, audit export, and provider streaming; see [apps/agentd](../apps/agentd/README.md) and [TERMINAL_APP.md](TERMINAL_APP.md).

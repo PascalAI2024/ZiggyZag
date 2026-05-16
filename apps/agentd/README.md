@@ -11,6 +11,8 @@ It is intentionally small:
 - a health method the desktop host can poll before showing agent controls
 - no Node runtime and no embedded web framework
 
+See also: [desktop terminal strategy](../../docs/TERMINAL_APP.md), [alpha task list](../../docs/ALPHA_TASKS.md), [task system](../../docs/TASK_SYSTEM.md), and [data/QA map](../../docs/DATA_MAP.md).
+
 ## Commands
 
 Run from the repository root:

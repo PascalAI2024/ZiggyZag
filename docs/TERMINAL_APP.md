@@ -4,6 +4,8 @@ ZiggyZag can grow a small desktop terminal app without losing its identity as a 
 
 The earlier Tauri/xterm.js direction is now best treated as a spike. Use Terax as a product-shape reference, WezTerm as a quality reference, and Ghostty/libghostty as the closest Zig-native terminal reference. Do not embed WezTerm wholesale; the goal is a ZiggyZag-owned product surface, not a wrapper around another terminal.
 
+Related docs: [ALL_ZIG_TERMINAL.md](ALL_ZIG_TERMINAL.md) covers the all-Zig architecture lane, [RESEARCH.md](RESEARCH.md) maps Ghostty/WezTerm signals to tasks, [ALPHA_TASKS.md](ALPHA_TASKS.md) tracks remaining alpha work, and [TASK_SYSTEM.md](TASK_SYSTEM.md) explains how work moves between docs.
+
 ## Product Thesis
 
 The terminal app should make ZiggyZag easier to try, demo, and use daily while preserving the existing CLI as the source of truth. The desktop layer is valuable when it can expose shell-native context that generic terminals cannot easily know: command metadata, completions, history search, directory context, project tasks, background jobs, and structured command events.

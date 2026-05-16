@@ -4,6 +4,8 @@ ZiggyZag is intentionally compact: the working shell lives in `apps/shell/src/ma
 
 The repository is organized as a workspace. `apps/shell` is the shell runtime, `apps/desktop` is the Windows-native terminal host MVP that launches the shell through a PTY, and `apps/agentd` is the slim JSON-lines agent sidecar.
 
+Related docs: [README.md](README.md) is the docs hub, [SCOPE.md](SCOPE.md) defines product boundaries, [TERMINAL_APP.md](TERMINAL_APP.md) covers the desktop host strategy, and [DATA_MAP.md](DATA_MAP.md) explains how research, QA, and release evidence feed tasks.
+
 ## Runtime Schematic
 
 ```mermaid

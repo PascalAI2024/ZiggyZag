@@ -43,13 +43,13 @@ Most shells are either mature production tools with a lot of historical surface 
 
 ZiggyZag is split into a few deliberately small pieces:
 
-- `apps/shell`: the shell itself, including parsing, expansion, builtins, history, jobs, completion, and interactive editing.
-- `apps/desktop`: the native terminal host. Windows has the full Win32/ConPTY alpha; macOS/Linux currently use a terminal-attached launcher.
-- `apps/launcher`: the friendly launcher entry point used by release zips.
-- `apps/agentd`: a slim JSON-lines sidecar for terminal-aware assistance experiments.
-- `apps/desktop-tauri-spike`: an older Tauri/xterm.js product spike kept for reference.
+- [`apps/shell`](apps/shell): the shell itself, including parsing, expansion, builtins, history, jobs, completion, and interactive editing.
+- [`apps/desktop`](apps/desktop/README.md): the native terminal host. Windows has the full Win32/ConPTY alpha; macOS/Linux currently use a terminal-attached launcher.
+- [`apps/launcher`](apps/launcher): the friendly launcher entry point used by release zips.
+- [`apps/agentd`](apps/agentd/README.md): a slim JSON-lines sidecar for terminal-aware assistance experiments.
+- [`apps/desktop-tauri-spike`](apps/desktop-tauri-spike/README.md): an older Tauri/xterm.js product spike kept for reference.
 
-For installation and command examples, use the dedicated [Quick Start](docs/QUICK_START.md).
+For installation and command examples, use the dedicated [Quick Start](docs/QUICK_START.md). For the full documentation map, use [docs/README.md](docs/README.md).
 
 ## Current Alpha Shape
 
@@ -164,13 +164,17 @@ pie title ZiggyZag capability mix
 |   |-- ALPHA_TASKS.md
 |   |-- ALL_ZIG_TERMINAL.md
 |   |-- ARCHITECTURE.md
+|   |-- DATA_MAP.md
 |   |-- DAILY_DRIVER_QA.md
 |   |-- FEATURES.md
 |   |-- NEXT_20_FEATURES.md
 |   |-- QA_TOMORROW.md
 |   |-- QUICK_START.md
+|   |-- README.md
+|   |-- RESEARCH.md
 |   |-- ROADMAP.md
 |   |-- SCOPE.md
+|   |-- TASK_SYSTEM.md
 |   `-- TERMINAL_APP.md
 |-- scripts/
 |   |-- build-release.ps1
@@ -187,8 +191,12 @@ pie title ZiggyZag capability mix
 
 ## Docs
 
+- [Documentation hub](docs/README.md)
 - [Quick start](docs/QUICK_START.md)
 - [Alpha task list](docs/ALPHA_TASKS.md)
+- [Task system](docs/TASK_SYSTEM.md)
+- [Research library](docs/RESEARCH.md)
+- [Data and QA map](docs/DATA_MAP.md)
 - [Architecture](docs/ARCHITECTURE.md)
 - [Features and roadmap](docs/FEATURES.md)
 - [Next 20 features](docs/NEXT_20_FEATURES.md)
@@ -237,7 +245,7 @@ The first modern shell sprint is in the codebase now. The next wave is about dee
 - Expanding the shared theme and shell-integration protocol between the shell and terminal app.
 - Full-screen fuzzy Ctrl-R picker.
 - More completion spec shapes for options, files, and dynamic values.
-- Real SQLite backend behind the current metadata history format.
+- Durable queryable history backend behind the current metadata history format.
 - Native pipelines with streaming process pipes and redirection support.
 - More parser and execution tests outside the CodeCrafters harness.
 

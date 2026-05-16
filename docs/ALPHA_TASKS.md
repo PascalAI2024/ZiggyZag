@@ -2,7 +2,9 @@
 
 This page is the source-of-truth checklist for the current alpha. It separates what is already shipped from what is still missing, so README, release notes, and implementation waves do not accidentally overclaim.
 
-The definition of "complete" here is practical: good enough to use as a main local terminal and shell, with honest cross-platform builds, reliable release artifacts, safe AgentD actions, and a smooth Windows-native desktop experience. Remote SSH, cloud sync, multiplayer/team features, app-store packaging, and embedding WezTerm wholesale are intentionally out of scope for this alpha line.
+The alpha target is practical: move toward a main local terminal and shell with honest cross-platform builds, reliable release artifacts, safe AgentD actions, and a smooth Windows-native desktop experience. Main-terminal readiness is not claimed until the gates in [DAILY_DRIVER_QA.md](DAILY_DRIVER_QA.md) pass. Remote SSH, cloud sync, multiplayer/team features, app-store packaging, and embedding WezTerm wholesale are intentionally out of scope for this alpha line.
+
+Navigation: use [TASK_SYSTEM.md](TASK_SYSTEM.md) for how task status moves, [NEXT_20_FEATURES.md](NEXT_20_FEATURES.md) for the research-backed execution backlog, [RESEARCH.md](RESEARCH.md) for source traceability, and [DATA_MAP.md](DATA_MAP.md) for QA/release evidence.
 
 ## Current Status
 
@@ -16,8 +18,8 @@ The definition of "complete" here is practical: good enough to use as a main loc
 | Split panes | Alpha | The Windows host supports PTY-backed vertical/horizontal splits, next-pane focus, active-pane close, per-pane scrollback/status, and config-restored pane count/orientation. Tabs are still missing. |
 | Unicode terminal | Alpha | Cells store Unicode scalars, decode UTF-8 with invalid-byte replacement, emit UTF-8 for text extraction, and track wide-cell continuations. Combining marks, emoji grapheme clusters, fallback fonts, and ligatures remain TODO. |
 | Pipelines | Alpha | Simple pipelines use a native stage path with concurrent stdout/stderr draining and temp-file handoff for large stage output. True streaming pipe chains, deeper redirection composition, and more parser coverage remain TODO. |
-| POSIX PTY work | Alpha | The macOS/Linux launcher now tries the native POSIX PTY relay first, including raw input, byte relay, child polling, terminal-size propagation, and tested platform fallbacks. |
-| Release QA | Alpha-ready | Windows scripts cover build, tests, shell smoke, AgentD smoke, desktop launch/close smoke, cross-built archive structure, checksums, and extracted Windows runtime smoke. Linux/macOS runtime smoke still needs real hosts or CI runners. |
+| POSIX PTY work | Alpha | The macOS/Linux launcher now tries the native POSIX PTY relay first, including raw input, byte relay, child polling, terminal-size propagation, and fallback paths. Real-host runtime stress still needs Linux/macOS coverage. |
+| Release QA | Windows/archive alpha-ready; POSIX runtime QA pending | Windows scripts cover build, tests, shell smoke, AgentD smoke, desktop launch/close smoke, cross-built archive structure, checksums, and extracted Windows runtime smoke. Linux/macOS runtime smoke still needs real hosts or CI runners. |
 
 ## Shipped In The Current Alpha
 
@@ -33,7 +35,7 @@ The definition of "complete" here is practical: good enough to use as a main loc
 - [x] POSIX terminal-attached desktop launcher with native PTY relay first, then `script(1)`, then direct stdio fallback.
 - [x] Cross-built release zip assembly for Windows x86_64, Linux x86_64, Linux aarch64, macOS x86_64, and macOS aarch64, plus checksums and artifact QA.
 
-## Complete Missing Work
+## Complete List Of Missing Work
 
 ### P0: Correctness, Stability, And Release Honesty
 
@@ -45,6 +47,8 @@ The definition of "complete" here is practical: good enough to use as a main loc
 - [ ] Finish Unicode rendering correctness: combining marks, grapheme clusters, emoji width, ambiguous-width policy, fallback fonts, ligatures, box drawing alignment, copy/search behavior, and tests for invalid UTF-8.
 - [ ] Replace native pipeline buffering with true streaming pipe chains, bounded captures, spill-to-temp behavior where needed, and deadlock tests.
 - [ ] Implement Windows raw interactive input for the standalone shell so ZiggyZag has first-class cursor editing when run directly inside Windows terminals.
+- [ ] Stress the POSIX PTY relay on real Linux/macOS hosts: raw-mode restore after errors, Ctrl+C/Ctrl+D, resize propagation during interactive sessions, piped stdin EOF, non-TTY stdin/stdout, child exit status, and fallback behavior.
+- [ ] Harden OSC 777 and shell-integration trust boundaries so untrusted terminal output cannot spoof privileged UI state, AgentD context, or approval decisions.
 - [ ] Run release zips on real or CI Linux x86_64, Linux aarch64, macOS Intel, and macOS Apple Silicon hosts; record the exact pass/fail matrix before calling cross-platform artifacts tested.
 - [ ] Add crash diagnostics and support bundles: version info, config path, recent AgentD audit events, last renderer mode, and sanitized logs.
 
@@ -59,6 +63,7 @@ The definition of "complete" here is practical: good enough to use as a main loc
 - [ ] Add quick-select open actions for URLs, paths, IPs, git hashes, issue keys, and OSC 8 hyperlinks instead of copy-only behavior.
 - [ ] Build completion engine v2: cursor-position-aware completion, quoted/escaped paths on Windows and POSIX, option schemas, dynamic values, file filters, descriptions, cancellation, timeouts, and bounded programmable completer output.
 - [ ] Add a durable metadata-history backend by default, reload it on startup, support import/export/clear/disable flows, and strengthen secret redaction.
+- [ ] Deepen autosuggestions, prompt modules, and shell-aware navigation so the README roadmap language maps to executable work rather than loose aspiration.
 - [ ] Harden AgentD panel workflows: read-only tool browsing from the UI, build-action approval, audit export, provider streaming, tool cancellation/timeouts, clearer error states, and stronger secret redaction.
 - [ ] Add accessibility passes for keyboard-only usage, high-contrast themes, readable focus indicators, font scaling, and screen-reader-friendly labels where the native stack supports them.
 - [ ] Profile large output, scrollback search, split-pane rendering, AgentD transcripts, and startup time; set simple performance budgets before adding heavier renderer work.

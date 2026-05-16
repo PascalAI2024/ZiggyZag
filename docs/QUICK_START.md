@@ -2,6 +2,8 @@
 
 This page is the practical path for building and trying ZiggyZag locally.
 
+For the full documentation map, start with [README.md](README.md). For current alpha gaps and remaining work, use [ALPHA_TASKS.md](ALPHA_TASKS.md); for QA evidence and release data, use [DATA_MAP.md](DATA_MAP.md).
+
 Choose the path that matches what you want to test:
 
 | Goal | Start here |

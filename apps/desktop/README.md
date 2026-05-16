@@ -4,6 +4,8 @@ This is the primary lane for the all-Zig desktop terminal host.
 
 On Windows, the app launches `ziggyzag` through a real ConPTY, renders terminal output in its own native Win32 window, and uses ZiggyZag's OSC 777 shell-integration events for cwd, command status, duration, jobs, and shell-aware UI.
 
+See also: [desktop terminal strategy](../../docs/TERMINAL_APP.md), [all-Zig terminal direction](../../docs/ALL_ZIG_TERMINAL.md), [alpha task list](../../docs/ALPHA_TASKS.md), and [research traceability](../../docs/RESEARCH.md).
+
 On macOS/Linux, the desktop binary is currently a terminal-attached launcher: it resolves the ZiggyZag shell binary, prints the selected POSIX backend, and starts the shell in the calling terminal. It first tries ZiggyZag's slim native POSIX PTY host, including byte relay, raw input, child status polling, and terminal-size propagation. If that fails, it falls back to `script(1)`, then direct stdio. It does not open a native graphical window yet.
 
 The previous Tauri/xterm.js prototype lives in `apps/desktop-tauri-spike` as a product spike.

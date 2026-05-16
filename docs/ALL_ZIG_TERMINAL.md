@@ -4,6 +4,8 @@ ZiggyZag can be a Zig shell inside a Zig-native terminal host. This is the stron
 
 The existing Tauri prototype is useful as a product spike, but the primary direction is the all-Zig desktop terminal.
 
+Related docs: [TERMINAL_APP.md](TERMINAL_APP.md) describes the product strategy and MVP tester scope, [RESEARCH.md](RESEARCH.md) maps terminal references to tasks, and [ALPHA_TASKS.md](ALPHA_TASKS.md) is the active remaining-work checklist.
+
 ## Why Pivot
 
 | Choice | Benefit | Cost |
@@ -85,5 +87,5 @@ apps/
 3. Done: create a tested Zig desktop foundation with terminal grid, event extraction, themes, and PTY backend selection.
 4. Done: add PTY read/write on Windows.
 5. Done: open a native window and render the terminal grid.
-6. Next: harden user-facing details for testers: selection, config editing, ANSI coverage, lifecycle cleanup, POSIX native graphical hosting, and richer AgentD panel workflows.
+6. Next: harden user-facing details for testers: selection, config editing, ANSI coverage, lifecycle cleanup, POSIX native graphical hosting, and richer AgentD panel workflows. Track concrete acceptance in [ALPHA_TASKS.md](ALPHA_TASKS.md).
 7. Decide whether to pull in `libghostty-vt` once the local MVP proves the app boundary.
