@@ -797,8 +797,20 @@ const App = struct {
     }
 
     fn resolveShellPath(self: *App) ![]u8 {
-        if (self.config.profile.shell_path.len > 0) return try self.allocator.dupe(u8, self.config.profile.shell_path);
-        if (self.env.get("ZIGGYZAG_SHELL_PATH")) |path| return try self.allocator.dupe(u8, path);
+        // Pre-fix this function returned configured paths without checking they
+        // existed, which meant a stale `profile.shell` in desktop.conf or a
+        // dangling ZIGGYZAG_SHELL_PATH env var would feed CreateProcessW a
+        // bogus path and produce a startup `CreateProcessFailed` even when a
+        // working `ziggyzag.exe` was sitting next to the desktop binary.
+        // We now existence-check both explicit paths and fall through to the
+        // location-based resolution chain when they're stale. Run
+        // `scripts/doctor-desktop.ps1` to repair an offending desktop.conf.
+        if (self.config.profile.shell_path.len > 0) {
+            if (try self.existingDup(self.config.profile.shell_path)) |path| return path;
+        }
+        if (self.env.get("ZIGGYZAG_SHELL_PATH")) |configured| {
+            if (try self.existingDup(configured)) |path| return path;
+        }
 
         const exe_dir = std.process.executableDirPathAlloc(self.io, self.allocator) catch null;
         if (exe_dir) |dir| {
@@ -819,7 +831,9 @@ const App = struct {
     }
 
     fn resolveAgentPath(self: *App) ![]u8 {
-        if (self.env.get("ZIGGYZAG_AGENTD_PATH")) |path| return try self.allocator.dupe(u8, path);
+        if (self.env.get("ZIGGYZAG_AGENTD_PATH")) |configured| {
+            if (try self.existingDup(configured)) |path| return path;
+        }
 
         const exe_dir = std.process.executableDirPathAlloc(self.io, self.allocator) catch null;
         if (exe_dir) |dir| {
@@ -837,6 +851,18 @@ const App = struct {
             return try self.allocator.dupe(u8, candidate);
         }
         return error.AgentBinaryNotFound;
+    }
+
+    /// Existence-check a single candidate path. Returns a freshly-allocated
+    /// duplicate on success, `null` if the path does not exist. Companion to
+    /// `existingJoined` which handles multi-part path construction.
+    fn existingDup(self: *App, candidate: []const u8) !?[]u8 {
+        if (std.fs.path.isAbsolute(candidate)) {
+            std.Io.Dir.accessAbsolute(self.io, candidate, .{}) catch return null;
+        } else {
+            std.Io.Dir.cwd().access(self.io, candidate, .{}) catch return null;
+        }
+        return try self.allocator.dupe(u8, candidate);
     }
 
     fn existingJoined(self: *App, parts: []const []const u8) !?[]u8 {
