@@ -7,6 +7,12 @@ const max_file_output_bytes = 64 * 1024;
 const max_command_stdout_bytes = 96 * 1024;
 const max_command_stderr_bytes = 24 * 1024;
 
+/// Warn-once flag: set after the first time the canonicalization guard silently
+/// fails open. This catches the case where realPathFileAlloc is unavailable on
+/// the current platform (e.g., Linux std.Io backend) so operators know the
+/// backstop defense is offline.
+var canonicalizationGuardUnavailWarned = false;
+
 pub const Approval = enum {
     none,
     ask,
@@ -1029,8 +1035,22 @@ fn wingetPackageZigAlloc(
 /// the always-on fail-closed guarantee, so a canonicalization failure here
 /// only loses a redundant backstop, never the primary defense. TOCTOU-racy by
 /// nature, not an atomic guarantee.
+/// When this guard fails open, a one-time warning is printed to stderr so
+/// operators know the canonicalization backstop is unavailable on this platform.
 fn resolvedPathEscapesWorkspace(allocator: Allocator, io: std.Io, path: []const u8) bool {
-    const root_real = std.Io.Dir.cwd().realPathFileAlloc(io, ".", allocator) catch return false;
+    const root_real = std.Io.Dir.cwd().realPathFileAlloc(io, ".", allocator) catch {
+        if (!canonicalizationGuardUnavailWarned) {
+            canonicalizationGuardUnavailWarned = true;
+            std.debug.print(
+                "[agentd security] canonicalization-based containment guard unavailable " ++
+                    "(realPathFileAlloc not supported on this platform). " ++
+                    "Symlink-based containment remains active. " ++
+                    "If a future regression weakens the symlink walk, this backstop will not catch it.\n",
+                .{},
+            );
+        }
+        return false;
+    };
     defer allocator.free(root_real);
     const target_real = std.Io.Dir.cwd().realPathFileAlloc(io, path, allocator) catch return false;
     defer allocator.free(target_real);

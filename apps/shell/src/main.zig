@@ -36,6 +36,12 @@ const CompletionCandidateSpec = struct {
     command: []u8,
     candidate: []u8,
     description: []u8,
+    /// For subcommand trees: a space-separated list of argument indices that
+    /// should have completion candidates from THIS command. E.g. "0" means
+    /// the first argument (the subcommand) has completions. "1" means second
+    /// argument. Empty or "0" = complete first arg after the command itself.
+    /// Format: "0" or "0 1" (multiple positional slots).
+    options: []u8,
 };
 
 const AliasSpec = struct {
@@ -155,11 +161,19 @@ const Shell = struct {
     background_jobs: std.ArrayList(BackgroundJob),
     dir_history: std.ArrayList([]u8),
     dir_index: usize,
+    /// Previous working directory before the last `cd`. Used for `cd -`.
+    prev_cwd: ?[]u8,
     manual_echo: bool,
     /// Set after a CR submit so the next readLine call can swallow a leading LF,
     /// turning a CRLF sequence into a single line submission.
     pending_cr_swallow: bool,
     last_completion_prefix: ?[]u8,
+    /// When true, the shell is in Ctrl+R history-search mode.
+    history_search_active: bool,
+    /// The live query while searching history.
+    history_search_query: ?[]u8,
+    /// Index of the currently selected history match while searching.
+    history_search_index: usize,
     prompt_mode: PromptMode,
     prompt_snapshot: PromptSnapshot,
     prompt_snapshot_valid: bool,
@@ -190,9 +204,13 @@ const Shell = struct {
             .background_jobs = .empty,
             .dir_history = .empty,
             .dir_index = 0,
+            .prev_cwd = null,
             .manual_echo = false,
             .pending_cr_swallow = false,
             .last_completion_prefix = null,
+            .history_search_active = false,
+            .history_search_query = null,
+            .history_search_index = 0,
             .prompt_mode = .classic,
             .prompt_snapshot = .{},
             .prompt_snapshot_valid = false,
@@ -200,6 +218,42 @@ const Shell = struct {
             .last_duration_ms = 0,
             .current_theme = initial_theme,
         };
+    }
+
+    fn loadDefaultAbbreviations(self: *Shell) !void {
+        // Sensible defaults that ship with the shell — user config can override these
+        const defaults = [_]struct { name: []const u8, value: []const u8 }{
+            .{ .name = "gco", .value = "git checkout" },
+            .{ .name = "ga", .value = "git add" },
+            .{ .name = "gc", .value = "git commit" },
+            .{ .name = "gs", .value = "git status" },
+            .{ .name = "gp", .value = "git push" },
+            .{ .name = "gl", .value = "git pull" },
+            .{ .name = "gd", .value = "git diff" },
+            .{ .name = "glo", .value = "git log --oneline" },
+            .{ .name = "mkcd", .value = "mkcd" },
+        };
+        for (defaults) |abbr| {
+            try self.putAbbreviation(abbr.name, abbr.value);
+        }
+    }
+
+    fn loadDefaultCompletions(self: *Shell) !void {
+        // Hardcoded completions for common commands — discoverable from the start
+        const completions = [_]struct { cmd: []const u8, items: []const u8, desc: []const u8 }{
+            .{ .cmd = "git", .items = "add commit push pull status diff log checkout branch clone fetch merge rebase stash init remote", .desc = "git subcommand" },
+            .{ .cmd = "zig", .items = "build test run fmt check init publish clean", .desc = "zig subcommand" },
+            .{ .cmd = "npm", .items = "install run test start build dev ci init list audit", .desc = "npm subcommand" },
+            .{ .cmd = "cargo", .items = "build test run fmt clippy check publish init add update", .desc = "cargo subcommand" },
+            .{ .cmd = "go", .items = "run build test get install fmt vet mod init", .desc = "go subcommand" },
+            .{ .cmd = "docker", .items = "run build ps pull push images logs exec stop start", .desc = "docker subcommand" },
+        };
+        for (completions) |c| {
+            var parts = std.mem.splitScalar(u8, c.items, ' ');
+            while (parts.next()) |item| {
+                if (item.len > 0) try self.putCompletionCandidate(c.cmd, item, c.desc);
+            }
+        }
     }
 
     fn deinit(self: *Shell) void {
@@ -238,6 +292,8 @@ const Shell = struct {
         self.background_jobs.deinit(self.allocator);
         for (self.dir_history.items) |entry| self.allocator.free(entry);
         self.dir_history.deinit(self.allocator);
+        if (self.prev_cwd) |cwd| self.allocator.free(cwd);
+        if (self.history_search_query) |q| self.allocator.free(q);
         self.clearCompletionState();
     }
 
@@ -253,6 +309,8 @@ const Shell = struct {
             },
             else => |e| return e,
         };
+        try self.loadDefaultAbbreviations();
+        try self.loadDefaultCompletions();
         try self.rememberCurrentDirectory(false);
 
         const terminal_mode = try TerminalMode.enable();
@@ -334,6 +392,7 @@ const Shell = struct {
         while (true) {
             const byte = reader.takeByte() catch |err| switch (err) {
                 error.EndOfStream => {
+                    self.history_search_active = false;
                     if (line.items.len == 0) {
                         line.deinit(self.allocator);
                         return null;
@@ -349,6 +408,16 @@ const Shell = struct {
             if (self.pending_cr_swallow) {
                 self.pending_cr_swallow = false;
                 if (byte == '\n') continue;
+            }
+
+            // Ctrl+R history search mode: all keys go to the search handler
+            if (self.history_search_active) {
+                if (byte == 0x1b) {
+                    try self.handleHistorySearchEscape(reader, stdout, &line, &cursor);
+                } else {
+                    _ = try self.handleHistorySearchKey(byte, stdout, &line, &cursor);
+                }
+                continue;
             }
 
             switch (byte) {
@@ -400,7 +469,7 @@ const Shell = struct {
                     if (self.manual_echo) try stdout.writeAll("\x1b[H\x1b[2J");
                     try self.redrawPromptLineWithSuggestion(stdout, line.items, cursor);
                 },
-                0x12 => try self.acceptFuzzyHistoryMatch(stdout, &line, &cursor),
+                0x12 => try self.startHistorySearch(stdout, &line, &cursor),
                 0x15 => {
                     self.clearCompletionState();
                     if (cursor > 0) {
@@ -1041,6 +1110,153 @@ const Shell = struct {
         if (self.manual_echo) try self.redrawPromptLine(stdout, line.items, cursor.*);
     }
 
+    /// Start incremental Ctrl+R history search mode. Saves the current line
+    /// as a draft so we can restore it if the user exits without accepting.
+    fn startHistorySearch(self: *Shell, stdout: *std.Io.Writer, line: *std.ArrayList(u8), cursor: *usize) !void {
+        self.clearCompletionState();
+        // Save current query as the initial search term
+        if (self.history_search_query) |q| self.allocator.free(q);
+        self.history_search_query = try self.allocator.dupe(u8, line.items);
+        self.history_search_index = self.history.items.len;
+        self.history_search_active = true;
+        try self.redrawHistorySearch(stdout, line, cursor);
+    }
+
+    /// Handle key input while in history search mode. Returns true if the key
+    /// was consumed by the search handler, false to fall through to normal mode.
+    fn handleHistorySearchKey(self: *Shell, byte: u8, stdout: *std.Io.Writer, line: *std.ArrayList(u8), cursor: *usize) !bool {
+        switch (byte) {
+            '\n', '\r' => {
+                // Accept the current match
+                try self.acceptHistorySearchMatch(stdout, line, cursor);
+                self.history_search_active = false;
+                if (self.history_search_query) |q| {
+                    self.allocator.free(q);
+                    self.history_search_query = null;
+                }
+                return true;
+            },
+            0x1b => {
+                // Escape — cancel search, restore original draft
+                self.history_search_active = false;
+                if (self.history_search_query) |q| {
+                    self.allocator.free(q);
+                    self.history_search_query = null;
+                }
+                return true;
+            },
+            0x04, 0x7f, 0x08 => {
+                // Backspace — trim query, find new match
+                if (self.history_search_query) |q| {
+                    if (q.len > 0) {
+                        const new_query = try std.fmt.allocPrint(self.allocator, "{s}", .{q[0 .. q.len - 1]});
+                        self.allocator.free(q);
+                        self.history_search_query = new_query;
+                        self.history_search_index = self.history.items.len;
+                        try self.stepHistorySearch(stdout, line, cursor, .previous);
+                    }
+                }
+                return true;
+            },
+            'A' => {
+                // Up — previous match
+                try self.stepHistorySearch(stdout, line, cursor, .previous);
+                return true;
+            },
+            'B' => {
+                // Down — next match
+                try self.stepHistorySearch(stdout, line, cursor, .next);
+                return true;
+            },
+            else => {
+                // Any other character — append to query
+                if (self.history_search_query) |q| {
+                    self.history_search_query = try std.fmt.allocPrint(self.allocator, "{s}{c}", .{ q, byte });
+                } else {
+                    self.history_search_query = try std.fmt.allocPrint(self.allocator, "{c}", .{byte});
+                }
+                self.history_search_index = self.history.items.len;
+                try self.stepHistorySearch(stdout, line, cursor, .previous);
+                return true;
+            },
+        }
+    }
+
+    fn stepHistorySearch(self: *Shell, stdout: *std.Io.Writer, line: *std.ArrayList(u8), cursor: *usize, direction: HistoryDirection) !void {
+        const query = self.history_search_query orelse return;
+        var search_from = self.history_search_index;
+
+        var offset: usize = 1;
+        const limit = self.history.items.len;
+        while (offset <= limit) : (offset += 1) {
+            if (direction == .previous) {
+                if (search_from == 0) break;
+                search_from -= 1;
+            } else {
+                if (search_from + 1 >= self.history.items.len) break;
+                search_from += 1;
+            }
+            const entry = self.history.items[search_from];
+            if (std.mem.indexOf(u8, entry, query) != null) {
+                self.history_search_index = search_from;
+                try self.replaceCurrentLine(line, entry);
+                cursor.* = line.items.len;
+                try self.redrawHistorySearch(stdout, line, cursor);
+                return;
+            }
+        }
+        // No match — beep
+        if (self.manual_echo) try stdout.writeByte(0x07);
+    }
+
+    /// Handle the escape sequence prefix (0x1b) while in history search mode.
+    /// Reads the `[` and arrow key, then dispatches to the search handler.
+    fn handleHistorySearchEscape(self: *Shell, reader: *std.Io.Reader, stdout: *std.Io.Writer, line: *std.ArrayList(u8), cursor: *usize) !void {
+        const introducer = reader.takeByte() catch return;
+        if (introducer != '[') {
+            // Bare escape — cancel search
+            self.history_search_active = false;
+            if (self.history_search_query) |q| {
+                self.allocator.free(q);
+                self.history_search_query = null;
+            }
+            return;
+        }
+        const key = reader.takeByte() catch return;
+        _ = try self.handleHistorySearchKey(key, stdout, line, cursor);
+    }
+
+    fn acceptHistorySearchMatch(self: *Shell, stdout: *std.Io.Writer, line: *std.ArrayList(u8), cursor: *usize) !void {
+        if (self.history_search_index < self.history.items.len) {
+            const match = self.history.items[self.history_search_index];
+            try self.replaceCurrentLine(line, match);
+            cursor.* = line.items.len;
+            if (self.manual_echo) try self.redrawPromptLine(stdout, line.items, cursor.*);
+        }
+    }
+
+    fn redrawHistorySearch(self: *Shell, stdout: *std.Io.Writer, line: *std.ArrayList(u8), cursor: *usize) !void {
+        if (!self.manual_echo) return;
+        const query = self.history_search_query orelse "";
+        // Find current match text for preview
+        const match_text: []u8 = if (self.history_search_index < self.history.items.len)
+            self.history.items[self.history_search_index]
+        else
+            "";
+
+        try stdout.writeAll("\r\x1b[2K");
+        try stdout.writeAll("\x1b[36m(reverse-i-search)\x1b[0m ");
+        try stdout.writeAll(query);
+        try stdout.writeAll(": ");
+        // Show the current match, highlight the query match within it
+        try self.writeHighlightedLine(stdout, match_text);
+        // Restore line display
+        try stdout.writeAll("\r\n");
+        try self.writePrompt(stdout);
+        try stdout.writeAll(line.items);
+        try self.moveCursorBack(stdout, line.items.len - @min(cursor.*, line.items.len));
+    }
+
     fn expandAbbreviationInEditor(self: *Shell, line: *std.ArrayList(u8), cursor: *usize) !void {
         if (cursor.* != line.items.len) return;
         if (line.items.len == 0 or line.items[line.items.len - 1] != ' ') return;
@@ -1428,6 +1644,15 @@ const Shell = struct {
         self.last_status = 0;
 
         if (std.mem.eql(u8, command, "exit")) {
+            if (self.background_jobs.items.len > 0) {
+                var stderr_buffer: std.ArrayList(u8) = .empty;
+                defer stderr_buffer.deinit(self.allocator);
+                try appendFmt(self.allocator, &stderr_buffer, "exit: there are {d} background job(s) running. " ++
+                    "Use 'jobs' to list them, 'kill %%N' to stop them, or 'disown %%N' to detach first.\n", .{self.background_jobs.items.len});
+                self.last_status = 1;
+                try self.emitCommandOutput(&parsed, "", stderr_buffer.items);
+                return true;
+            }
             return false;
         }
 
@@ -1691,7 +1916,7 @@ const Shell = struct {
             defer stdout_buffer.deinit(self.allocator);
             var stderr_buffer: std.ArrayList(u8) = .empty;
             defer stderr_buffer.deinit(self.allocator);
-            try self.helpCommand(&stdout_buffer);
+            try self.helpCommand(parsed.argv.items, &stdout_buffer);
             try self.emitCommandOutput(&parsed, stdout_buffer.items, stderr_buffer.items);
             return true;
         }
@@ -1890,18 +2115,34 @@ const Shell = struct {
     }
 
     fn changeDirectory(self: *Shell, argv: []const []const u8, stderr_buffer: *std.ArrayList(u8)) !bool {
-        const target = if (argv.len < 2 or std.mem.eql(u8, argv[1], "~"))
+        // Resolve the target path before changing — capture prev cwd first
+        const current_cwd = std.process.currentPathAlloc(self.io, self.allocator) catch null;
+        defer if (current_cwd) |cwd| self.allocator.free(cwd);
+
+        const target: []const u8 = if (argv.len < 2 or std.mem.eql(u8, argv[1], "~"))
             self.env.get("HOME") orelse ""
+        else if (std.mem.eql(u8, argv[1], "-"))
+            self.prev_cwd orelse {
+                try appendFmt(self.allocator, stderr_buffer, "cd: OLDPWD not set\n", .{});
+                self.last_status = 1;
+                return false;
+            }
         else
             argv[1];
 
         if (target.len == 0) return true;
-        std.process.setCurrentPath(self.io, target) catch {
+        if (std.process.setCurrentPath(self.io, target)) |_| {
+            // Save the previous cwd for `cd -`
+            if (current_cwd) |cwd| {
+                if (self.prev_cwd) |prev| self.allocator.free(prev);
+                self.prev_cwd = try self.allocator.dupe(u8, cwd);
+            }
+            return true;
+        } else |_| {
             try appendFmt(self.allocator, stderr_buffer, "cd: {s}: No such file or directory\n", .{target});
             self.last_status = 1;
             return false;
-        };
-        return true;
+        }
     }
 
     fn typeCommand(self: *Shell, argv: []const []const u8, stdout_buffer: *std.ArrayList(u8)) !void {
@@ -2136,7 +2377,19 @@ const Shell = struct {
         try stdout_buffer.append(self.allocator, '\n');
     }
 
-    fn helpCommand(self: *Shell, stdout_buffer: *std.ArrayList(u8)) !void {
+    fn helpCommand(self: *Shell, argv: []const []const u8, stdout_buffer: *std.ArrayList(u8)) !void {
+        // Handle -h / --help flags
+        if (hasArg(argv, "-h") or hasArg(argv, "--help")) {
+            try stdout_buffer.appendSlice(self.allocator,
+                \\Usage: help [-h] [--help] [command]
+                \\
+                \\Show shell help. With no arguments, lists all builtins and shortcuts.
+                \\  -h, --help    Show this help message
+                \\  command       Show detailed help for a specific builtin
+                \\
+            );
+            return;
+        }
         try stdout_buffer.appendSlice(self.allocator,
             \\ZiggyZag shell
             \\
@@ -2831,6 +3084,18 @@ const Shell = struct {
     }
 
     fn aliasCommand(self: *Shell, argv: []const []const u8, stdout_buffer: *std.ArrayList(u8)) !void {
+        if (hasArg(argv, "-h") or hasArg(argv, "--help")) {
+            try stdout_buffer.appendSlice(self.allocator,
+                \\Usage: alias [-h] [--help] [name[=value]...]
+                \\
+                \\Set, list, or remove command aliases.
+                \\  -h, --help        Show this help message
+                \\  name               Show the value of alias 'name'
+                \\  name=value         Create alias: alias name=value
+                \\
+            );
+            return;
+        }
         if (argv.len == 1) {
             for (self.aliases.items) |alias| {
                 try self.printAlias(alias, stdout_buffer);
@@ -2867,6 +3132,19 @@ const Shell = struct {
     }
 
     fn abbrCommand(self: *Shell, argv: []const []const u8, stdout_buffer: *std.ArrayList(u8)) !void {
+        if (hasArg(argv, "-h") or hasArg(argv, "--help")) {
+            try stdout_buffer.appendSlice(self.allocator,
+                \\Usage: abbr [-h] [--help] [name[=value]...]
+                \\
+                \\Manage command abbreviations that expand before execution.
+                \\  -h, --help        Show this help message
+                \\  name               Show the value of abbreviation 'name'
+                \\  name=value         Create abbreviation: abbr name=value
+                \\  NOTE: abbreviations expand on SPACE, TAB, or ENTER
+                \\
+            );
+            return;
+        }
         if (argv.len == 1) {
             for (self.abbreviations.items) |abbr| {
                 try self.printAbbreviation(abbr, stdout_buffer);
@@ -2935,6 +3213,20 @@ const Shell = struct {
     }
 
     fn promptCommand(self: *Shell, argv: []const []const u8, stdout_buffer: *std.ArrayList(u8)) !void {
+        if (hasArg(argv, "-h") or hasArg(argv, "--help")) {
+            try stdout_buffer.appendSlice(self.allocator,
+                \\Usage: prompt [-h] [--help] [--json] [MODE]
+                \\
+                \\Show or set the prompt mode.
+                \\  -h, --help        Show this help message
+                \\  --json            Show machine-readable prompt state
+                \\  MODE              Set prompt mode: classic, smart, compact, dev, dashboard
+                \\  themes            List available prompt themes
+                \\
+            );
+            return;
+        }
+
         if (hasArg(argv, "--json")) {
             try appendFmt(self.allocator, stdout_buffer, "{{\"mode\":\"{s}\",\"last_status\":{d},\"last_duration_ms\":{d},\"modes\":[", .{
                 @tagName(self.prompt_mode),
@@ -2964,6 +3256,8 @@ const Shell = struct {
         if (promptModeByName(argv[1])) |mode| {
             self.prompt_mode = mode;
             self.prompt_snapshot_valid = false;
+            var stderr = std.Io.File.stderr().writer(self.io, &.{});
+            try stderr.interface.print("Updated theme '{s}'\n", .{@tagName(mode)});
         } else {
             try appendFmt(self.allocator, stdout_buffer, "prompt: {s}: expected classic, smart, compact, dev, dashboard, or themes\n", .{argv[1]});
         }
@@ -3033,6 +3327,21 @@ const Shell = struct {
     }
 
     fn configCommand(self: *Shell, argv: []const []const u8, stdout_buffer: *std.ArrayList(u8)) !void {
+        if (hasArg(argv, "-h") or hasArg(argv, "--help")) {
+            try stdout_buffer.appendSlice(self.allocator,
+                \\Usage: config [-h] [--help] [subcommand] [args...]
+                \\
+                \\Show, reload, and validate startup config.
+                \\  -h, --help        Show this help message
+                \\  show              Show current config summary (default)
+                \\  path              Print config file path
+                \\  reload            Reload config from disk
+                \\  check [PATH]      Validate a config file
+                \\  sample            Print a sample config
+                \\
+            );
+            return;
+        }
         const subcommand = if (argv.len >= 2) argv[1] else "show";
         if (std.mem.eql(u8, subcommand, "path")) {
             const path = try self.configPathAlloc();
@@ -3096,11 +3405,87 @@ const Shell = struct {
         defer if (branch) |name| self.allocator.free(name);
         const histfile = self.env.get("HISTFILE") orelse "";
         const metadata_path = self.env.get("ZIGGYZAG_HISTORY_DB") orelse "";
+        const json_mode = hasArg(argv, "--json");
 
-        if (hasArg(argv, "--json")) {
+        // ── Diagnostic checks ────────────────────────────────────────────────
+        var issues: std.ArrayList([]const u8) = .empty;
+        defer issues.deinit(self.allocator);
+
+        // 1. Config file: warn if ~/.ziggyzagrc doesn't load cleanly
+        if (config_path.len > 0) {
+            if (std.fs.path.isAbsolute(config_path)) {
+                if (std.Io.Dir.openFileAbsolute(self.io, config_path, .{})) |file| {
+                    file.close(self.io);
+                } else |_| {
+                    try issues.append(self.allocator, "config file not found (no ~/.ziggyzagrc loaded)");
+                }
+            } else {
+                if (std.Io.Dir.cwd().openFile(self.io, config_path, .{})) |file| {
+                    file.close(self.io);
+                } else |_| {
+                    try issues.append(self.allocator, "config file not found (no ~/.ziggyzagrc loaded)");
+                }
+            }
+        }
+
+        // 2. History file size: flag if > 10 MB
+        if (histfile.len > 0) {
+            if (std.fs.path.isAbsolute(histfile)) {
+                if (std.Io.Dir.openFileAbsolute(self.io, histfile, .{})) |file| {
+                    const stat = file.stat(self.io) catch null;
+                    file.close(self.io);
+                    if (stat) |s| {
+                        if (s.size > 10 * 1024 * 1024) {
+                            try issues.append(self.allocator, try std.fmt.allocPrint(self.allocator, "HISTFILE is {d} MB — consider trimming with 'history trim'", .{s.size / (1024 * 1024)}));
+                        }
+                    }
+                } else |_| {}
+            } else {
+                if (std.Io.Dir.cwd().openFile(self.io, histfile, .{})) |file| {
+                    const stat = file.stat(self.io) catch null;
+                    file.close(self.io);
+                    if (stat) |s| {
+                        if (s.size > 10 * 1024 * 1024) {
+                            try issues.append(self.allocator, try std.fmt.allocPrint(self.allocator, "HISTFILE is {d} MB — consider trimming with 'history trim'", .{s.size / (1024 * 1024)}));
+                        }
+                    }
+                } else |_| {}
+            }
+        }
+
+        // 3. Completions: flag if no helpers loaded (shell feels bare)
+        if (self.completion_specs.items.len < 3) {
+            try issues.append(self.allocator, "no tab completions loaded — add completions in ~/.ziggyzagrc (e.g., 'complete git npm cargo zig')");
+        }
+
+        // 4. Abbreviations: flag if none loaded (shell feels bare)
+        if (self.abbreviations.items.len < 1) {
+            try issues.append(self.allocator, "no abbreviations loaded — add abbrs in ~/.ziggyzagrc (e.g., 'abbr gco \"git checkout\"')");
+        }
+
+        // 5. AgentD: warn if agentd isn't on the PATH
+        const agentd_path = self.env.get("PATH") orelse "";
+        var agentd_found = false;
+        if (agentd_path.len > 0) {
+            var paths = std.mem.splitScalar(u8, agentd_path, std.fs.path.delimiter);
+            while (paths.next()) |dir| {
+                if (dir.len == 0) continue;
+                const candidate = std.fs.path.join(self.allocator, &.{ dir, "ziggyzag-agentd" }) catch continue;
+                defer self.allocator.free(candidate);
+                if (std.Io.Dir.cwd().access(self.io, candidate, .{})) |_| {
+                    agentd_found = true;
+                    break;
+                } else |_| {}
+            }
+        }
+        if (!agentd_found) {
+            try issues.append(self.allocator, "ziggyzag-agentd not on PATH — AgentD features will be unavailable (run 'zig build' from the project root)");
+        }
+
+        if (json_mode) {
             try stdout_buffer.appendSlice(self.allocator, "{\"prompt_mode\":");
             try appendJsonString(self.allocator, stdout_buffer, @tagName(self.prompt_mode));
-            try appendFmt(self.allocator, stdout_buffer, ",\"last_status\":{d},\"last_duration_ms\":{d},\"history\":{d},\"history_meta\":{d},\"aliases\":{d},\"abbreviations\":{d},\"completion_helpers\":{d},\"completion_candidates\":{d},\"jobs\":{d},\"config_path\":", .{
+            try appendFmt(self.allocator, stdout_buffer, ",\"last_status\":{d},\"last_duration_ms\":{d},\"history\":{d},\"history_meta\":{d},\"aliases\":{d},\"abbreviations\":{d},\"completion_helpers\":{d},\"completion_candidates\":{d},\"jobs\":{d},\"issues\":{d}", .{
                 self.last_status,
                 self.last_duration_ms,
                 self.history.items.len,
@@ -3110,7 +3495,9 @@ const Shell = struct {
                 self.completion_specs.items.len,
                 self.completion_candidates.items.len,
                 self.background_jobs.items.len,
+                issues.items.len,
             });
+            try stdout_buffer.appendSlice(self.allocator, ",\"config_path\":");
             try appendJsonString(self.allocator, stdout_buffer, config_path);
             try stdout_buffer.appendSlice(self.allocator, ",\"histfile\":");
             try appendJsonString(self.allocator, stdout_buffer, histfile);
@@ -3122,6 +3509,7 @@ const Shell = struct {
             return;
         }
 
+        // ── Human-readable output ─────────────────────────────────────────────
         try appendFmt(self.allocator, stdout_buffer,
             \\ZiggyZag doctor
             \\  prompt: {s}
@@ -3153,6 +3541,14 @@ const Shell = struct {
             metadata_path,
             branch orelse "",
         });
+
+        if (issues.items.len == 0) {
+            try appendFmt(self.allocator, stdout_buffer, "  [OK] no issues found\n", .{});
+        } else {
+            for (issues.items) |issue| {
+                try appendFmt(self.allocator, stdout_buffer, "  [!] {s}\n", .{issue});
+            }
+        }
     }
 
     fn projectCommand(self: *Shell, argv: []const []const u8, stdout_buffer: *std.ArrayList(u8)) !void {
@@ -3924,6 +4320,21 @@ const Shell = struct {
     }
 
     fn completeBuiltin(self: *Shell, argv: []const []const u8, stdout_buffer: *std.ArrayList(u8)) !void {
+        if (hasArg(argv, "-h") or hasArg(argv, "--help")) {
+            try stdout_buffer.appendSlice(self.allocator,
+                \\Usage: complete [-h] [--help] [-c CMD [-a CANDIDATES] [-d DESC]] [-p CMD] [-r CMD] [-C SPEC CMD]
+                \\
+                \\Register completions for command arguments.
+                \\  -h, --help              Show this help message
+                \\  -c CMD -a CANDIDATES     Add completion candidates for CMD (space-separated list)
+                \\  -d DESC                 Description for the completion candidates
+                \\  -p CMD                  Print completions for CMD
+                \\  -r CMD                  Remove completions for CMD
+                \\  -C SPEC CMD             Register a programmable completer for CMD
+                \\
+            );
+            return;
+        }
         if (argv.len >= 3 and std.mem.eql(u8, argv[1], "-c")) {
             const command = argv[2];
             var candidate: ?[]const u8 = null;
@@ -4020,6 +4431,10 @@ const Shell = struct {
     }
 
     fn putCompletionCandidate(self: *Shell, command: []const u8, candidate: []const u8, description: []const u8) !void {
+        return self.putCompletionCandidateWithOptions(command, candidate, description, "");
+    }
+
+    fn putCompletionCandidateWithOptions(self: *Shell, command: []const u8, candidate: []const u8, description: []const u8, options: []const u8) !void {
         for (self.completion_candidates.items) |*existing| {
             if (std.mem.eql(u8, existing.command, command) and std.mem.eql(u8, existing.candidate, candidate)) {
                 const owned_description = try self.allocator.dupe(u8, description);
@@ -4035,11 +4450,27 @@ const Shell = struct {
         errdefer self.allocator.free(owned_candidate);
         const owned_description = try self.allocator.dupe(u8, description);
         errdefer self.allocator.free(owned_description);
+        const owned_options = try self.allocator.dupe(u8, options);
+        errdefer self.allocator.free(owned_options);
         try self.completion_candidates.append(self.allocator, .{
             .command = owned_command,
             .candidate = owned_candidate,
             .description = owned_description,
+            .options = owned_options,
         });
+    }
+
+    /// Returns true if any candidate for `command` has `arg_index` in its options.
+    fn candidateMatchesPosition(candidate: *const CompletionCandidateSpec, arg_index: usize) bool {
+        if (candidate.options.len == 0) return arg_index == 0;
+        // Parse "0 1 2 ..." format
+        var parts = std.mem.splitScalar(u8, candidate.options, ' ');
+        while (parts.next()) |part| {
+            if (part.len == 0) continue;
+            const index = std.fmt.parseInt(usize, part, 10) catch continue;
+            if (index == arg_index) return true;
+        }
+        return false;
     }
 
     fn removeCompletionCandidates(self: *Shell, command: []const u8) void {
