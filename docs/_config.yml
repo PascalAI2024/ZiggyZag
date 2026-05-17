@@ -1,0 +1,49 @@
+# GitHub Pages / Jekyll config for the ZiggyZag landing site.
+# Pages serves from /docs on this repo.
+#
+# The site is HTML-first: docs/index.html is a single-file landing page
+# served at the root URL. The rest of /docs is markdown that Jekyll converts
+# to HTML at build time. The jekyll-relative-links plugin rewrites every
+# `[label](path/to/file.md)` link to `[label](path/to/file.html)` so the
+# rendered pages cross-link without us having to touch the .md files (which
+# still need to read cleanly on GitHub's web view).
+
+title: ZiggyZag
+description: A readable Zig shell, a native Windows terminal host, and a local AI sidecar.
+url: https://pascalai2024.github.io
+baseurl: /ZiggyZag
+
+plugins:
+  - jekyll-relative-links
+  - jekyll-optional-front-matter
+  - jekyll-readme-index
+
+relative_links:
+  enabled: true
+  collections: true
+
+# Pull README files into per-folder index pages so /guides/, /reference/,
+# /vision/, /reviews/ each show their hub content.
+readme_index:
+  with_frontmatter: true
+
+# Treat every markdown file as a page even without front-matter.
+optional_front_matter:
+  remove_originals: true
+
+# Make sure the assets folder and a few hidden-but-needed files ship.
+include:
+  - assets
+
+# Don't process these — they're handled directly by the landing page or
+# don't need to render as standalone pages.
+exclude:
+  - "*.bat"
+  - "*.log"
+
+# Use kramdown (default on GH Pages) and GFM-style fenced code blocks.
+markdown: kramdown
+kramdown:
+  input: GFM
+  hard_wrap: false
+  syntax_highlighter: rouge

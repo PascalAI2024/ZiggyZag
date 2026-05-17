@@ -1,0 +1,29 @@
+<svg width="640" height="160" viewBox="0 0 640 160" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title">
+  <title id="title">ZiggyZag</title>
+  <defs>
+    <linearGradient id="wm-panel" x1="20" y1="20" x2="140" y2="140" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#151A28"/>
+      <stop offset="1" stop-color="#0C1018"/>
+    </linearGradient>
+    <linearGradient id="wm-zig" x1="42" y1="40" x2="120" y2="120" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#F7A41D"/>
+      <stop offset="0.52" stop-color="#35D0BA"/>
+      <stop offset="1" stop-color="#8B5CF6"/>
+    </linearGradient>
+    <linearGradient id="wm-text" x1="180" y1="60" x2="600" y2="100" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#EEF2E2"/>
+      <stop offset="1" stop-color="#9BE28F"/>
+    </linearGradient>
+  </defs>
+  <g transform="translate(20 20)">
+    <rect x="0" y="0" width="120" height="120" rx="20" fill="url(#wm-panel)" stroke="#2B3447" stroke-width="4"/>
+    <rect x="12" y="12" width="96" height="14" rx="4" fill="#20283A"/>
+    <circle cx="22" cy="19" r="3" fill="#FF6B6B"/>
+    <circle cx="32" cy="19" r="3" fill="#FFD166"/>
+    <circle cx="42" cy="19" r="3" fill="#35D0BA"/>
+    <path d="M30 42H82L52 70H88V80H34L64 56H30Z" fill="url(#wm-zig)"/>
+    <path d="M34 92H86V100H34Z" fill="#E8EDF7"/>
+    <path d="M34 106H66V112H34Z" fill="#657089"/>
+  </g>
+  <text x="170" y="100" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-weight="700" font-size="64" letter-spacing="-2" fill="url(#wm-text)">ZiggyZag</text>
+</svg>

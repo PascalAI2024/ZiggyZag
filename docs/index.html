@@ -7,10 +7,10 @@
   <meta name="description" content="A readable Zig shell with a native Windows terminal host and a local AI sidecar. Cross-platform alpha, MIT-licensed, zero dependencies.">
   <meta property="og:title" content="ZiggyZag">
   <meta property="og:description" content="A readable Zig shell with a native Windows terminal host and a local AI sidecar.">
-  <meta property="og:image" content="https://raw.githubusercontent.com/PascalAI2024/ZiggyZag/master/assets/hero.svg">
+  <meta property="og:image" content="https://raw.githubusercontent.com/PascalAI2024/ZiggyZag/main/assets/hero.svg">
   <meta name="twitter:card" content="summary_large_image">
-  <link rel="icon" type="image/svg+xml" href="../assets/favicon.svg">
-  <meta property="og:image" content="https://raw.githubusercontent.com/PascalAI2024/ZiggyZag/master/assets/og.svg">
+  <link rel="icon" type="image/svg+xml" href="assets/favicon.svg">
+  <meta property="og:image" content="https://raw.githubusercontent.com/PascalAI2024/ZiggyZag/main/assets/og.svg">
   <style>
     /* Brand tokens — match docs/BRAND.md */
     :root {
@@ -276,7 +276,7 @@
 <nav>
   <div class="wrap">
     <a class="brand" href="#">
-      <img src="../assets/ziggyzag-logo.svg" alt="">
+      <img src="assets/ziggyzag-logo.svg" alt="">
       <span>ZiggyZag</span>
     </a>
     <div class="links">
@@ -298,7 +298,7 @@
       <a class="btn btn-primary" href="#install">Get started →</a>
       <a class="btn btn-ghost" href="https://github.com/PascalAI2024/ZiggyZag">View on GitHub</a>
     </div>
-    <img class="hero-art" src="../assets/hero.svg" alt="ZiggyZag terminal showing prompt themes and a 20-theme palette gallery" loading="eager">
+    <img class="hero-art" src="assets/hero.svg" alt="ZiggyZag terminal showing prompt themes and a 20-theme palette gallery" loading="eager">
   </div>
 </header>
 
@@ -384,7 +384,7 @@
     <h2>Pick a theme. Both surfaces follow.</h2>
     <p class="lede">Hit <code class="mono" style="background: var(--zz-bg-panel); padding: 3px 8px; border-radius: 4px; border: 1px solid var(--zz-border);">Ctrl+Shift+T</code> in the desktop host. The terminal palette and the shell prompt accent move together. Same in any external terminal — set <code class="mono" style="background: var(--zz-bg-panel); padding: 3px 8px; border-radius: 4px; border: 1px solid var(--zz-border);">ZIGGYZAG_THEME=tokyo-night</code> and the prompt follows.</p>
     <div class="theme-gallery">
-      <img src="../assets/theme-gallery-v2.svg" alt="A grid of all 20 built-in ZiggyZag themes showing prompt, status output, warning, and error colors against each background.">
+      <img src="assets/theme-gallery-v2.svg" alt="A grid of all 20 built-in ZiggyZag themes showing prompt, status output, warning, and error colors against each background.">
     </div>
     <p style="margin-top: 16px; color: var(--zz-fg-muted); font-size: 14px;">
       <span class="pill violet">protocol</span> See <a href="reference/theme-protocol.md">theme-protocol.md</a> for the spec. v2 adds OSC 7777 live updates. WCAG AA contrast results across all 20 themes are in <a href="reference/accessibility.md">accessibility.md</a>.
@@ -507,19 +507,4 @@
         var range = document.createRange();
         range.selectNode(cmd);
         var sel = window.getSelection();
-        sel.removeAllRanges();
-        sel.addRange(range);
-        try { document.execCommand('copy'); showCopied(); } catch (e) {}
-        sel.removeAllRanges();
-      }
-    });
-    function showCopied() {
-      var prev = btn.textContent;
-      btn.textContent = 'Copied';
-      btn.classList.add('copied');
-      setTimeout(function () { btn.textContent = prev; btn.classList.remove('copied'); }, 1400);
-    }
-  })();
-</script>
-</body>
-</html>
+        sel.removeAllRa
