@@ -97,7 +97,7 @@ Write-Host ""
 Write-Host "ZiggyZag desktop doctor" -ForegroundColor Cyan
 Write-Host "  repo:   $RepoRoot"
 Write-Host "  config: $ConfigPath"
-if ($DryRun) { Write-Host "  mode:   dry run — no changes will be written" -ForegroundColor Yellow }
+if ($DryRun) { Write-Host "  mode:   dry run - no changes will be written" -ForegroundColor Yellow }
 
 # --- 1. Check local binaries ------------------------------------------------
 
@@ -117,7 +117,7 @@ foreach ($name in $expected) {
 }
 if ($missing.Count -gt 0) {
     $problemsFound++
-    Write-Warn "Run ``zig build`` from the repo root to rebuild missing binaries."
+    Write-Warn "Run 'zig build' from the repo root to rebuild missing binaries."
 }
 
 # --- 2. Check desktop.conf --------------------------------------------------
@@ -154,8 +154,9 @@ if (-not (Test-Path $ConfigPath)) {
                     $value = $Matches[1].Trim().Trim('"').Trim("'")
                     if ($value -and -not (Test-Path -LiteralPath $value)) {
                         Write-Bad "${key} = ${value}  (path does not exist)"
-                        $newLines.Add("# ZiggyZag doctor disabled stale path on $(Get-Date -Format 'yyyy-MM-dd HH:mm') —")
-                        $newLines.Add("# $line")
+                        $timestamp = Get-Date -Format 'yyyy-MM-dd HH:mm'
+                        $newLines.Add('# ZiggyZag doctor disabled stale path on ' + $timestamp + ' - next line was the original:')
+                        $newLines.Add('# ' + $line)
                         $problemsFound++
                         $repairsMade++
                         $changed = $true
@@ -181,7 +182,7 @@ if (-not (Test-Path $ConfigPath)) {
         Set-Content -LiteralPath $ConfigPath -Value $newLines -Encoding UTF8
         Write-Ok "desktop.conf repaired in place ($repairsMade lines disabled)"
     } elseif ($changed -and $DryRun) {
-        Write-Warn "DryRun — would have written backup and disabled $repairsMade stale line(s)"
+        Write-Warn ("DryRun - would have written backup and disabled " + $repairsMade + " stale line(s)")
     } elseif (-not $changed) {
         Write-Ok "No stale paths found"
     }
@@ -213,7 +214,7 @@ foreach ($name in $envChecks.Keys) {
             } else {
                 Write-Bad "$name = $value  (file missing)"
                 $problemsFound++
-                Write-Warn "Either point ${name} at a real file, or clear it: ``Remove-Item Env:\${name}``"
+                Write-Warn ("Either point " + $name + " at a real file, or clear it: Remove-Item Env:\" + $name)
             }
         } elseif ($role -eq 'theme') {
             Write-Ok "$name = $value"
@@ -244,7 +245,7 @@ if ($Launch) {
         Write-Host "Launching $desktop..." -ForegroundColor Cyan
         Start-Process -FilePath $desktop -WorkingDirectory $RepoRoot
     } else {
-        Write-Bad "Cannot launch: $desktop missing. Run ``zig build`` first."
+        Write-Bad ("Cannot launch: " + $desktop + " missing. Run 'zig build' first.")
         exit 3
     }
 }
