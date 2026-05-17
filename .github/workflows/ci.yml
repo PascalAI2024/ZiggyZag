@@ -12,7 +12,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        os: [ubuntu-latest, windows-latest, macos-latest]
     steps:
       - uses: actions/checkout@v4
       - uses: mlugg/setup-zig@v2
@@ -20,11 +20,11 @@ jobs:
           version: 0.16.0
       - run: zig build
       - run: zig build test
-      - name: Smoke test
+      - name: Smoke test (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: .\scripts\smoke.ps1
-      - name: Smoke test
+      - name: Smoke test (POSIX)
         if: runner.os != 'Windows'
         shell: sh
         run: sh ./scripts/smoke.sh

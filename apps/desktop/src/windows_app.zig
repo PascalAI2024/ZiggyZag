@@ -739,6 +739,10 @@ const App = struct {
         try child_env.put("ZIGGYZAG_APP", "1");
         try child_env.put("ZIGGYZAG_INTEGRATION", "1");
         try child_env.put("TERM", if (self.config.profile.term.len > 0) self.config.profile.term else "xterm-256color");
+        // Theme protocol v1: hand the active theme id to the shell so it can
+        // colour its prompt accent to match the desktop palette. See
+        // docs/THEME_PROTOCOL.md.
+        try child_env.put("ZIGGYZAG_THEME", self.config.selected_theme.id);
         const env_block = try child_env.createWindowsBlock(self.allocator, .{});
         defer env_block.deinit(self.allocator);
 

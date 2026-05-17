@@ -1,0 +1,104 @@
+<svg width="1100" height="620" viewBox="0 0 1100 620" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+  <title id="title">ZiggyZag command palette</title>
+  <desc id="desc">The Ctrl+Shift+P command palette open over a terminal session, with a query and a ranked list of actions including theme cycle, split pane, and AgentD controls.</desc>
+  <defs>
+    <linearGradient id="cp-bg" x1="0" y1="0" x2="1100" y2="620" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#0c0e11"/>
+      <stop offset="1" stop-color="#15181b"/>
+    </linearGradient>
+    <linearGradient id="cp-accent" x1="0" y1="0" x2="1100" y2="0" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#f7a41d"/>
+      <stop offset="0.5" stop-color="#35d0ba"/>
+      <stop offset="1" stop-color="#8b5cf6"/>
+    </linearGradient>
+    <filter id="cp-shadow" x="-10%" y="-10%" width="120%" height="120%">
+      <feGaussianBlur stdDeviation="14" in="SourceAlpha"/>
+      <feOffset dy="12"/>
+      <feComponentTransfer><feFuncA type="linear" slope="0.5"/></feComponentTransfer>
+      <feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <filter id="cp-modal-shadow" x="-10%" y="-10%" width="120%" height="120%">
+      <feGaussianBlur stdDeviation="24" in="SourceAlpha"/>
+      <feOffset dy="20"/>
+      <feComponentTransfer><feFuncA type="linear" slope="0.6"/></feComponentTransfer>
+      <feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <clipPath id="cp-clip"><rect x="60" y="120" width="980" height="440" rx="14"/></clipPath>
+  </defs>
+
+  <rect width="1100" height="620" fill="url(#cp-bg)"/>
+
+  <!-- Brand corner -->
+  <g transform="translate(60 36) scale(0.12)" opacity="0.95">
+    <rect x="42" y="54" width="428" height="404" rx="38" fill="#191c1d" stroke="#2b3447" stroke-width="12"/>
+    <path d="M138 180H354L228 296H366L366 336H150L276 220H138V180Z" fill="url(#cp-accent)"/>
+  </g>
+  <text x="120" y="80" font-family="Inter, system-ui, sans-serif" font-size="22" font-weight="700" fill="#eef2e2" letter-spacing="-0.5">ZiggyZag · Command palette</text>
+  <text x="120" y="102" font-family="Inter, system-ui, sans-serif" font-size="14" font-weight="500" fill="#6a7072">Ctrl+Shift+P · everything that's not muscle memory</text>
+
+  <!-- Terminal underneath (dimmed) -->
+  <rect x="60" y="120" width="980" height="440" rx="14" fill="#111315" stroke="#2b3447" stroke-width="1" filter="url(#cp-shadow)"/>
+  <rect x="60" y="120" width="980" height="40" rx="14" fill="#191c1d"/>
+  <rect x="60" y="148" width="980" height="12" fill="#191c1d"/>
+  <circle cx="86" cy="140" r="6" fill="#ff6b6b"/>
+  <circle cx="106" cy="140" r="6" fill="#ffd166"/>
+  <circle cx="126" cy="140" r="6" fill="#35d0ba"/>
+  <text x="540" y="145" text-anchor="middle" font-family="Inter, system-ui, sans-serif" font-size="13" font-weight="500" fill="#6a7072">ziggyzag — ~/dev/ZiggyZag</text>
+
+  <g clip-path="url(#cp-clip)" opacity="0.3">
+    <g font-family="'Cascadia Mono', 'JetBrains Mono', Menlo, Consolas, monospace" font-size="14">
+      <text x="84" y="200" fill="#9be28f">ziggy</text>
+      <text x="132" y="200" fill="#7ab7ff">~/dev/ZiggyZag</text>
+      <text x="280" y="200" fill="#cf9bff">git:master</text>
+      <text x="84" y="220" fill="#eef2e2">❯ zig build test</text>
+      <text x="84" y="244" fill="#6a7072">All 197 tests passed</text>
+      <text x="84" y="268" fill="#9be28f">ziggy</text>
+      <text x="132" y="268" fill="#7ab7ff">~/dev/ZiggyZag</text>
+      <text x="84" y="288" fill="#eef2e2">❯</text>
+    </g>
+  </g>
+
+  <!-- Dim overlay -->
+  <rect x="60" y="160" width="980" height="400" fill="#0c0e11" opacity="0.45" clip-path="url(#cp-clip)"/>
+
+  <!-- Palette modal -->
+  <g filter="url(#cp-modal-shadow)">
+    <rect x="240" y="200" width="620" height="320" rx="14" fill="#13131a" stroke="#2b3447" stroke-width="1"/>
+    <!-- Search bar -->
+    <rect x="240" y="200" width="620" height="56" rx="14" fill="#1a1c24"/>
+    <text x="264" y="234" font-family="Inter, system-ui, sans-serif" font-size="14" font-weight="500" fill="#6a7072">⌕</text>
+    <text x="288" y="234" font-family="'Cascadia Mono', monospace" font-size="16" fill="#eef2e2">theme</text>
+    <rect x="333" y="222" width="2" height="18" fill="#9be28f"/>
+    <text x="836" y="234" text-anchor="end" font-family="Inter, system-ui, sans-serif" font-size="11" font-weight="500" fill="#6a7072" letter-spacing="0.4">8 RESULTS</text>
+
+    <line x1="240" y1="256" x2="860" y2="256" stroke="#2b3447"/>
+
+    <!-- Result rows -->
+    <g font-family="Inter, system-ui, sans-serif" font-size="14">
+      <!-- Active row -->
+      <rect x="240" y="262" width="620" height="36" fill="#1d2230"/>
+      <text x="264" y="284" font-weight="700" fill="#9be28f">▸  Cycle <tspan fill="#9be28f" font-weight="700">theme</tspan> forward</text>
+      <text x="836" y="284" text-anchor="end" font-family="'Cascadia Mono', monospace" font-size="11" fill="#cf9bff">Ctrl+Shift+T</text>
+
+      <text x="264" y="320" fill="#eef2e2">   Cycle <tspan fill="#9be28f">theme</tspan> backward</text>
+      <text x="836" y="320" text-anchor="end" font-family="'Cascadia Mono', monospace" font-size="11" fill="#6a7072">Ctrl+Shift+Y</text>
+
+      <text x="264" y="352" fill="#eef2e2">   Pick <tspan fill="#9be28f">theme</tspan> from list (catppuccin-frappe, tokyo-night, …)</text>
+
+      <text x="264" y="384" fill="#eef2e2">   Reset <tspan fill="#9be28f">theme</tspan> to <tspan fill="#9be28f">ziggy</tspan></text>
+
+      <text x="264" y="416" fill="#eef2e2">   Show <tspan fill="#9be28f">theme</tspan> JSON in pane</text>
+      <text x="836" y="416" text-anchor="end" font-family="'Cascadia Mono', monospace" font-size="11" fill="#6a7072">theme --json</text>
+
+      <text x="264" y="448" fill="#a5b4c6">   Open accessibility audit (contrast for current <tspan fill="#9be28f">theme</tspan>)</text>
+
+      <text x="264" y="480" fill="#a5b4c6">   Reveal desktop.conf (sets default <tspan fill="#9be28f">theme</tspan>)</text>
+
+      <line x1="240" y1="496" x2="860" y2="496" stroke="#2b3447"/>
+      <text x="264" y="514" font-size="11" font-weight="500" fill="#6a7072">↑↓ navigate · Enter run · Esc dismiss</text>
+      <text x="836" y="514" text-anchor="end" font-family="Inter, system-ui, sans-serif" font-size="11" font-weight="500" fill="#6a7072">frecency-ranked</text>
+    </g>
+  </g>
+
+  <text x="550" y="600" text-anchor="middle" font-family="Inter, system-ui, sans-serif" font-size="13" fill="#6a7072">Search is fuzzy across action name, keybinding, and recent invocations. No mouse required.</text>
+</svg>

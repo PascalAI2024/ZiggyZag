@@ -1,0 +1,158 @@
+name: Release
+
+# Triggered when a version tag is pushed. Builds all five target zips on a
+# Windows runner, smoke-tests the extracted binaries on Linux and macOS,
+# generates checksums, and uploads everything to a draft GitHub Release.
+#
+# See docs/RELEASE_CHECKLIST.md for the human checklist that wraps this.
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    name: Build release zips
+    runs-on: windows-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: Resolve version from tag
+        id: version
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}"
+          if (-not $tag) { throw "no tag in github.ref_name" }
+          Write-Host "version=$tag"
+          "version=$tag" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      - name: Validate PowerShell scripts
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          foreach ($script in @(".\scripts\build-release.ps1", ".\scripts\qa-release-artifacts.ps1")) {
+            $tokens = $null; $errors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $script), [ref]$tokens, [ref]$errors)
+            if ($errors.Count -gt 0) {
+              $errors | ForEach-Object { Write-Error $_.Message }
+              throw "PowerShell parse failed for $script"
+            }
+          }
+
+      - name: Package all targets
+        shell: pwsh
+        run: .\scripts\build-release.ps1 -Version "${{ steps.version.outputs.version }}" -Optimize ReleaseSafe
+
+      - name: QA archive structure
+        shell: pwsh
+        run: .\scripts\qa-release-artifacts.ps1 -Version "${{ steps.version.outputs.version }}"
+
+      - name: Upload zips artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-zips
+          path: |
+            dist/${{ steps.version.outputs.version }}/*.zip
+            dist/${{ steps.version.outputs.version }}/checksums.sha256
+            dist/${{ steps.version.outputs.version }}/release-manifest.json
+          if-no-files-found: error
+
+  smoke-posix:
+    name: Smoke test extracted binaries
+    needs: package
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            arch: x86_64
+            ext: linux-x86_64
+          - os: macos-latest
+            arch: aarch64
+            ext: macos-aarch64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download release zips
+        uses: actions/download-artifact@v4
+        with:
+          name: release-zips
+          path: dist/
+
+      - name: Extract this platform's zip
+        run: |
+          set -eu
+          VERSION="${{ needs.package.outputs.version }}"
+          ZIP="dist/ZiggyZag-${VERSION}-${{ matrix.ext }}.zip"
+          test -f "$ZIP" || { echo "missing $ZIP"; ls dist/; exit 1; }
+          mkdir -p extracted
+          unzip -q "$ZIP" -d extracted
+
+      - name: Smoke test extracted shell
+        run: |
+          set -eu
+          chmod +x extracted/bin/ziggyzag extracted/bin/ziggyzag-agentd || true
+          # Shell prints help and exits cleanly through a piped stdin.
+          printf 'help\nexit\n' | ./extracted/bin/ziggyzag | head -40
+          # AgentD reports its tools.
+          ./extracted/bin/ziggyzag-agentd --describe-tools | head -10
+          # AgentD answers a health probe.
+          printf '%s\n' '{"id":1,"method":"agent/health"}' | ./extracted/bin/ziggyzag-agentd --stdio | head -5
+          echo "✓ ${{ matrix.ext }} extracted smoke passed"
+
+  release:
+    name: Draft GitHub Release
+    needs: [package, smoke-posix]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download release zips
+        uses: actions/download-artifact@v4
+        with:
+          name: release-zips
+          path: dist/
+
+      - name: Read changelog excerpt
+        id: notes
+        run: |
+          set -eu
+          # Pull the section between this version's heading and the next.
+          VERSION="${{ needs.package.outputs.version }}"
+          STRIPPED="${VERSION#v}"
+          {
+            echo "body<<EOF"
+            awk -v ver="$STRIPPED" '
+              $0 ~ "^## \\[" ver "\\]" { capture=1; next }
+              capture && $0 ~ "^## \\[" { exit }
+              capture { print }
+            ' CHANGELOG.md | sed '/^$/N;/\n$/D'
+            echo ""
+            echo "---"
+            echo ""
+            echo "_Verify downloads against \`checksums.sha256\`. Install one-liners are in the [README](https://github.com/PascalAI2024/ZiggyZag#install-in-60-seconds)._"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Create draft release
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          name: "ZiggyZag ${{ needs.package.outputs.version }}"
+          body: ${{ steps.notes.outputs.body }}
+          files: |
+            dist/*.zip
+            dist/checksums.sha256
+            dist/release-manifest.json
+          fail_on_unmatched_files: true

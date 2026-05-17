@@ -35,6 +35,13 @@ pub fn run(init_data: std.process.Init) !void {
     if (init_data.environ_map.get("TERM") == null) {
         try init_data.environ_map.put("TERM", "xterm-256color");
     }
+    // Theme protocol v1: only seed ZIGGYZAG_THEME if the user has not already
+    // set it. The POSIX launcher today does not own a desktop config, so we
+    // pick the default theme; setting only when absent means a user-provided
+    // value wins. See docs/THEME_PROTOCOL.md.
+    if (init_data.environ_map.get("ZIGGYZAG_THEME") == null) {
+        try init_data.environ_map.put("ZIGGYZAG_THEME", "ziggy");
+    }
 
     if (!shouldSkipPty(init_data.environ_map)) {
         try printLaunchNote(&stderr.interface, shell_path, true);

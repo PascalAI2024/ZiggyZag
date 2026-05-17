@@ -397,25 +397,55 @@ const PipeDrain = struct {
     }
 };
 
-/// Watchdog thread context: sleeps for `timeout_ns`, then atomically signals
-/// `fired` and calls `child.kill`. The main thread checks `fired` after `wait`.
-/// Note: `std.Io.sleep` is used because Zig 0.16 has no `std.Thread.sleep`;
-/// all blocking waits route through the I/O runtime. `std.Io` is safe to pass
-/// across threads (demonstrated by StderrDrain.io in main.zig).
+/// Watchdog thread context: polls a short tick window until either
+/// `timeout_ns` has elapsed (kills the child and stores `fired = true`) or
+/// the main thread has reaped the child (`main_done` was set; exit silently).
+///
+/// Why polling rather than one big sleep: `std.Io.sleep` is not signal-cancellable
+/// from another thread in Zig 0.16, so a single `sleep(timeout_ns)` would block
+/// the watchdog join for the full window regardless of how quickly the child
+/// finished — every successful command would wait the full timeout AND return
+/// `error.ToolTimedOut`. Polling lets the watchdog notice that the main thread
+/// has already reaped the child, which is the common case.
+///
+/// `tick_ns` trades wall-clock-on-timeout-detection accuracy against wake-ups
+/// per command. 100 ms is short enough that fast commands feel snappy and long
+/// enough that wake-up overhead is negligible.
+const watchdog_tick_ns: u64 = 100 * std.time.ns_per_ms;
+
 const Watchdog = struct {
     io: std.Io,
     child: *std.process.Child,
     timeout_ns: u64,
+    /// Set by the watchdog when it actually killed the child due to timeout.
     fired: std.atomic.Value(bool),
+    /// Set by the main thread once `child.wait` has returned so the watchdog
+    /// can exit early instead of waiting out the full timeout.
+    main_done: std.atomic.Value(bool),
 
     fn run(self: *Watchdog) void {
-        // Ignore Canceled — if the sleep is interrupted we still want to check
-        // whether the timeout elapsed and kill if needed.
-        std.Io.sleep(
-            self.io,
-            std.Io.Duration.fromNanoseconds(@intCast(self.timeout_ns)),
-            .awake,
-        ) catch {};
+        var elapsed: u64 = 0;
+        while (elapsed < self.timeout_ns) {
+            // Main thread might already have reaped the child by the time we
+            // re-enter the loop; check before each sleep to minimise latency.
+            if (self.main_done.load(.acquire)) return;
+
+            const remaining = self.timeout_ns - elapsed;
+            const tick = if (remaining < watchdog_tick_ns) remaining else watchdog_tick_ns;
+
+            // Ignore Canceled — the io runtime may interrupt the sleep, in
+            // which case we just re-check `main_done` on the next iteration.
+            std.Io.sleep(
+                self.io,
+                std.Io.Duration.fromNanoseconds(@intCast(tick)),
+                .awake,
+            ) catch {};
+            elapsed += tick;
+        }
+
+        // We waited out the full window without the main thread reaping the
+        // child — this is a real timeout.
+        if (self.main_done.load(.acquire)) return;
         self.fired.store(true, .release);
         self.child.kill(self.io);
     }
@@ -452,12 +482,15 @@ fn commandJsonAlloc(
     const stdout_thread = try std.Thread.spawn(.{}, PipeDrain.run, .{&stdout_drain});
     const stderr_thread = try std.Thread.spawn(.{}, PipeDrain.run, .{&stderr_drain});
 
-    // Watchdog: kill the child after command_timeout_ns.
+    // Watchdog: kill the child after command_timeout_ns. The `main_done` flag
+    // lets the watchdog exit early once we've reaped the child, so successful
+    // commands return promptly instead of waiting out the full timeout.
     var watchdog = Watchdog{
         .io = io,
         .child = &child,
         .timeout_ns = command_timeout_ns,
         .fired = std.atomic.Value(bool).init(false),
+        .main_done = std.atomic.Value(bool).init(false),
     };
     const watchdog_thread = std.Thread.spawn(.{}, Watchdog.run, .{&watchdog}) catch |e| {
         // Watchdog spawn failed: kill the child ourselves so the drain threads
@@ -475,12 +508,18 @@ fn commandJsonAlloc(
     stderr_thread.join();
 
     const term = child.wait(io) catch |e| {
+        // Reap path failed — let the watchdog know so it stops polling, then
+        // collect its thread before propagating the error.
+        watchdog.main_done.store(true, .release);
         watchdog_thread.join();
         if (stdout_drain.out) |buf| allocator.free(buf);
         if (stderr_drain.out) |buf| allocator.free(buf);
         return e;
     };
 
+    // Tell the watchdog the child is reaped so it exits on the next poll tick
+    // (worst-case latency: one `watchdog_tick_ns`).
+    watchdog.main_done.store(true, .release);
     watchdog_thread.join();
 
     // Surface drain errors. When a drain thread errors, its `.out` is null so
@@ -704,10 +743,10 @@ fn looksLikeAwsAccessKey(line: []const u8) bool {
 /// or at start of line) to avoid false positives like `mykeyword_count = 3`.
 fn containsSecretKeywordAssignment(line: []const u8) bool {
     const keywords = [_][]const u8{
-        "api_key", "apikey", "api-key",
-        "auth_token", "access_token",
-        "_token",  "_secret",  "_key",
-        "password", "passwd",
+        "api_key",    "apikey",       "api-key",
+        "auth_token", "access_token", "_token",
+        "_secret",    "_key",         "password",
+        "passwd",
     };
     for (keywords) |kw| {
         var pos: usize = 0;

@@ -1,0 +1,245 @@
+<svg width="1100" height="850" viewBox="0 0 1100 850" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title">
+  <title id="title">ZiggyZag — all 20 built-in themes</title>
+  <style>
+    .label { font-family: Inter, system-ui, sans-serif; font-size: 13px; font-weight: 600; }
+    .meta { font-family: Inter, system-ui, sans-serif; font-size: 10px; font-weight: 500; }
+    .mono { font-family: 'Cascadia Mono', 'JetBrains Mono', Menlo, Consolas, monospace; font-size: 11px; }
+  </style>
+  <rect width="1100" height="850" fill="#0c0e11"/>
+
+  <text x="550" y="36" text-anchor="middle" font-family="Inter, system-ui, sans-serif" font-size="20" font-weight="700" fill="#eef2e2" letter-spacing="-0.5">All 20 built-in themes</text>
+  <text x="550" y="56" text-anchor="middle" font-family="Inter, system-ui, sans-serif" font-size="12" font-weight="500" fill="#6a7072">One palette, two surfaces · cycle with Ctrl+Shift+T · `theme list` from the shell</text>
+
+  <!-- Row 1 -->
+  <!-- ziggy -->
+  <g transform="translate(40 80)">
+    <rect width="240" height="130" rx="10" fill="#111315" stroke="#2b3447"/>
+    <rect width="240" height="22" rx="10" fill="#191c1d"/>
+    <text x="12" y="15" class="label" fill="#eef2e2">Ziggy</text>
+    <text x="12" y="42" class="mono" fill="#9be28f">❯ </text><text x="26" y="42" class="mono" fill="#eef2e2">zig build test</text>
+    <text x="12" y="58" class="mono" fill="#7ab7ff">All 197 tests passed</text>
+    <text x="12" y="74" class="mono" fill="#f2cd76">warn: bounded scrollback</text>
+    <text x="12" y="90" class="mono" fill="#e66a6a">err: file not found</text>
+    <text x="12" y="118" class="meta" fill="#6a7072">accent #9be28f · dark</text>
+  </g>
+  <!-- catppuccin mocha -->
+  <g transform="translate(300 80)">
+    <rect width="240" height="130" rx="10" fill="#1e1e2e" stroke="#2b3447"/>
+    <rect width="240" height="22" rx="10" fill="#181825"/>
+    <text x="12" y="15" class="label" fill="#cdd6f4">Catppuccin Mocha</text>
+    <text x="12" y="42" class="mono" fill="#a6e3a1">❯ </text><text x="26" y="42" class="mono" fill="#cdd6f4">zig build test</text>
+    <text x="12" y="58" class="mono" fill="#89b4fa">All 197 tests passed</text>
+    <text x="12" y="74" class="mono" fill="#f9e2af">warn: bounded scrollback</text>
+    <text x="12" y="90" class="mono" fill="#f38ba8">err: file not found</text>
+    <text x="12" y="118" class="meta" fill="#a6adc8">accent #89b4fa · dark</text>
+  </g>
+  <!-- catppuccin frappe -->
+  <g transform="translate(560 80)">
+    <rect width="240" height="130" rx="10" fill="#303446" stroke="#2b3447"/>
+    <rect width="240" height="22" rx="10" fill="#292c3c"/>
+    <text x="12" y="15" class="label" fill="#c6d0f5">Catppuccin Frappé</text>
+    <text x="12" y="42" class="mono" fill="#a6d189">❯ </text><text x="26" y="42" class="mono" fill="#c6d0f5">zig build test</text>
+    <text x="12" y="58" class="mono" fill="#8caaee">All 197 tests passed</text>
+    <text x="12" y="74" class="mono" fill="#e5c890">warn: bounded scrollback</text>
+    <text x="12" y="90" class="mono" fill="#e78284">err: file not found</text>
+    <text x="12" y="118" class="meta" fill="#b5bfe2">accent #8caaee · dark</text>
+  </g>
+  <!-- catppuccin macchiato -->
+  <g transform="translate(820 80)">
+    <rect width="240" height="130" rx="10" fill="#24273a" stroke="#2b3447"/>
+    <rect width="240" height="22" rx="10" fill="#1e2030"/>
+    <text x="12" y="15" class="label" fill="#cad3f5">Catppuccin Macchiato</text>
+    <text x="12" y="42" class="mono" fill="#a6da95">❯ </text><text x="26" y="42" class="mono" fill="#cad3f5">zig build test</text>
+    <text x="12" y="58" class="mono" fill="#8aadf4">All 197 tests passed</text>
+    <text x="12" y="74" class="mono" fill="#eed49f">warn: bounded scrollback</text>
+    <text x="12" y="90" class="mono" fill="#ed8796">err: file not found</text>
+    <text x="12" y="118" class="meta" fill="#b8c0e0">accent #8aadf4 · dark</text>
+  </g>
+
+  <!-- Row 2 -->
+  <!-- tokyo night -->
+  <g transform="translate(40 230)">
+    <rect width="240" height="130" rx="10" fill="#1a1b26" stroke="#2b3447"/>
+    <rect width="240" height="22" rx="10" fill="#16161e"/>
+    <text x="12" y="15" class="label" fill="#c0caf5">Tokyo Night</text>
+    <text x="12" y="42" class="mono" fill="#9ece6a">❯ </text><text x="26" y="42" class="mono" fill="#c0caf5">zig build test</text>
+    <text x="12" y="58" class="mono" fill="#7aa2f7">All 197 tests passed</text>
+    <text x="12" y="74" class="mono" fill="#e0af68">warn: bounded scrollback</text>
+    <text x="12" y="90" class="mono" fill="#f7768e">err: file not found</text>
+    <text x="12" y="118" class="meta" fill="#a9b1d6">accent #7aa2f7 · dark</text>
+  </g>
+  <!-- tokyo night storm -->
+  <g transform="translate(300 230)">
+    <rect width="240" height="130" rx="10" fill="#24283b" stroke="#2b3447"/>
+    <rect width="240" height="22" rx="10" fill="#1f2335"/>
+    <text x="12" y="15" class="label" fill="#c0caf5">Tokyo Night Storm</text>
+    <text x="12" y="42" class="mono" fill="#9ece6a">❯ </text><text x="26" y="42" class="mono" fill="#c0caf5">zig build test</text>
+    <text x="12" y="58" class="mono" fill="#7aa2f7">All 197 tests passed</text>
+    <text x="12" y="74" class="mono" fill="#e0af68">warn: bounded scrollback</text>
+    <text x="12" y="90" class="mono" fill="#f7768e">err: file not found</text>
+    <text x="12" y="118" class="meta" fill="#9aa5ce">accent #7aa2f7 · dark</text>
+  </g>
+  <!-- dracula -->
+  <g transform="translate(560 230)">
+    <rect width="240" height="130" rx="10" fill="#282a36" stroke="#2b3447"/>
+    <rect width="240" height="22" rx="10" fill="#21222c"/>
+    <text x="12" y="15" class="label" fill="#f8f8f2">Dracula</text>
+    <text x="12" y="42" class="mono" fill="#50fa7b">❯ </text><text x="26" y="42" class="mono" fill="#f8f8f2">zig build test</text>
+    <text x="12" y="58" class="mono" fill="#bd93f9">All 197 tests passed</text>
+    <text x="12" y="74" class="mono" fill="#f1fa8c">warn: bounded scrollback</text>
+    <text x="12" y="90" class="mono" fill="#ff5555">err: file not found</text>
+    <text x="12" y="118" class="meta" fill="#6272a4">accent #bd93f9 · dark</text>
+  </g>
+  <!-- nord -->
+  <g transform="translate(820 230)">
+    <rect width="240" height="130" rx="10" fill="#2e3440" stroke="#2b3447"/>
+    <rect width="240" height="22" rx="10" fill="#3b4252"/>
+    <text x="12" y="15" class="label" fill="#d8dee9">Nord</text>
+    <text x="12" y="42" class="mono" fill="#a3be8c">❯ </text><text x="26" y="42" class="mono" fill="#d8dee9">zig build test</text>
+    <text x="12" y="58" class="mono" fill="#88c0d0">All 197 tests passed</text>
+    <text x="12" y="74" class="mono" fill="#ebcb8b">warn: bounded scrollback</text>
+    <text x="12" y="90" class="mono" fill="#bf616a">err: file not found</text>
+    <text x="12" y="118" class="meta" fill="#81a1c1">accent #88c0d0 · dark</text>
+  </g>
+
+  <!-- Row 3 -->
+  <!-- rose pine -->
+  <g transform="translate(40 380)">
+    <rect width="240" height="130" rx="10" fill="#191724" stroke="#2b3447"/>
+    <rect width="240" height="22" rx="10" fill="#1f1d2e"/>
+    <text x="12" y="15" class="label" fill="#e0def4">Rose Pine</text>
+    <text x="12" y="42" class="mono" fill="#9ccfd8">❯ </text><text x="26" y="42" class="mono" fill="#e0def4">zig build test</text>
+    <text x="12" y="58" class="mono" fill="#c4a7e7">All 197 tests passed</text>
+    <text x="12" y="74" class="mono" fill="#f6c177">warn: bounded scrollback</text>
+    <text x="12" y="90" class="mono" fill="#eb6f92">err: file not found</text>
+    <text x="12" y="118" class="meta" fill="#908caa">accent #c4a7e7 · dark</text>
+  </g>
+  <!-- gruvbox dark -->
+  <g transform="translate(300 380)">
+    <rect width="240" height="130" rx="10" fill="#282828" stroke="#2b3447"/>
+    <rect width="240" height="22" rx="10" fill="#3c3836"/>
+    <text x="12" y="15" class="label" fill="#ebdbb2">Gruvbox Dark</text>
+    <text x="12" y="42" class="mono" fill="#b8bb26">❯ </text><text x="26" y="42" class="mono" fill="#ebdbb2">zig build test</text>
+    <text x="12" y="58" class="mono" fill="#83a598">All 197 tests passed</text>
+    <text x="12" y="74" class="mono" fill="#fabd2f">warn: bounded scrollback</text>
+    <text x="12" y="90" class="mono" fill="#fb4934">err: file not found</text>
+    <text x="12" y="118" class="meta" fill="#928374">accent #fe8019 · dark</text>
+  </g>
+  <!-- everforest dark -->
+  <g transform="translate(560 380)">
+    <rect width="240" height="130" rx="10" fill="#2b3339" stroke="#2b3447"/>
+    <rect width="240" height="22" rx="10" fill="#323c41"/>
+    <text x="12" y="15" class="label" fill="#d3c6aa">Everforest Dark</text>
+    <text x="12" y="42" class="mono" fill="#a7c080">❯ </text><text x="26" y="42" class="mono" fill="#d3c6aa">zig build test</text>
+    <text x="12" y="58" class="mono" fill="#7fbbb3">All 197 tests passed</text>
+    <text x="12" y="74" class="mono" fill="#dbbc7f">warn: bounded scrollback</text>
+    <text x="12" y="90" class="mono" fill="#e67e80">err: file not found</text>
+    <text x="12" y="118" class="meta" fill="#9da9a0">accent #a7c080 · dark</text>
+  </g>
+  <!-- kanagawa wave -->
+  <g transform="translate(820 380)">
+    <rect width="240" height="130" rx="10" fill="#1f1f28" stroke="#2b3447"/>
+    <rect width="240" height="22" rx="10" fill="#2a2a37"/>
+    <text x="12" y="15" class="label" fill="#dcd7ba">Kanagawa Wave</text>
+    <text x="12" y="42" class="mono" fill="#98bb6c">❯ </text><text x="26" y="42" class="mono" fill="#dcd7ba">zig build test</text>
+    <text x="12" y="58" class="mono" fill="#7e9cd8">All 197 tests passed</text>
+    <text x="12" y="74" class="mono" fill="#e6c384">warn: bounded scrollback</text>
+    <text x="12" y="90" class="mono" fill="#c34043">err: file not found</text>
+    <text x="12" y="118" class="meta" fill="#727169">accent #7e9cd8 · dark</text>
+  </g>
+
+  <!-- Row 4 -->
+  <!-- solarized dark -->
+  <g transform="translate(40 530)">
+    <rect width="240" height="130" rx="10" fill="#002b36" stroke="#2b3447"/>
+    <rect width="240" height="22" rx="10" fill="#073642"/>
+    <text x="12" y="15" class="label" fill="#839496">Solarized Dark</text>
+    <text x="12" y="42" class="mono" fill="#859900">❯ </text><text x="26" y="42" class="mono" fill="#839496">zig build test</text>
+    <text x="12" y="58" class="mono" fill="#268bd2">All 197 tests passed</text>
+    <text x="12" y="74" class="mono" fill="#b58900">warn: bounded scrollback</text>
+    <text x="12" y="90" class="mono" fill="#dc322f">err: file not found</text>
+    <text x="12" y="118" class="meta" fill="#586e75">accent #268bd2 · dark</text>
+  </g>
+  <!-- one dark -->
+  <g transform="translate(300 530)">
+    <rect width="240" height="130" rx="10" fill="#282c34" stroke="#2b3447"/>
+    <rect width="240" height="22" rx="10" fill="#21252b"/>
+    <text x="12" y="15" class="label" fill="#abb2bf">One Dark</text>
+    <text x="12" y="42" class="mono" fill="#98c379">❯ </text><text x="26" y="42" class="mono" fill="#abb2bf">zig build test</text>
+    <text x="12" y="58" class="mono" fill="#61afef">All 197 tests passed</text>
+    <text x="12" y="74" class="mono" fill="#e5c07b">warn: bounded scrollback</text>
+    <text x="12" y="90" class="mono" fill="#e06c75">err: file not found</text>
+    <text x="12" y="118" class="meta" fill="#5c6370">accent #61afef · dark</text>
+  </g>
+  <!-- ayu dark -->
+  <g transform="translate(560 530)">
+    <rect width="240" height="130" rx="10" fill="#0b0e14" stroke="#2b3447"/>
+    <rect width="240" height="22" rx="10" fill="#11151c"/>
+    <text x="12" y="15" class="label" fill="#bfbdb6">Ayu Dark</text>
+    <text x="12" y="42" class="mono" fill="#7fd962">❯ </text><text x="26" y="42" class="mono" fill="#bfbdb6">zig build test</text>
+    <text x="12" y="58" class="mono" fill="#53bdfa">All 197 tests passed</text>
+    <text x="12" y="74" class="mono" fill="#f9af4f">warn: bounded scrollback</text>
+    <text x="12" y="90" class="mono" fill="#ea6c73">err: file not found</text>
+    <text x="12" y="118" class="meta" fill="#565b66">accent #e6b450 · dark</text>
+  </g>
+  <!-- ember -->
+  <g transform="translate(820 530)">
+    <rect width="240" height="130" rx="10" fill="#181310" stroke="#2b3447"/>
+    <rect width="240" height="22" rx="10" fill="#211a16"/>
+    <text x="12" y="15" class="label" fill="#f3e6d8">Ember</text>
+    <text x="12" y="42" class="mono" fill="#b0c477">❯ </text><text x="26" y="42" class="mono" fill="#f3e6d8">zig build test</text>
+    <text x="12" y="58" class="mono" fill="#7fb4d8">All 197 tests passed</text>
+    <text x="12" y="74" class="mono" fill="#ffb454">warn: bounded scrollback</text>
+    <text x="12" y="90" class="mono" fill="#f2685c">err: file not found</text>
+    <text x="12" y="118" class="meta" fill="#aa8f7d">accent #ff8a3d · dark</text>
+  </g>
+
+  <!-- Row 5 — light themes -->
+  <!-- paper -->
+  <g transform="translate(40 680)">
+    <rect width="240" height="130" rx="10" fill="#f8f6ef" stroke="#2b3447"/>
+    <rect width="240" height="22" rx="10" fill="#ebe7dc"/>
+    <text x="12" y="15" class="label" fill="#262925">Paper</text>
+    <text x="12" y="42" class="mono" fill="#2f6f62">❯ </text><text x="26" y="42" class="mono" fill="#262925">zig build test</text>
+    <text x="12" y="58" class="mono" fill="#2f5f9f">All 197 tests passed</text>
+    <text x="12" y="74" class="mono" fill="#9a6b18">warn: bounded scrollback</text>
+    <text x="12" y="90" class="mono" fill="#b95c50">err: file not found</text>
+    <text x="12" y="118" class="meta" fill="#73776d">accent #2f6f62 · light</text>
+  </g>
+  <!-- catppuccin latte -->
+  <g transform="translate(300 680)">
+    <rect width="240" height="130" rx="10" fill="#eff1f5" stroke="#2b3447"/>
+    <rect width="240" height="22" rx="10" fill="#e6e9ef"/>
+    <text x="12" y="15" class="label" fill="#4c4f69">Catppuccin Latte</text>
+    <text x="12" y="42" class="mono" fill="#40a02b">❯ </text><text x="26" y="42" class="mono" fill="#4c4f69">zig build test</text>
+    <text x="12" y="58" class="mono" fill="#1e66f5">All 197 tests passed</text>
+    <text x="12" y="74" class="mono" fill="#df8e1d">warn: bounded scrollback</text>
+    <text x="12" y="90" class="mono" fill="#d20f39">err: file not found</text>
+    <text x="12" y="118" class="meta" fill="#6c6f85">accent #1e66f5 · light</text>
+  </g>
+  <!-- solarized light -->
+  <g transform="translate(560 680)">
+    <rect width="240" height="130" rx="10" fill="#fdf6e3" stroke="#2b3447"/>
+    <rect width="240" height="22" rx="10" fill="#eee8d5"/>
+    <text x="12" y="15" class="label" fill="#657b83">Solarized Light</text>
+    <text x="12" y="42" class="mono" fill="#859900">❯ </text><text x="26" y="42" class="mono" fill="#657b83">zig build test</text>
+    <text x="12" y="58" class="mono" fill="#268bd2">All 197 tests passed</text>
+    <text x="12" y="74" class="mono" fill="#b58900">warn: bounded scrollback</text>
+    <text x="12" y="90" class="mono" fill="#dc322f">err: file not found</text>
+    <text x="12" y="118" class="meta" fill="#93a1a1">accent #268bd2 · light</text>
+  </g>
+  <!-- github light -->
+  <g transform="translate(820 680)">
+    <rect width="240" height="130" rx="10" fill="#ffffff" stroke="#2b3447"/>
+    <rect width="240" height="22" rx="10" fill="#f6f8fa"/>
+    <text x="12" y="15" class="label" fill="#24292e">GitHub Light</text>
+    <text x="12" y="42" class="mono" fill="#28a745">❯ </text><text x="26" y="42" class="mono" fill="#24292e">zig build test</text>
+    <text x="12" y="58" class="mono" fill="#0366d6">All 197 tests passed</text>
+    <text x="12" y="74" class="mono" fill="#dbab09">warn: bounded scrollback</text>
+    <text x="12" y="90" class="mono" fill="#d73a49">err: file not found</text>
+    <text x="12" y="118" class="meta" fill="#6a737d">accent #0366d6 · light</text>
+  </g>
+
+  <!-- Footer -->
+  <text x="550" y="838" text-anchor="middle" font-family="Inter, system-ui, sans-serif" font-size="11" fill="#6a7072">17 dark · 3 light · all audited for WCAG AA contrast at docs/reference/accessibility.md</text>
+</svg>

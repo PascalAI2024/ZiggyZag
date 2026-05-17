@@ -16,3 +16,14 @@ bin/
 **/.DS_Store
 *.swp
 *~
+
+# Local AI / agent tooling state - none of this should ever be committed.
+.opencode/
+.worktrees/
+.mavis/
+.trash/
+
+# IDE and editor metadata
+.idea/
+.vscode/
+*.code-workspace

@@ -460,10 +460,235 @@ pub const ember = Theme{
     },
 };
 
+// Additional dark variants for breadth. Four palettes from upstream
+// projects, transcribed from their official specs. See:
+//   https://github.com/catppuccin/palette (Frappé, Macchiato)
+//   https://github.com/folke/tokyonight.nvim (Storm)
+//   https://github.com/ayu-theme/ayu-colors (Dark)
+
+// Catppuccin Frappé: hex values from catppuccin/palette palette.json (Frappé flavor).
+// ANSI mapping mirrors catppuccin_mocha: Surface1/Surface2 for blacks, Subtext1/Subtext0 for whites.
+pub const catppuccin_frappe = Theme{
+    .id = "catppuccin-frappe",
+    .name = "Catppuccin Frappé",
+    .background = Color.rgb(0x30, 0x34, 0x46),
+    .foreground = Color.rgb(0xc6, 0xd0, 0xf5),
+    .cursor = Color.rgb(0xf2, 0xd5, 0xcf),
+    .accent = Color.rgb(0x8c, 0xaa, 0xee),
+    .panel = Color.rgb(0x29, 0x2c, 0x3c),
+    .muted = Color.rgb(0xb5, 0xbf, 0xe2),
+    .ansi = .{
+        Color.rgb(0x51, 0x57, 0x6d),
+        Color.rgb(0xe7, 0x82, 0x84),
+        Color.rgb(0xa6, 0xd1, 0x89),
+        Color.rgb(0xe5, 0xc8, 0x90),
+        Color.rgb(0x8c, 0xaa, 0xee),
+        Color.rgb(0xf4, 0xb8, 0xe4),
+        Color.rgb(0x81, 0xc8, 0xbe),
+        Color.rgb(0xb5, 0xbf, 0xe2),
+        Color.rgb(0x62, 0x68, 0x80),
+        Color.rgb(0xe7, 0x82, 0x84),
+        Color.rgb(0xa6, 0xd1, 0x89),
+        Color.rgb(0xe5, 0xc8, 0x90),
+        Color.rgb(0x8c, 0xaa, 0xee),
+        Color.rgb(0xf4, 0xb8, 0xe4),
+        Color.rgb(0x81, 0xc8, 0xbe),
+        Color.rgb(0xa5, 0xad, 0xce),
+    },
+};
+
+// Catppuccin Macchiato: hex values from catppuccin/palette palette.json (Macchiato flavor).
+// Same ANSI mapping convention as Frappé/Mocha.
+pub const catppuccin_macchiato = Theme{
+    .id = "catppuccin-macchiato",
+    .name = "Catppuccin Macchiato",
+    .background = Color.rgb(0x24, 0x27, 0x3a),
+    .foreground = Color.rgb(0xca, 0xd3, 0xf5),
+    .cursor = Color.rgb(0xf4, 0xdb, 0xd6),
+    .accent = Color.rgb(0x8a, 0xad, 0xf4),
+    .panel = Color.rgb(0x1e, 0x20, 0x30),
+    .muted = Color.rgb(0xb8, 0xc0, 0xe0),
+    .ansi = .{
+        Color.rgb(0x49, 0x4d, 0x64),
+        Color.rgb(0xed, 0x87, 0x96),
+        Color.rgb(0xa6, 0xda, 0x95),
+        Color.rgb(0xee, 0xd4, 0x9f),
+        Color.rgb(0x8a, 0xad, 0xf4),
+        Color.rgb(0xf5, 0xbd, 0xe6),
+        Color.rgb(0x8b, 0xd5, 0xca),
+        Color.rgb(0xb8, 0xc0, 0xe0),
+        Color.rgb(0x5b, 0x60, 0x78),
+        Color.rgb(0xed, 0x87, 0x96),
+        Color.rgb(0xa6, 0xda, 0x95),
+        Color.rgb(0xee, 0xd4, 0x9f),
+        Color.rgb(0x8a, 0xad, 0xf4),
+        Color.rgb(0xf5, 0xbd, 0xe6),
+        Color.rgb(0x8b, 0xd5, 0xca),
+        Color.rgb(0xa5, 0xad, 0xcb),
+    },
+};
+
+// Tokyo Night Storm: hex values from folke/tokyonight.nvim
+// (extras/lua/tokyonight_storm.lua) terminal palette.
+pub const tokyo_night_storm = Theme{
+    .id = "tokyo-night-storm",
+    .name = "Tokyo Night Storm",
+    .background = Color.rgb(0x24, 0x28, 0x3b),
+    .foreground = Color.rgb(0xc0, 0xca, 0xf5),
+    .cursor = Color.rgb(0xc0, 0xca, 0xf5),
+    .accent = Color.rgb(0x7a, 0xa2, 0xf7),
+    .panel = Color.rgb(0x1f, 0x23, 0x35),
+    .muted = Color.rgb(0x9a, 0xa5, 0xce),
+    .ansi = .{
+        Color.rgb(0x15, 0x16, 0x1e),
+        Color.rgb(0xf7, 0x76, 0x8e),
+        Color.rgb(0x9e, 0xce, 0x6a),
+        Color.rgb(0xe0, 0xaf, 0x68),
+        Color.rgb(0x7a, 0xa2, 0xf7),
+        Color.rgb(0xbb, 0x9a, 0xf7),
+        Color.rgb(0x7d, 0xcf, 0xff),
+        Color.rgb(0xa9, 0xb1, 0xd6),
+        Color.rgb(0x41, 0x48, 0x68),
+        Color.rgb(0xf7, 0x76, 0x8e),
+        Color.rgb(0x9e, 0xce, 0x6a),
+        Color.rgb(0xe0, 0xaf, 0x68),
+        Color.rgb(0x7a, 0xa2, 0xf7),
+        Color.rgb(0xbb, 0x9a, 0xf7),
+        Color.rgb(0x7d, 0xcf, 0xff),
+        Color.rgb(0xc0, 0xca, 0xf5),
+    },
+};
+
+// Ayu Dark: surfaces/foreground/accent from ayu-theme/ayu-colors,
+// ANSI 0-15 from alacritty/alacritty-theme/ayu_dark.toml.
+pub const ayu_dark = Theme{
+    .id = "ayu-dark",
+    .name = "Ayu Dark",
+    .background = Color.rgb(0x0b, 0x0e, 0x14),
+    .foreground = Color.rgb(0xbf, 0xbd, 0xb6),
+    .cursor = Color.rgb(0xe6, 0xb4, 0x50),
+    .accent = Color.rgb(0xe6, 0xb4, 0x50),
+    .panel = Color.rgb(0x11, 0x15, 0x1c),
+    .muted = Color.rgb(0x56, 0x5b, 0x66),
+    .ansi = .{
+        Color.rgb(0x11, 0x15, 0x1c),
+        Color.rgb(0xea, 0x6c, 0x73),
+        Color.rgb(0x7f, 0xd9, 0x62),
+        Color.rgb(0xf9, 0xaf, 0x4f),
+        Color.rgb(0x53, 0xbd, 0xfa),
+        Color.rgb(0xcd, 0xa1, 0xfa),
+        Color.rgb(0x90, 0xe1, 0xc6),
+        Color.rgb(0xc7, 0xc7, 0xc7),
+        Color.rgb(0x68, 0x68, 0x68),
+        Color.rgb(0xf0, 0x71, 0x78),
+        Color.rgb(0xaa, 0xd9, 0x4c),
+        Color.rgb(0xff, 0xb4, 0x54),
+        Color.rgb(0x59, 0xc2, 0xff),
+        Color.rgb(0xd2, 0xa6, 0xff),
+        Color.rgb(0x95, 0xe6, 0xcb),
+        Color.rgb(0xff, 0xff, 0xff),
+    },
+};
+
+// Light-mode complements. Hex values from each project's official spec.
+//   https://github.com/catppuccin/catppuccin (Latte)
+//   https://github.com/altercation/solarized
+//   https://primer.style/foundations/color/light
+
+pub const catppuccin_latte = Theme{
+    .id = "catppuccin-latte",
+    .name = "Catppuccin Latte",
+    .background = Color.rgb(0xef, 0xf1, 0xf5),
+    .foreground = Color.rgb(0x4c, 0x4f, 0x69),
+    .cursor = Color.rgb(0xdc, 0x8a, 0x78),
+    .accent = Color.rgb(0x1e, 0x66, 0xf5),
+    .panel = Color.rgb(0xe6, 0xe9, 0xef),
+    .muted = Color.rgb(0x6c, 0x6f, 0x85),
+    .ansi = .{
+        Color.rgb(0x5c, 0x5f, 0x77),
+        Color.rgb(0xd2, 0x0f, 0x39),
+        Color.rgb(0x40, 0xa0, 0x2b),
+        Color.rgb(0xdf, 0x8e, 0x1d),
+        Color.rgb(0x1e, 0x66, 0xf5),
+        Color.rgb(0xea, 0x76, 0xcb),
+        Color.rgb(0x17, 0x92, 0x99),
+        Color.rgb(0xac, 0xb0, 0xbe),
+        Color.rgb(0x6c, 0x6f, 0x85),
+        Color.rgb(0xd2, 0x0f, 0x39),
+        Color.rgb(0x40, 0xa0, 0x2b),
+        Color.rgb(0xdf, 0x8e, 0x1d),
+        Color.rgb(0x1e, 0x66, 0xf5),
+        Color.rgb(0xea, 0x76, 0xcb),
+        Color.rgb(0x17, 0x92, 0x99),
+        Color.rgb(0xbc, 0xc0, 0xcc),
+    },
+};
+
+pub const solarized_light = Theme{
+    .id = "solarized-light",
+    .name = "Solarized Light",
+    .background = Color.rgb(0xfd, 0xf6, 0xe3),
+    .foreground = Color.rgb(0x65, 0x7b, 0x83),
+    .cursor = Color.rgb(0x58, 0x6e, 0x75),
+    .accent = Color.rgb(0x26, 0x8b, 0xd2),
+    .panel = Color.rgb(0xee, 0xe8, 0xd5),
+    .muted = Color.rgb(0x93, 0xa1, 0xa1),
+    .ansi = .{
+        Color.rgb(0xee, 0xe8, 0xd5),
+        Color.rgb(0xdc, 0x32, 0x2f),
+        Color.rgb(0x85, 0x99, 0x00),
+        Color.rgb(0xb5, 0x89, 0x00),
+        Color.rgb(0x26, 0x8b, 0xd2),
+        Color.rgb(0xd3, 0x36, 0x82),
+        Color.rgb(0x2a, 0xa1, 0x98),
+        Color.rgb(0x07, 0x36, 0x42),
+        Color.rgb(0xfd, 0xf6, 0xe3),
+        Color.rgb(0xcb, 0x4b, 0x16),
+        Color.rgb(0x58, 0x6e, 0x75),
+        Color.rgb(0x65, 0x7b, 0x83),
+        Color.rgb(0x83, 0x94, 0x96),
+        Color.rgb(0x6c, 0x71, 0xc4),
+        Color.rgb(0x93, 0xa1, 0xa1),
+        Color.rgb(0x00, 0x2b, 0x36),
+    },
+};
+
+pub const github_light = Theme{
+    .id = "github-light",
+    .name = "GitHub Light",
+    .background = Color.rgb(0xff, 0xff, 0xff),
+    .foreground = Color.rgb(0x24, 0x29, 0x2e),
+    .cursor = Color.rgb(0x04, 0x42, 0x89),
+    .accent = Color.rgb(0x03, 0x66, 0xd6),
+    .panel = Color.rgb(0xf6, 0xf8, 0xfa),
+    .muted = Color.rgb(0x6a, 0x73, 0x7d),
+    .ansi = .{
+        Color.rgb(0x24, 0x29, 0x2e),
+        Color.rgb(0xd7, 0x3a, 0x49),
+        Color.rgb(0x28, 0xa7, 0x45),
+        Color.rgb(0xdb, 0xab, 0x09),
+        Color.rgb(0x03, 0x66, 0xd6),
+        Color.rgb(0x5a, 0x32, 0xa3),
+        Color.rgb(0x05, 0x98, 0xbc),
+        Color.rgb(0x6a, 0x73, 0x7d),
+        Color.rgb(0x95, 0x9d, 0xa5),
+        Color.rgb(0xcb, 0x24, 0x31),
+        Color.rgb(0x22, 0x86, 0x3a),
+        Color.rgb(0xb0, 0x88, 0x00),
+        Color.rgb(0x00, 0x5c, 0xc5),
+        Color.rgb(0x5a, 0x32, 0xa3),
+        Color.rgb(0x31, 0x92, 0xaa),
+        Color.rgb(0xd1, 0xd5, 0xda),
+    },
+};
+
 pub const themes = [_]Theme{
     ziggy,
     catppuccin_mocha,
+    catppuccin_frappe,
+    catppuccin_macchiato,
     tokyo_night,
+    tokyo_night_storm,
     dracula,
     nord,
     rose_pine,
@@ -472,8 +697,12 @@ pub const themes = [_]Theme{
     kanagawa_wave,
     solarized_dark,
     one_dark,
+    ayu_dark,
     paper,
     ember,
+    catppuccin_latte,
+    solarized_light,
+    github_light,
 };
 
 pub fn maybeByName(name: []const u8) ?Theme {
@@ -526,9 +755,23 @@ test "selects themes by name" {
     try std.testing.expectEqualStrings("Paper", byName("paper").name);
     try std.testing.expectEqualStrings("Ember", byName("EMBER").name);
     try std.testing.expectEqualStrings("Catppuccin Mocha", byName("catppuccin-mocha").name);
+    try std.testing.expectEqualStrings("Catppuccin Frappé", byName("catppuccin-frappe").name);
+    try std.testing.expectEqualStrings("Catppuccin Macchiato", byName("catppuccin_macchiato").name);
+    try std.testing.expectEqualStrings("Catppuccin Latte", byName("catppuccin-latte").name);
     try std.testing.expectEqualStrings("Tokyo Night", byName("tokyo night").name);
+    try std.testing.expectEqualStrings("Tokyo Night Storm", byName("tokyo-night-storm").name);
     try std.testing.expectEqualStrings("Rose Pine", byName("rose_pine").name);
+    try std.testing.expectEqualStrings("Ayu Dark", byName("ayu-dark").name);
+    try std.testing.expectEqualStrings("Solarized Light", byName("solarized light").name);
+    try std.testing.expectEqualStrings("GitHub Light", byName("github_light").name);
     try std.testing.expectEqualStrings("Ziggy", byName("unknown").name);
+}
+
+test "theme registry contains the documented 20 themes" {
+    // Regression for the docs/landing-page claim that ZiggyZag ships N themes.
+    // If this number changes, README.md, docs/index.html, and
+    // docs/reference/theme-authoring.md all need to update in lockstep.
+    try std.testing.expectEqual(@as(usize, 20), themes.len);
 }
 
 test "copies themes with overrides" {
@@ -538,6 +781,10 @@ test "copies themes with overrides" {
 }
 
 test "cycles through known themes" {
+    // Cycle order follows the `themes` array. Catppuccin Mocha sits right
+    // after Ziggy, and Ember is the final dark variant before the light
+    // section opens with Catppuccin Latte.
     try std.testing.expectEqualStrings("Catppuccin Mocha", next(ziggy).name);
-    try std.testing.expectEqualStrings("Ziggy", next(ember).name);
+    try std.testing.expectEqualStrings("Catppuccin Latte", next(ember).name);
+    try std.testing.expectEqualStrings("Ziggy", next(github_light).name);
 }

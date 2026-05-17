@@ -1,0 +1,75 @@
+<svg width="1200" height="630" viewBox="0 0 1200 630" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title">
+  <title id="title">ZiggyZag — A Zig shell workspace</title>
+  <defs>
+    <linearGradient id="og-bg" x1="0" y1="0" x2="1200" y2="630" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#0c0e11"/>
+      <stop offset="1" stop-color="#15181b"/>
+    </linearGradient>
+    <linearGradient id="og-panel" x1="0" y1="0" x2="120" y2="120" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#191c1d"/>
+      <stop offset="1" stop-color="#0c1018"/>
+    </linearGradient>
+    <linearGradient id="og-accent" x1="0" y1="0" x2="1200" y2="0" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#f7a41d"/>
+      <stop offset="0.5" stop-color="#35d0ba"/>
+      <stop offset="1" stop-color="#8b5cf6"/>
+    </linearGradient>
+    <linearGradient id="og-text" x1="100" y1="200" x2="900" y2="320" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#eef2e2"/>
+      <stop offset="1" stop-color="#9be28f"/>
+    </linearGradient>
+    <filter id="og-glow"><feGaussianBlur stdDeviation="40" in="SourceGraphic"/></filter>
+  </defs>
+  <rect width="1200" height="630" fill="url(#og-bg)"/>
+
+  <!-- Soft glow -->
+  <ellipse cx="900" cy="500" rx="500" ry="220" fill="#35d0ba" opacity="0.06" filter="url(#og-glow)"/>
+  <ellipse cx="300" cy="120" rx="400" ry="160" fill="#cf9bff" opacity="0.05" filter="url(#og-glow)"/>
+
+  <!-- Brand badge -->
+  <g transform="translate(80 100)">
+    <rect width="120" height="120" rx="22" fill="url(#og-panel)" stroke="#2b3447" stroke-width="3"/>
+    <rect x="12" y="12" width="96" height="14" rx="4" fill="#20283a"/>
+    <circle cx="22" cy="19" r="3" fill="#ff6b6b"/>
+    <circle cx="32" cy="19" r="3" fill="#ffd166"/>
+    <circle cx="42" cy="19" r="3" fill="#35d0ba"/>
+    <path d="M30 42H82L52 70H88V80H34L64 56H30Z" fill="url(#og-accent)"/>
+    <rect x="34" y="92" width="52" height="6" rx="2" fill="#e8edf7"/>
+    <rect x="34" y="104" width="32" height="4" rx="2" fill="#657089"/>
+  </g>
+
+  <!-- Headline -->
+  <text x="80" y="290" font-family="Inter, system-ui, sans-serif" font-size="92" font-weight="700" fill="url(#og-text)" letter-spacing="-3">ZiggyZag</text>
+  <text x="80" y="350" font-family="Inter, system-ui, sans-serif" font-size="30" font-weight="500" fill="#a5b4c6">A Zig shell · a native terminal host · a local AI sidecar.</text>
+  <text x="80" y="388" font-family="Inter, system-ui, sans-serif" font-size="22" font-weight="500" fill="#6a7072">One workspace · three binaries · zero dependencies · MIT.</text>
+
+  <!-- Stat row -->
+  <g transform="translate(80 460)" font-family="Inter, system-ui, sans-serif">
+    <g>
+      <text font-size="44" font-weight="700" fill="#9be28f">20</text>
+      <text y="28" font-size="14" font-weight="500" fill="#6a7072">themes</text>
+    </g>
+    <g transform="translate(170 0)">
+      <text font-size="44" font-weight="700" fill="#7ab7ff">197</text>
+      <text y="28" font-size="14" font-weight="500" fill="#6a7072">unit tests</text>
+    </g>
+    <g transform="translate(340 0)">
+      <text font-size="44" font-weight="700" fill="#cf9bff">3</text>
+      <text y="28" font-size="14" font-weight="500" fill="#6a7072">binaries · one product</text>
+    </g>
+    <g transform="translate(640 0)">
+      <text font-size="44" font-weight="700" fill="#f2cd76">5</text>
+      <text y="28" font-size="14" font-weight="500" fill="#6a7072">cross-built targets</text>
+    </g>
+    <g transform="translate(870 0)">
+      <text font-size="44" font-weight="700" fill="#e66a6a">0</text>
+      <text y="28" font-size="14" font-weight="500" fill="#6a7072">third-party deps</text>
+    </g>
+  </g>
+
+  <!-- Footer URL -->
+  <text x="80" y="595" font-family="'Cascadia Mono', monospace" font-size="20" font-weight="500" fill="#6a7072">github.com/PascalAI2024/ZiggyZag</text>
+
+  <!-- Decorative gradient strip -->
+  <rect x="0" y="618" width="1200" height="4" fill="url(#og-accent)"/>
+</svg>

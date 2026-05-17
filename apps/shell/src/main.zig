@@ -1,5 +1,6 @@
 const builtin = @import("builtin");
 const std = @import("std");
+const theme = @import("theme");
 
 const Allocator = std.mem.Allocator;
 
@@ -156,8 +157,16 @@ const Shell = struct {
     prompt_snapshot_valid: bool,
     last_status: u8,
     last_duration_ms: i64,
+    /// Active terminal theme. Read on startup from the ZIGGYZAG_THEME env var,
+    /// which the desktop host sets when spawning the shell child. Falls back
+    /// to the `ziggy` theme when unset or unknown. See docs/THEME_PROTOCOL.md.
+    current_theme: theme.Theme,
 
     fn init(allocator: Allocator, io: std.Io, env: *std.process.Environ.Map) Shell {
+        const initial_theme = if (env.get("ZIGGYZAG_THEME")) |name|
+            theme.byName(name)
+        else
+            theme.ziggy;
         return .{
             .allocator = allocator,
             .io = io,
@@ -180,6 +189,7 @@ const Shell = struct {
             .prompt_snapshot_valid = false,
             .last_status = 0,
             .last_duration_ms = 0,
+            .current_theme = initial_theme,
         };
     }
 
@@ -253,6 +263,19 @@ const Shell = struct {
                 else => |e| return e,
             };
             self.history_append_index = self.history.items.len;
+        };
+        // Restore command metadata from the previous session so `history --stats`,
+        // `--slow`, `--cwd`, and `--failed` can see history across restarts. The
+        // file is written at shell exit via the matching defer below.
+        if (self.history_enabled) if (history_meta_file) |path| {
+            self.readHistoryMetaFile(path) catch |err| switch (err) {
+                error.FileNotFound => {},
+                error.HistoryFileTooLarge => {
+                    var stderr = std.Io.File.stderr().writer(self.io, &.{});
+                    try stderr.interface.print("history-meta: {s}: file too large (limit {d} bytes)\n", .{ path, max_history_file_bytes });
+                },
+                else => |e| return e,
+            };
         };
         defer if (histfile) |path| {
             if (self.history_enabled) self.writeHistoryFile(path, false, 0) catch {};
@@ -1689,6 +1712,16 @@ const Shell = struct {
             return true;
         }
 
+        if (std.mem.eql(u8, command, "theme")) {
+            var stdout_buffer: std.ArrayList(u8) = .empty;
+            defer stdout_buffer.deinit(self.allocator);
+            var stderr_buffer: std.ArrayList(u8) = .empty;
+            defer stderr_buffer.deinit(self.allocator);
+            try self.themeCommand(parsed.argv.items, &stdout_buffer);
+            try self.emitCommandOutput(&parsed, stdout_buffer.items, stderr_buffer.items);
+            return true;
+        }
+
         if (std.mem.eql(u8, command, "config")) {
             var stdout_buffer: std.ArrayList(u8) = .empty;
             defer stdout_buffer.deinit(self.allocator);
@@ -1986,8 +2019,8 @@ const Shell = struct {
         }
 
         const count = if (argv.len >= 2) std.fmt.parseInt(usize, argv[1], 10) catch 1 else 1;
-        self.dir_index = if (count > self.dir_index) 0 else self.dir_index - count;
-        try self.goToDirectoryIndex(stdout_buffer, stderr_buffer);
+        const target = if (count > self.dir_index) 0 else self.dir_index - count;
+        try self.goToDirectoryIndex(target, stdout_buffer, stderr_buffer);
     }
 
     fn forwardCommand(self: *Shell, argv: []const []const u8, stdout_buffer: *std.ArrayList(u8), stderr_buffer: *std.ArrayList(u8)) !void {
@@ -1998,8 +2031,8 @@ const Shell = struct {
         }
 
         const count = if (argv.len >= 2) std.fmt.parseInt(usize, argv[1], 10) catch 1 else 1;
-        self.dir_index = @min(self.dir_history.items.len - 1, self.dir_index + count);
-        try self.goToDirectoryIndex(stdout_buffer, stderr_buffer);
+        const target = @min(self.dir_history.items.len - 1, self.dir_index + count);
+        try self.goToDirectoryIndex(target, stdout_buffer, stderr_buffer);
     }
 
     fn jumpCommand(self: *Shell, argv: []const []const u8, stdout_buffer: *std.ArrayList(u8), stderr_buffer: *std.ArrayList(u8)) !void {
@@ -2026,18 +2059,23 @@ const Shell = struct {
             self.last_status = 1;
             return;
         };
-        self.dir_index = target;
-        try self.goToDirectoryIndex(stdout_buffer, stderr_buffer);
+        try self.goToDirectoryIndex(target, stdout_buffer, stderr_buffer);
     }
 
-    fn goToDirectoryIndex(self: *Shell, stdout_buffer: *std.ArrayList(u8), stderr_buffer: *std.ArrayList(u8)) !void {
-        if (self.dir_index >= self.dir_history.items.len) return;
-        const target = self.dir_history.items[self.dir_index];
+    /// Change to the directory at `target_index` in `dir_history` and update
+    /// `self.dir_index` *only on chdir success*. The previous version mutated
+    /// `dir_index` first, leaving the shell pointing at the wrong slot when
+    /// `setCurrentPath` failed (e.g., the directory had been removed). Callers
+    /// pass the desired index so they no longer need to roll back on failure.
+    fn goToDirectoryIndex(self: *Shell, target_index: usize, stdout_buffer: *std.ArrayList(u8), stderr_buffer: *std.ArrayList(u8)) !void {
+        if (target_index >= self.dir_history.items.len) return;
+        const target = self.dir_history.items[target_index];
         std.process.setCurrentPath(self.io, target) catch |err| {
             try appendFmt(self.allocator, stderr_buffer, "dirs: {s}: {s}\n", .{ target, @errorName(err) });
             self.last_status = 1;
             return;
         };
+        self.dir_index = target_index;
         try appendFmt(self.allocator, stdout_buffer, "{s}\n", .{target});
     }
 
@@ -2374,6 +2412,8 @@ const Shell = struct {
             try self.completeBuiltin(parsed.argv.items, &output);
         } else if (std.mem.eql(u8, command, "prompt")) {
             try self.promptCommand(parsed.argv.items, &output);
+        } else if (std.mem.eql(u8, command, "theme")) {
+            try self.themeCommand(parsed.argv.items, &output);
         } else if (std.mem.eql(u8, command, "history")) {
             try self.historyCommand(parsed.argv.items, &output);
         }
@@ -2641,6 +2681,58 @@ const Shell = struct {
         try self.writeFilePath(path, output.items);
     }
 
+    /// Load persisted command metadata from `path` on startup. The previous
+    /// implementation only wrote this file at exit; it was never read, so
+    /// `history_meta` started empty every session and `history --stats` /
+    /// `history --slow` / `history --cwd` could not see anything from prior
+    /// sessions. Format is the TSV emitted by `writeHistoryMetaFile`:
+    ///   `{timestamp}\t{status}\t{duration_ms}\t{esc_cwd}\t{esc_command}\n`
+    /// where the two string fields are escaped with `appendTsvField` (`\\` for
+    /// backslash, `\t`/`\n`/`\r` for the corresponding control chars).
+    fn readHistoryMetaFile(self: *Shell, path: []const u8) !void {
+        const file = if (std.fs.path.isAbsolute(path))
+            try std.Io.Dir.openFileAbsolute(self.io, path, .{})
+        else
+            try std.Io.Dir.cwd().openFile(self.io, path, .{});
+        defer file.close(self.io);
+
+        var read_buffer: [4096]u8 = undefined;
+        var reader = file.readerStreaming(self.io, &read_buffer);
+        const contents = reader.interface.allocRemaining(self.allocator, .limited(max_history_file_bytes)) catch |err| switch (err) {
+            error.StreamTooLong => return error.HistoryFileTooLarge,
+            else => |e| return e,
+        };
+        defer self.allocator.free(contents);
+
+        var lines = std.mem.splitScalar(u8, contents, '\n');
+        while (lines.next()) |raw_line| {
+            const line = trimTrailingCarriageReturn(raw_line);
+            if (line.len == 0) continue;
+            // Split on the first three tabs to peel off the numeric fields; the
+            // two string tails are TSV-unescaped before being stored.
+            var fields = std.mem.splitScalar(u8, line, '\t');
+            const ts_text = fields.next() orelse continue;
+            const status_text = fields.next() orelse continue;
+            const duration_text = fields.next() orelse continue;
+            const cwd_text = fields.next() orelse continue;
+            const command_text = fields.next() orelse continue;
+            const timestamp = std.fmt.parseInt(i64, ts_text, 10) catch continue;
+            const status = std.fmt.parseInt(u8, status_text, 10) catch continue;
+            const duration_ms = std.fmt.parseInt(i64, duration_text, 10) catch continue;
+            const cwd = try unescapeTsvFieldAlloc(self.allocator, cwd_text);
+            errdefer self.allocator.free(cwd);
+            const command = try unescapeTsvFieldAlloc(self.allocator, command_text);
+            errdefer self.allocator.free(command);
+            try self.history_meta.append(self.allocator, .{
+                .command = command,
+                .cwd = cwd,
+                .status = status,
+                .duration_ms = duration_ms,
+                .timestamp = timestamp,
+            });
+        }
+    }
+
     fn declareVariable(self: *Shell, argv: []const []const u8, stdout_buffer: *std.ArrayList(u8)) !void {
         if (argv.len == 1) {
             var it = self.env.iterator();
@@ -2826,6 +2918,69 @@ const Shell = struct {
         } else {
             try appendFmt(self.allocator, stdout_buffer, "prompt: {s}: expected classic, smart, compact, dev, dashboard, or themes\n", .{argv[1]});
         }
+    }
+
+    /// Theme builtin. Reports, lists, or switches the active terminal theme.
+    /// The theme registry is shared with the desktop host via build-time
+    /// import. See docs/THEME_PROTOCOL.md.
+    ///
+    /// Usage:
+    ///   theme            print current theme id and name
+    ///   theme list       list known theme ids
+    ///   theme --json     emit current theme as JSON (id/name/accent/muted/bg/fg)
+    ///   theme <id>       switch this session's theme (does not persist)
+    fn themeCommand(self: *Shell, argv: []const []const u8, stdout_buffer: *std.ArrayList(u8)) !void {
+        if (argv.len <= 1) {
+            try appendFmt(self.allocator, stdout_buffer, "{s} ({s})\n", .{
+                self.current_theme.id,
+                self.current_theme.name,
+            });
+            return;
+        }
+
+        const sub = argv[1];
+
+        if (std.mem.eql(u8, sub, "--json")) {
+            try stdout_buffer.appendSlice(self.allocator, "{\"id\":");
+            try appendJsonString(self.allocator, stdout_buffer, self.current_theme.id);
+            try stdout_buffer.appendSlice(self.allocator, ",\"name\":");
+            try appendJsonString(self.allocator, stdout_buffer, self.current_theme.name);
+            try appendFmt(self.allocator, stdout_buffer, ",\"accent\":\"#{x:0>2}{x:0>2}{x:0>2}\"", .{
+                self.current_theme.accent.r, self.current_theme.accent.g, self.current_theme.accent.b,
+            });
+            try appendFmt(self.allocator, stdout_buffer, ",\"muted\":\"#{x:0>2}{x:0>2}{x:0>2}\"", .{
+                self.current_theme.muted.r, self.current_theme.muted.g, self.current_theme.muted.b,
+            });
+            try appendFmt(self.allocator, stdout_buffer, ",\"background\":\"#{x:0>2}{x:0>2}{x:0>2}\"", .{
+                self.current_theme.background.r, self.current_theme.background.g, self.current_theme.background.b,
+            });
+            try appendFmt(self.allocator, stdout_buffer, ",\"foreground\":\"#{x:0>2}{x:0>2}{x:0>2}\"", .{
+                self.current_theme.foreground.r, self.current_theme.foreground.g, self.current_theme.foreground.b,
+            });
+            try stdout_buffer.appendSlice(self.allocator, "}\n");
+            return;
+        }
+
+        if (std.mem.eql(u8, sub, "list")) {
+            for (theme.themes) |entry| {
+                const marker: u8 = if (std.mem.eql(u8, entry.id, self.current_theme.id)) '*' else ' ';
+                try appendFmt(self.allocator, stdout_buffer, "{c} {s: <18} {s}\n", .{
+                    marker,
+                    entry.id,
+                    entry.name,
+                });
+            }
+            return;
+        }
+
+        if (theme.maybeByName(sub)) |selected| {
+            self.current_theme = selected;
+            try appendFmt(self.allocator, stdout_buffer, "{s} ({s})\n", .{ selected.id, selected.name });
+            return;
+        }
+
+        try appendFmt(self.allocator, stdout_buffer, "theme: unknown theme '{s}'. Run 'theme list' for known ids.\n", .{sub});
+        self.last_status = 2;
     }
 
     fn configCommand(self: *Shell, argv: []const []const u8, stdout_buffer: *std.ArrayList(u8)) !void {
@@ -4737,6 +4892,37 @@ fn appendTsvField(allocator: Allocator, buffer: *std.ArrayList(u8), value: []con
     }
 }
 
+/// Reverse `appendTsvField`. Unknown `\\X` sequences fall back to literal `X`
+/// rather than the escape — defensive when reading a possibly-edited history
+/// file. Caller owns the returned slice.
+fn unescapeTsvFieldAlloc(allocator: Allocator, value: []const u8) ![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(allocator);
+    var i: usize = 0;
+    while (i < value.len) : (i += 1) {
+        if (value[i] == '\\' and i + 1 < value.len) {
+            const escaped: u8 = switch (value[i + 1]) {
+                't' => '\t',
+                'n' => '\n',
+                'r' => '\r',
+                '\\' => '\\',
+                else => value[i + 1],
+            };
+            try out.append(allocator, escaped);
+            i += 1;
+            continue;
+        }
+        try out.append(allocator, value[i]);
+    }
+    return try out.toOwnedSlice(allocator);
+}
+
+/// JSON-encode a string value into `buffer`, including surrounding quotes.
+/// Escapes the four reserved control chars plus backspace/form-feed via their
+/// short forms (`\n`, `\r`, `\t`, `\b`, `\f`); every other byte below 0x20 is
+/// emitted as `\u00XX`. RFC 8259 requires all control characters be escaped;
+/// the previous implementation only handled `\n`, `\r`, `\t`, which produced
+/// invalid JSON for any value containing NUL, BEL, VT, etc.
 fn appendJsonString(allocator: Allocator, buffer: *std.ArrayList(u8), value: []const u8) !void {
     try buffer.append(allocator, '"');
     for (value) |c| {
@@ -4746,7 +4932,17 @@ fn appendJsonString(allocator: Allocator, buffer: *std.ArrayList(u8), value: []c
             '\n' => try buffer.appendSlice(allocator, "\\n"),
             '\r' => try buffer.appendSlice(allocator, "\\r"),
             '\t' => try buffer.appendSlice(allocator, "\\t"),
-            else => try buffer.append(allocator, c),
+            0x08 => try buffer.appendSlice(allocator, "\\b"),
+            0x0c => try buffer.appendSlice(allocator, "\\f"),
+            else => {
+                if (c < 0x20) {
+                    var hex: [6]u8 = undefined;
+                    const escaped = std.fmt.bufPrint(&hex, "\\u{x:0>4}", .{c}) catch unreachable;
+                    try buffer.appendSlice(allocator, escaped);
+                } else {
+                    try buffer.append(allocator, c);
+                }
+            },
         }
     }
     try buffer.append(allocator, '"');
@@ -4845,6 +5041,7 @@ fn isConfigDirective(command: []const u8) bool {
         std.mem.eql(u8, command, "export") or
         std.mem.eql(u8, command, "complete") or
         std.mem.eql(u8, command, "prompt") or
+        std.mem.eql(u8, command, "theme") or
         std.mem.eql(u8, command, "history");
 }
 
@@ -4977,6 +5174,7 @@ fn builtinDescription(name: []const u8) ?[]const u8 {
     if (std.mem.eql(u8, name, "repeat")) return "run a command multiple times";
     if (std.mem.eql(u8, name, "run")) return "run a project-aware task";
     if (std.mem.eql(u8, name, "source")) return "run commands from a file";
+    if (std.mem.eql(u8, name, "theme")) return "show or switch the active terminal theme";
     if (std.mem.eql(u8, name, "timeit")) return "time a command";
     if (std.mem.eql(u8, name, "type")) return "explain command resolution";
     if (std.mem.eql(u8, name, "unalias")) return "remove an alias";
@@ -5268,6 +5466,7 @@ const shell_builtin_names = [_][]const u8{
     "repeat",
     "run",
     "source",
+    "theme",
     "timeit",
     "up",
     "unset",
@@ -5441,6 +5640,7 @@ test "config directives and names" {
     try std.testing.expect(isConfigDirective("alias"));
     try std.testing.expect(isConfigDirective("complete"));
     try std.testing.expect(isConfigDirective("history"));
+    try std.testing.expect(isConfigDirective("theme"));
     try std.testing.expect(!isConfigDirective("rm"));
     try std.testing.expect(isValidName("ZIGGYZAG_1"));
     try std.testing.expect(!isValidName("1ZIGGYZAG"));
@@ -5575,6 +5775,145 @@ test "completer output line count is bounded" {
 
     try std.testing.expect(matches.items.len <= max_completer_output_lines);
     try std.testing.expectEqual(@as(usize, max_completer_output_lines), matches.items.len);
+}
+
+test "theme init reads ZIGGYZAG_THEME env var" {
+    var env = std.process.Environ.Map.init(std.testing.allocator);
+    defer env.deinit();
+    try env.put("ZIGGYZAG_THEME", "tokyo-night");
+
+    var shell = Shell.init(std.testing.allocator, undefined, &env);
+    defer shell.deinit();
+
+    try std.testing.expectEqualStrings("tokyo-night", shell.current_theme.id);
+    try std.testing.expectEqualStrings("Tokyo Night", shell.current_theme.name);
+}
+
+test "theme init falls back to ziggy when env unset or unknown" {
+    var env = std.process.Environ.Map.init(std.testing.allocator);
+    defer env.deinit();
+
+    var unset_shell = Shell.init(std.testing.allocator, undefined, &env);
+    defer unset_shell.deinit();
+    try std.testing.expectEqualStrings("ziggy", unset_shell.current_theme.id);
+
+    try env.put("ZIGGYZAG_THEME", "no-such-theme");
+    var unknown_shell = Shell.init(std.testing.allocator, undefined, &env);
+    defer unknown_shell.deinit();
+    try std.testing.expectEqualStrings("ziggy", unknown_shell.current_theme.id);
+}
+
+test "theme builtin reports current theme" {
+    var env = std.process.Environ.Map.init(std.testing.allocator);
+    defer env.deinit();
+    try env.put("ZIGGYZAG_THEME", "dracula");
+
+    var shell = Shell.init(std.testing.allocator, undefined, &env);
+    defer shell.deinit();
+
+    var output: std.ArrayList(u8) = .empty;
+    defer output.deinit(std.testing.allocator);
+    try shell.themeCommand(&.{"theme"}, &output);
+    try std.testing.expectEqualStrings("dracula (Dracula)\n", output.items);
+}
+
+test "theme builtin switches active theme and emits --json" {
+    var env = std.process.Environ.Map.init(std.testing.allocator);
+    defer env.deinit();
+
+    var shell = Shell.init(std.testing.allocator, undefined, &env);
+    defer shell.deinit();
+    try std.testing.expectEqualStrings("ziggy", shell.current_theme.id);
+
+    var output: std.ArrayList(u8) = .empty;
+    defer output.deinit(std.testing.allocator);
+
+    try shell.themeCommand(&.{ "theme", "nord" }, &output);
+    try std.testing.expectEqualStrings("nord", shell.current_theme.id);
+
+    output.clearRetainingCapacity();
+    try shell.themeCommand(&.{ "theme", "--json" }, &output);
+    try std.testing.expect(std.mem.indexOf(u8, output.items, "\"id\":\"nord\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output.items, "\"accent\":\"#88c0d0\"") != null);
+}
+
+test "theme builtin rejects unknown theme with status 2" {
+    var env = std.process.Environ.Map.init(std.testing.allocator);
+    defer env.deinit();
+
+    var shell = Shell.init(std.testing.allocator, undefined, &env);
+    defer shell.deinit();
+
+    var output: std.ArrayList(u8) = .empty;
+    defer output.deinit(std.testing.allocator);
+    try shell.themeCommand(&.{ "theme", "not-a-theme" }, &output);
+
+    try std.testing.expectEqual(@as(u8, 2), shell.last_status);
+    try std.testing.expect(std.mem.indexOf(u8, output.items, "unknown theme") != null);
+    try std.testing.expectEqualStrings("ziggy", shell.current_theme.id);
+}
+
+test "TSV field escape and unescape round-trip" {
+    // Regression for a bug where history metadata was written at exit but
+    // never read at startup. The fix added unescapeTsvFieldAlloc; this test
+    // pins the round-trip so future format changes can't silently break it.
+    const cases = [_][]const u8{
+        "simple",
+        "with\ttab",
+        "with\nnewline",
+        "with\rreturn",
+        "with\\backslash",
+        "mixed \\t\t\\n\n end",
+        "",
+        "/path/with spaces/and-symbols!@#$%^&*()",
+    };
+    for (cases) |input| {
+        var encoded: std.ArrayList(u8) = .empty;
+        defer encoded.deinit(std.testing.allocator);
+        try appendTsvField(std.testing.allocator, &encoded, input);
+        // Encoded form must contain neither a raw tab nor a raw newline.
+        try std.testing.expect(std.mem.indexOfScalar(u8, encoded.items, '\t') == null);
+        try std.testing.expect(std.mem.indexOfScalar(u8, encoded.items, '\n') == null);
+
+        const decoded = try unescapeTsvFieldAlloc(std.testing.allocator, encoded.items);
+        defer std.testing.allocator.free(decoded);
+        try std.testing.expectEqualStrings(input, decoded);
+    }
+}
+
+test "JSON encoder escapes all sub-0x20 control bytes" {
+    // Regression for a bug where appendJsonString only escaped \n, \r, \t and
+    // emitted raw NUL/BEL/VT bytes, producing invalid JSON.
+    var buffer: std.ArrayList(u8) = .empty;
+    defer buffer.deinit(std.testing.allocator);
+
+    try appendJsonString(std.testing.allocator, &buffer, "\x00\x01\x07\x0b\x1f");
+    try std.testing.expectEqualStrings("\"\\u0000\\u0001\\u0007\\u000b\\u001f\"", buffer.items);
+
+    buffer.clearRetainingCapacity();
+    try appendJsonString(std.testing.allocator, &buffer, "tab\there\nlinebreak\rback\x08space");
+    try std.testing.expectEqualStrings("\"tab\\there\\nlinebreak\\rback\\bspace\"", buffer.items);
+
+    buffer.clearRetainingCapacity();
+    try appendJsonString(std.testing.allocator, &buffer, "quote\"and\\slash");
+    try std.testing.expectEqualStrings("\"quote\\\"and\\\\slash\"", buffer.items);
+}
+
+test "theme builtin list marks the current selection" {
+    var env = std.process.Environ.Map.init(std.testing.allocator);
+    defer env.deinit();
+    try env.put("ZIGGYZAG_THEME", "gruvbox-dark");
+
+    var shell = Shell.init(std.testing.allocator, undefined, &env);
+    defer shell.deinit();
+
+    var output: std.ArrayList(u8) = .empty;
+    defer output.deinit(std.testing.allocator);
+    try shell.themeCommand(&.{ "theme", "list" }, &output);
+
+    try std.testing.expect(std.mem.indexOf(u8, output.items, "* gruvbox-dark") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output.items, "  ziggy") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output.items, "Tokyo Night") != null);
 }
 
 pub fn main(init_data: std.process.Init) !void {

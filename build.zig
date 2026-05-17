@@ -5,13 +5,26 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
+    // Shared theme module. The desktop host owns the theme registry; the shell
+    // imports it under the name "theme" so a single ZIGGYZAG_THEME env var
+    // drives prompt accents AND terminal palette without duplicating data.
+    // See docs/THEME_PROTOCOL.md.
+    const theme_module = b.createModule(.{
+        .root_source_file = b.path("apps/desktop/src/theme.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    const shell_module = b.createModule(.{
+        .root_source_file = b.path("apps/shell/src/main.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    shell_module.addImport("theme", theme_module);
+
     const exe = b.addExecutable(.{
         .name = "ziggyzag",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("apps/shell/src/main.zig"),
-            .target = target,
-            .optimize = optimize,
-        }),
+        .root_module = shell_module,
     });
 
     // This declares intent for the executable to be installed into the
@@ -99,12 +112,14 @@ pub fn build(b: *std.Build) void {
     const run_launcher_step = b.step("run-launcher", "Run the ZiggyZag launcher");
     run_launcher_step.dependOn(&run_launcher_cmd.step);
 
+    const shell_test_module = b.createModule(.{
+        .root_source_file = b.path("apps/shell/src/main.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    shell_test_module.addImport("theme", theme_module);
     const shell_tests = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("apps/shell/src/main.zig"),
-            .target = target,
-            .optimize = optimize,
-        }),
+        .root_module = shell_test_module,
     });
     const run_shell_tests = b.addRunArtifact(shell_tests);
     const desktop_tests = b.addTest(.{

@@ -1,0 +1,121 @@
+<svg width="1100" height="620" viewBox="0 0 1100 620" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+  <title id="title">AgentD approval flow</title>
+  <desc id="desc">A terminal window with an AgentD side panel preparing to write to the active PTY, with an explicit approval prompt before any bytes are sent.</desc>
+  <defs>
+    <linearGradient id="agent-bg" x1="0" y1="0" x2="1100" y2="620" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#0c0e11"/>
+      <stop offset="1" stop-color="#15181b"/>
+    </linearGradient>
+    <linearGradient id="agent-violet" x1="0" y1="0" x2="320" y2="0" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#cf9bff"/>
+      <stop offset="1" stop-color="#8b5cf6"/>
+    </linearGradient>
+    <linearGradient id="agent-accent" x1="0" y1="0" x2="1100" y2="0" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#f7a41d"/>
+      <stop offset="0.5" stop-color="#35d0ba"/>
+      <stop offset="1" stop-color="#8b5cf6"/>
+    </linearGradient>
+    <filter id="agent-shadow" x="-10%" y="-10%" width="120%" height="120%">
+      <feGaussianBlur stdDeviation="14" in="SourceAlpha"/>
+      <feOffset dy="12"/>
+      <feComponentTransfer><feFuncA type="linear" slope="0.5"/></feComponentTransfer>
+      <feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <clipPath id="agent-pane-clip">
+      <rect x="60" y="120" width="600" height="440" rx="14"/>
+    </clipPath>
+    <clipPath id="agent-side-clip">
+      <rect x="680" y="120" width="360" height="440" rx="14"/>
+    </clipPath>
+  </defs>
+
+  <rect width="1100" height="620" fill="url(#agent-bg)"/>
+
+  <!-- Brand corner mark -->
+  <g transform="translate(60 36) scale(0.12)" opacity="0.95">
+    <rect x="42" y="54" width="428" height="404" rx="38" fill="#191c1d" stroke="#2b3447" stroke-width="12"/>
+    <path d="M138 180H354L228 296H366L366 336H150L276 220H138V180Z" fill="url(#agent-accent)"/>
+  </g>
+  <text x="120" y="80" font-family="Inter, system-ui, sans-serif" font-size="22" font-weight="700" fill="#eef2e2" letter-spacing="-0.5">ZiggyZag · AgentD</text>
+  <text x="120" y="102" font-family="Inter, system-ui, sans-serif" font-size="14" font-weight="500" fill="#6a7072">Approval is sacred — every write requires a Yes</text>
+
+  <!-- ============ Terminal pane (left) ============ -->
+  <rect x="60" y="120" width="600" height="440" rx="14" fill="#111315" stroke="#2b3447" stroke-width="1" filter="url(#agent-shadow)"/>
+  <rect x="60" y="120" width="600" height="40" rx="14" fill="#191c1d"/>
+  <rect x="60" y="148" width="600" height="12" fill="#191c1d"/>
+  <circle cx="86" cy="140" r="6" fill="#ff6b6b"/>
+  <circle cx="106" cy="140" r="6" fill="#ffd166"/>
+  <circle cx="126" cy="140" r="6" fill="#35d0ba"/>
+  <text x="360" y="145" text-anchor="middle" font-family="Inter, system-ui, sans-serif" font-size="13" font-weight="500" fill="#6a7072">ziggyzag — ~/dev/ZiggyZag</text>
+
+  <g clip-path="url(#agent-pane-clip)">
+    <g font-family="'Cascadia Mono', 'JetBrains Mono', Menlo, Consolas, monospace" font-size="14">
+      <text x="84" y="200" fill="#9be28f">ziggy</text>
+      <text x="132" y="200" fill="#7ab7ff">~/dev/ZiggyZag</text>
+      <text x="280" y="200" fill="#cf9bff">git:master</text>
+      <text x="84" y="220" fill="#eef2e2">❯ git status --short</text>
+      <text x="84" y="244" fill="#6a7072"> M apps/agentd/src/tools.zig</text>
+      <text x="84" y="262" fill="#6a7072"> M apps/shell/src/main.zig</text>
+      <text x="84" y="280" fill="#6a7072">?? docs/reference/accessibility.md</text>
+
+      <text x="84" y="312" fill="#9be28f">ziggy</text>
+      <text x="132" y="312" fill="#7ab7ff">~/dev/ZiggyZag</text>
+      <text x="280" y="312" fill="#cf9bff">git:master</text>
+      <text x="84" y="332" fill="#eef2e2">❯ </text>
+
+      <!-- AgentD-prepared command waiting for approval -->
+      <text x="100" y="332" fill="#6a7072" font-style="italic">git add -A &amp;&amp; git commit -m "wave 2 polish"</text>
+      <rect x="98" y="318" width="382" height="20" fill="none" stroke="#cf9bff" stroke-width="1" stroke-dasharray="3 2" rx="2"/>
+
+      <text x="84" y="370" fill="#cf9bff" font-size="12">↑ proposed by AgentD · not yet executed</text>
+    </g>
+  </g>
+
+  <!-- ============ AgentD side panel (right) ============ -->
+  <rect x="680" y="120" width="360" height="440" rx="14" fill="#13131a" stroke="#2b3447" stroke-width="1" filter="url(#agent-shadow)"/>
+  <rect x="680" y="120" width="360" height="40" rx="14" fill="#1a1622"/>
+  <rect x="680" y="148" width="360" height="12" fill="#1a1622"/>
+  <text x="704" y="146" font-family="Inter, system-ui, sans-serif" font-size="13" font-weight="700" fill="#cf9bff" letter-spacing="0.4">◆ AGENTD</text>
+  <text x="1020" y="146" text-anchor="end" font-family="Inter, system-ui, sans-serif" font-size="12" font-weight="500" fill="#6a7072">ollama · llama3.2</text>
+
+  <g clip-path="url(#agent-side-clip)">
+    <g font-family="Inter, system-ui, sans-serif" font-size="13" fill="#eef2e2">
+      <!-- Transcript -->
+      <text x="704" y="200" fill="#6a7072" font-size="11">10:42:17  user</text>
+      <text x="704" y="220" font-weight="500">commit these changes with a one-line message</text>
+
+      <text x="704" y="252" fill="#6a7072" font-size="11">10:42:18  agentd</text>
+      <text x="704" y="272" font-weight="500" fill="#a5b4c6">I'll stage every change and commit. Let me</text>
+      <text x="704" y="290" font-weight="500" fill="#a5b4c6">request approval to write to the terminal.</text>
+
+      <!-- Tool call card -->
+      <rect x="704" y="312" width="316" height="142" rx="10" fill="#1a1c24" stroke="#2b3447"/>
+      <text x="720" y="334" font-family="'Cascadia Mono', monospace" font-size="11" fill="#cf9bff" font-weight="700">tools/call · terminal.write</text>
+      <line x1="720" y1="342" x2="1004" y2="342" stroke="#2b3447"/>
+      <text x="720" y="360" font-family="Inter, system-ui, sans-serif" font-size="11" fill="#6a7072">approval</text>
+      <text x="1004" y="360" text-anchor="end" font-family="Inter, system-ui, sans-serif" font-size="11" font-weight="600" fill="#f2cd76">ask</text>
+      <text x="720" y="378" font-family="Inter, system-ui, sans-serif" font-size="11" fill="#6a7072">effect</text>
+      <text x="1004" y="378" text-anchor="end" font-family="Inter, system-ui, sans-serif" font-size="11" font-weight="600" fill="#eef2e2">write_terminal_input</text>
+      <text x="720" y="396" font-family="Inter, system-ui, sans-serif" font-size="11" fill="#6a7072">preview</text>
+      <text x="720" y="416" font-family="'Cascadia Mono', monospace" font-size="11" fill="#eef2e2">git add -A &amp;&amp; git commit</text>
+      <text x="720" y="432" font-family="'Cascadia Mono', monospace" font-size="11" fill="#eef2e2">  -m "wave 2 polish"</text>
+
+      <!-- Approve / deny buttons -->
+      <g>
+        <rect x="704" y="476" width="100" height="36" rx="8" fill="#9be28f"/>
+        <text x="754" y="500" text-anchor="middle" font-family="Inter, system-ui, sans-serif" font-size="13" font-weight="700" fill="#0c0e11">Approve</text>
+        <rect x="816" y="476" width="100" height="36" rx="8" fill="#1a1c24" stroke="#2b3447"/>
+        <text x="866" y="500" text-anchor="middle" font-family="Inter, system-ui, sans-serif" font-size="13" font-weight="700" fill="#eef2e2">Deny</text>
+        <text x="924" y="500" font-family="Inter, system-ui, sans-serif" font-size="11" fill="#6a7072">A / D</text>
+      </g>
+
+      <text x="704" y="534" font-size="11" fill="#6a7072">audit: write_terminal_input · approval_required</text>
+    </g>
+  </g>
+
+  <!-- Connecting arrow showing approval flow -->
+  <path d="M676 380 L685 380" stroke="#cf9bff" stroke-width="2" stroke-linecap="round"/>
+  <path d="M660 380 L676 380" stroke="#cf9bff" stroke-width="2" stroke-linecap="round" stroke-dasharray="2 2" opacity="0.5"/>
+
+  <text x="550" y="600" text-anchor="middle" font-family="Inter, system-ui, sans-serif" font-size="13" fill="#6a7072">AgentD never writes to the terminal without an explicit Approve. The shell pane stays a preview until then.</text>
+</svg>

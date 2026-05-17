@@ -1,0 +1,101 @@
+<svg width="1100" height="620" viewBox="0 0 1100 620" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+  <title id="title">ZiggyZag shell prompt themes</title>
+  <desc id="desc">Five shell prompt modes — classic, smart, compact, dev, dashboard — shown side-by-side with the same command running through each.</desc>
+  <defs>
+    <linearGradient id="pt-bg" x1="0" y1="0" x2="1100" y2="620" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#0c0e11"/>
+      <stop offset="1" stop-color="#15181b"/>
+    </linearGradient>
+    <linearGradient id="pt-accent" x1="0" y1="0" x2="1100" y2="0" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#f7a41d"/>
+      <stop offset="0.5" stop-color="#35d0ba"/>
+      <stop offset="1" stop-color="#8b5cf6"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="1100" height="620" fill="url(#pt-bg)"/>
+
+  <!-- Brand corner -->
+  <g transform="translate(60 36) scale(0.12)" opacity="0.95">
+    <rect x="42" y="54" width="428" height="404" rx="38" fill="#191c1d" stroke="#2b3447" stroke-width="12"/>
+    <path d="M138 180H354L228 296H366L366 336H150L276 220H138V180Z" fill="url(#pt-accent)"/>
+  </g>
+  <text x="120" y="80" font-family="Inter, system-ui, sans-serif" font-size="22" font-weight="700" fill="#eef2e2" letter-spacing="-0.5">Shell prompt themes</text>
+  <text x="120" y="102" font-family="Inter, system-ui, sans-serif" font-size="14" font-weight="500" fill="#6a7072">Five modes · same command, different prompt</text>
+
+  <!-- Common style for prompt cards -->
+  <style>
+    .card { fill: #111315; stroke: #2b3447; stroke-width: 1; }
+    .label { font-family: Inter, system-ui, sans-serif; font-size: 11px; font-weight: 700; letter-spacing: 0.4px; fill: #6a7072; }
+    .mono { font-family: 'Cascadia Mono','JetBrains Mono', Menlo, Consolas, monospace; font-size: 14px; }
+    .arrow { fill: #b6f09c; }
+    .dim { fill: #6a7072; }
+    .out { fill: #a5b4c6; }
+  </style>
+
+  <!-- Classic -->
+  <g transform="translate(60 140)">
+    <rect class="card" width="980" height="80" rx="10"/>
+    <text class="label" x="20" y="22">CLASSIC</text>
+    <text class="mono" x="20" y="50" fill="#eef2e2">$ <tspan fill="#eef2e2">echo hello</tspan></text>
+    <text class="mono out" x="20" y="70">hello</text>
+  </g>
+
+  <!-- Compact -->
+  <g transform="translate(60 240)">
+    <rect class="card" width="980" height="80" rx="10"/>
+    <text class="label" x="20" y="22">COMPACT</text>
+    <text class="mono" x="20" y="50">
+      <tspan fill="#7ab7ff">ZiggyZag</tspan><tspan fill="#6a7072"> </tspan><tspan class="arrow">❯</tspan><tspan fill="#eef2e2"> echo hello</tspan>
+    </text>
+    <text class="mono out" x="20" y="70">hello</text>
+  </g>
+
+  <!-- Smart -->
+  <g transform="translate(60 340)">
+    <rect class="card" width="980" height="80" rx="10"/>
+    <text class="label" x="20" y="22">SMART</text>
+    <text class="mono" x="20" y="50">
+      <tspan fill="#9be28f">ziggy</tspan>
+      <tspan fill="#6a7072"> in </tspan>
+      <tspan fill="#7ab7ff">~/dev/ZiggyZag</tspan>
+      <tspan fill="#6a7072"> on </tspan>
+      <tspan fill="#cf9bff">git:master</tspan>
+    </text>
+    <text class="mono" x="20" y="68"><tspan class="arrow">❯</tspan> <tspan fill="#eef2e2">echo hello</tspan></text>
+  </g>
+
+  <!-- Dev -->
+  <g transform="translate(60 440)">
+    <rect class="card" width="980" height="80" rx="10"/>
+    <text class="label" x="20" y="22">DEV</text>
+    <text class="mono" x="20" y="48">
+      <tspan fill="#9be28f">ziggy</tspan>
+      <tspan fill="#6a7072"> · </tspan>
+      <tspan fill="#7ab7ff">~/dev/ZiggyZag</tspan>
+      <tspan fill="#6a7072"> · </tspan>
+      <tspan fill="#cf9bff">git:master</tspan>
+      <tspan fill="#6a7072"> · </tspan>
+      <tspan fill="#f2cd76">±3 ↑2</tspan>
+      <tspan fill="#6a7072"> · </tspan>
+      <tspan fill="#9be28f">project:zig</tspan>
+      <tspan fill="#6a7072"> · </tspan>
+      <tspan fill="#9be28f">ok</tspan>
+      <tspan fill="#6a7072"> · </tspan>
+      <tspan fill="#9be28f">42ms</tspan>
+    </text>
+    <text class="mono" x="20" y="70"><tspan fill="#9be28f">dev</tspan> <tspan fill="#6a7072">$</tspan> <tspan fill="#eef2e2">echo hello</tspan></text>
+  </g>
+
+  <!-- Dashboard -->
+  <g transform="translate(60 540)">
+    <rect class="card" width="980" height="56" rx="10"/>
+    <text class="label" x="20" y="22">DASHBOARD</text>
+    <text class="mono" x="20" y="44">
+      <tspan fill="#6a7072">[ </tspan><tspan fill="#9be28f">ziggy</tspan><tspan fill="#6a7072"> | </tspan><tspan fill="#7ab7ff">~/dev/ZiggyZag</tspan><tspan fill="#6a7072"> | </tspan><tspan fill="#cf9bff">git:master ±3 ↑2</tspan><tspan fill="#6a7072"> | </tspan><tspan fill="#9be28f">project:zig (build test run fmt)</tspan><tspan fill="#6a7072"> | </tspan><tspan fill="#9be28f">ok 42ms</tspan><tspan fill="#6a7072"> | </tspan><tspan fill="#f2cd76">jobs:1</tspan><tspan fill="#6a7072"> ]</tspan>
+    </text>
+  </g>
+
+  <!-- Footer -->
+  <text x="550" y="600" text-anchor="middle" font-family="Inter, system-ui, sans-serif" font-size="13" fill="#6a7072">`prompt themes` lists them · `prompt dev` switches · slash shortcuts: /smart, /compact, /dev, /dashboard.</text>
+</svg>
