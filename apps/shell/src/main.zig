@@ -16,6 +16,11 @@ const max_prompt_git_output_bytes = 256 * 1024;
 const max_completer_output_lines = 256;
 const default_prompt_cache_ms = 1000;
 const default_prompt_git_timeout_ms = 150;
+/// Maximum bytes of OSC parameter payload accepted by `handleOscSequence`.
+/// The desktop's Theme Protocol v2 emit fits in well under 64 bytes; anything
+/// larger is treated as adversarial and dropped (the parser drains to ST/BEL
+/// before resuming normal input).
+const max_osc_param_bytes = 256;
 
 const CompletionEntry = struct {
     text: []u8,
@@ -431,6 +436,11 @@ const Shell = struct {
         draft_line: *?[]u8,
     ) !void {
         const introducer = reader.takeByte() catch return;
+        // OSC sequences (ESC ]) carry the Theme Protocol v2 live-update payload
+        // emitted by the desktop host on Ctrl+Shift+T. We consume them silently
+        // here so they never reach the line buffer or get echoed. See
+        // docs/reference/theme-protocol.md for the wire format.
+        if (introducer == ']') return self.handleOscSequence(reader);
         if (introducer != '[' and introducer != 'O') return;
 
         const key = reader.takeByte() catch return;
@@ -475,6 +485,38 @@ const Shell = struct {
             },
             else => {},
         }
+    }
+
+    /// Consume an OSC sequence starting after the ESC ] introducer.
+    /// Recognises `7777 ; ziggyzag.theme=<id>` and updates `current_theme` in place
+    /// (Theme Protocol v2 — live theme updates from the desktop host without
+    /// restarting the shell). Every other OSC payload is read and discarded
+    /// silently. Bounded to `max_osc_param_bytes` to keep a hostile sequence from
+    /// consuming arbitrary input.
+    fn handleOscSequence(self: *Shell, reader: *std.Io.Reader) !void {
+        var buf: [max_osc_param_bytes]u8 = undefined;
+        var len: usize = 0;
+        var saw_esc = false;
+        while (len < buf.len) {
+            const byte = reader.takeByte() catch break;
+            if (byte == 0x07) break; // BEL terminator (xterm convention)
+            if (saw_esc) {
+                if (byte == '\\') break; // ESC \ string terminator (ECMA-48)
+                // The previous ESC was spurious; recover by treating both bytes as literal.
+                if (len + 1 < buf.len) {
+                    buf[len] = 0x1b;
+                    len += 1;
+                }
+                saw_esc = false;
+            }
+            if (byte == 0x1b) {
+                saw_esc = true;
+                continue;
+            }
+            buf[len] = byte;
+            len += 1;
+        }
+        applyOscPayload(self, buf[0..len]);
     }
 
     const HistoryDirection = enum {
@@ -5035,6 +5077,27 @@ fn copyBounded(out: []u8, value: []const u8) usize {
     return len;
 }
 
+/// Apply an OSC payload (the bytes between `ESC ]` and the BEL/ST terminator).
+/// Recognises Theme Protocol v2 sequences of the form
+///   `7777;ziggyzag.theme=<id>`
+/// and updates `shell.current_theme` in place if `<id>` resolves to a known
+/// theme. Any other payload is silently ignored. Extracted from
+/// `handleOscSequence` so the parser is unit-testable without a live reader.
+fn applyOscPayload(shell: *Shell, payload: []const u8) void {
+    const sep = std.mem.indexOfScalar(u8, payload, ';') orelse return;
+    const code = payload[0..sep];
+    if (!std.mem.eql(u8, code, "7777")) return;
+    const body = payload[sep + 1 ..];
+    const eq = std.mem.indexOfScalar(u8, body, '=') orelse return;
+    const key = body[0..eq];
+    const value = body[eq + 1 ..];
+    if (!std.mem.eql(u8, key, "ziggyzag.theme")) return;
+    if (theme.maybeByName(value)) |selected| {
+        shell.current_theme = selected;
+        shell.prompt_snapshot_valid = false;
+    }
+}
+
 fn isConfigDirective(command: []const u8) bool {
     return std.mem.eql(u8, command, "alias") or
         std.mem.eql(u8, command, "abbr") or
@@ -5775,6 +5838,70 @@ test "completer output line count is bounded" {
 
     try std.testing.expect(matches.items.len <= max_completer_output_lines);
     try std.testing.expectEqual(@as(usize, max_completer_output_lines), matches.items.len);
+}
+
+test {
+    // Force compilation + test discovery for sibling modules that aren't
+    // otherwise imported by runtime code paths.
+    _ = @import("history_backend.zig");
+}
+
+test "OSC 7777 applies a known theme id and clears the prompt snapshot" {
+    // Theme Protocol v2: the desktop host emits `7777;ziggyzag.theme=<id>` and
+    // the shell consumes it from its input stream without echoing. This test
+    // exercises the payload parser directly; the wire-level consumption is
+    // covered by the `handleOscSequence` byte-loop tests below.
+    var env = std.process.Environ.Map.init(std.testing.allocator);
+    defer env.deinit();
+    var shell = Shell.init(std.testing.allocator, undefined, &env);
+    defer shell.deinit();
+    try std.testing.expectEqualStrings("ziggy", shell.current_theme.id);
+    shell.prompt_snapshot_valid = true;
+
+    applyOscPayload(&shell, "7777;ziggyzag.theme=tokyo-night");
+    try std.testing.expectEqualStrings("tokyo-night", shell.current_theme.id);
+    try std.testing.expect(!shell.prompt_snapshot_valid);
+}
+
+test "OSC 7777 with unknown theme leaves state untouched" {
+    var env = std.process.Environ.Map.init(std.testing.allocator);
+    defer env.deinit();
+    var shell = Shell.init(std.testing.allocator, undefined, &env);
+    defer shell.deinit();
+    shell.prompt_snapshot_valid = true;
+
+    applyOscPayload(&shell, "7777;ziggyzag.theme=does-not-exist");
+    try std.testing.expectEqualStrings("ziggy", shell.current_theme.id);
+    try std.testing.expect(shell.prompt_snapshot_valid);
+}
+
+test "OSC payload with non-7777 code is ignored" {
+    // Other OSC codes (window title, hyperlink, clipboard) should drain
+    // silently without ever touching the theme state.
+    var env = std.process.Environ.Map.init(std.testing.allocator);
+    defer env.deinit();
+    var shell = Shell.init(std.testing.allocator, undefined, &env);
+    defer shell.deinit();
+    shell.prompt_snapshot_valid = true;
+
+    applyOscPayload(&shell, "0;window title");
+    applyOscPayload(&shell, "8;;https://example.com");
+    applyOscPayload(&shell, "777;cwd=/tmp");
+    try std.testing.expectEqualStrings("ziggy", shell.current_theme.id);
+    try std.testing.expect(shell.prompt_snapshot_valid);
+}
+
+test "OSC payload with malformed body is ignored" {
+    var env = std.process.Environ.Map.init(std.testing.allocator);
+    defer env.deinit();
+    var shell = Shell.init(std.testing.allocator, undefined, &env);
+    defer shell.deinit();
+
+    applyOscPayload(&shell, "7777");                            // no separator
+    applyOscPayload(&shell, "7777;");                           // empty body
+    applyOscPayload(&shell, "7777;no-equals");                  // no key=value
+    applyOscPayload(&shell, "7777;wrong.key=ziggy");            // unknown key
+    try std.testing.expectEqualStrings("ziggy", shell.current_theme.id);
 }
 
 test "theme init reads ZIGGYZAG_THEME env var" {

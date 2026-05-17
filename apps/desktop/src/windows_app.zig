@@ -1260,6 +1260,30 @@ const App = struct {
         self.selected_theme = theme.next(self.selected_theme);
         self.config.selected_theme = self.selected_theme;
         self.rebuildThemeBrushes();
+        // Theme Protocol v2: broadcast the new theme id to every live pane via
+        // OSC 7777 (`ESC ] 7777 ; ziggyzag.theme=<id> BEL`). The shell's input
+        // reader consumes the sequence silently and re-renders its next prompt
+        // with the new accent. See docs/reference/theme-protocol.md.
+        self.broadcastThemeOsc();
+    }
+
+    /// Write the OSC 7777 theme-update sequence into every live pane's PTY
+    /// input. Bytes are written best-effort — a failed `WriteFile` on one pane
+    /// does not stop the broadcast to the others.
+    fn broadcastThemeOsc(self: *App) void {
+        var buf: [128]u8 = undefined;
+        const payload = std.fmt.bufPrint(
+            &buf,
+            "\x1b]7777;ziggyzag.theme={s}\x07",
+            .{self.selected_theme.id},
+        ) catch return;
+        for (self.panes) |pane_or_null| {
+            if (pane_or_null) |pane| {
+                const handle = pane.input_write orelse continue;
+                var written: DWORD = 0;
+                _ = WriteFile(handle, payload.ptr, @intCast(payload.len), &written, null);
+            }
+        }
     }
 
     fn reloadDesktopConfig(self: *App, hwnd: HWND) void {

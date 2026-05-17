@@ -14,6 +14,21 @@ pub fn run(init_data: std.process.Init) !void {
     var stderr = std.Io.File.stderr().writer(init_data.io, &stderr_buffer);
     defer stderr.interface.flush() catch {};
 
+    // Opt-in Wave 3 native graphical host. When `ZIGGYZAG_NATIVE_WINDOW` is
+    // set in the environment, try the native window path first; on failure we
+    // log to stderr and fall through to the existing terminal-attached
+    // launcher below. The default path is unchanged.
+    if (init_data.environ_map.get("ZIGGYZAG_NATIVE_WINDOW")) |_| {
+        runNativeWindow(init_data) catch |native_err| {
+            stderr.interface.print(
+                \\ZiggyZag: native window host unavailable: {s}
+                \\Falling back to the terminal-attached launcher.
+                \\
+            , .{@errorName(native_err)}) catch {};
+            stderr.interface.flush() catch {};
+        };
+    }
+
     const shell_path = resolveShellPath(allocator, init_data.io, init_data.environ_map) catch |err| {
         try stderr.interface.print(
             \\ZiggyZag Desktop ({s})
@@ -440,4 +455,31 @@ test "shell path validation rejects empty and nul bytes" {
 
 test "term status maps exited code" {
     try std.testing.expectEqual(@as(u8, 7), termExitCode(.{ .exited = 7 }));
+}
+
+// ---------------------------------------------------------------------------
+// Wave 3 scaffold: native window host
+// ---------------------------------------------------------------------------
+
+// Wave 3: native macOS / Linux graphical host.
+// Implementation paths:
+//   - Linux: X11 via Xlib extern declarations, or Wayland via libwayland-client
+//   - macOS: Cocoa via Objective-C bridging or NSWindow direct calls
+// Both need real Pty backend implementations in pty.zig first.
+//
+// Until those land this entry point returns error.NotImplemented so the
+// terminal-attached launcher in `run()` remains the only working path. The
+// opt-in env var (`ZIGGYZAG_NATIVE_WINDOW`) lets us prototype the host without
+// disturbing the default user experience: failure falls through to the
+// existing PTY path with a one-line stderr note.
+pub fn runNativeWindow(init_data: std.process.Init) !void {
+    _ = init_data;
+    return error.NotImplemented;
+}
+
+test "runNativeWindow scaffold returns NotImplemented" {
+    // Build a minimal Init shape; the function ignores it today, so an
+    // undefined value is acceptable for the scaffold-shape test.
+    const init_data: std.process.Init = undefined;
+    try std.testing.expectError(error.NotImplemented, runNativeWindow(init_data));
 }
