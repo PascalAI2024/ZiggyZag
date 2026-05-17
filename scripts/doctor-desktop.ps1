@@ -65,10 +65,10 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-function Write-Ok($msg)    { Write-Host "  ✓ $msg" -ForegroundColor Green }
+function Write-Ok($msg)    { Write-Host "  [OK] $msg" -ForegroundColor Green }
 function Write-Info($msg)  { Write-Host "  - $msg" -ForegroundColor Gray }
 function Write-Warn($msg)  { Write-Host "  ! $msg" -ForegroundColor Yellow }
-function Write-Bad($msg)   { Write-Host "  ✗ $msg" -ForegroundColor Red }
+function Write-Bad($msg)   { Write-Host "  [!!] $msg" -ForegroundColor Red }
 function Write-Section($msg) { Write-Host ""; Write-Host $msg -ForegroundColor White }
 
 # Resolve repo root from the script location.
@@ -228,9 +228,9 @@ if (-not $anyEnv) { Write-Info "No ZiggyZag environment overrides set." }
 Write-Section "Summary"
 
 if ($problemsFound -eq 0) {
-    Write-Host "  ✓ ZiggyZag desktop is healthy." -ForegroundColor Green
+    Write-Host "  [OK] ZiggyZag desktop is healthy." -ForegroundColor Green
 } elseif ($repairsMade -gt 0 -and -not $DryRun) {
-    Write-Host "  ✓ Found $problemsFound issue(s); repaired $repairsMade in desktop.conf." -ForegroundColor Green
+    Write-Host "  [OK] Found $problemsFound issue(s); repaired $repairsMade in desktop.conf." -ForegroundColor Green
     Write-Host "    Remaining issues need manual action (see warnings above)." -ForegroundColor Yellow
 } else {
     Write-Host "  ! Found $problemsFound issue(s). See above for fixes." -ForegroundColor Yellow
