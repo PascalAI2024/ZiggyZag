@@ -3,6 +3,7 @@ const desktop_config = @import("config.zig");
 const integration = @import("integration.zig");
 const terminal = @import("terminal.zig");
 const theme = @import("theme.zig");
+const pty_module = @import("pty.zig");
 
 const Allocator = std.mem.Allocator;
 const win = std.os.windows;
@@ -17,7 +18,6 @@ const LONG = i32;
 const LPARAM = isize;
 const WPARAM = usize;
 const LRESULT = isize;
-const HRESULT = i32;
 const COLORREF = u32;
 const HANDLE = win.HANDLE;
 const HWND = ?*anyopaque;
@@ -30,10 +30,7 @@ const HGDIOBJ = ?*anyopaque;
 const HDC = ?*anyopaque;
 const HMENU = ?*anyopaque;
 const HGLOBAL = ?*anyopaque;
-const HPCON = HANDLE;
 const LPVOID = ?*anyopaque;
-const LPCVOID = ?*const anyopaque;
-const LPWSTR = [*:0]WCHAR;
 const LPCWSTR = [*:0]const WCHAR;
 
 const WM_DESTROY = 0x0002;
@@ -92,23 +89,12 @@ const CLIP_DEFAULT_PRECIS = 0;
 const CLEARTYPE_QUALITY = 5;
 const FIXED_PITCH = 1;
 const FF_MODERN = 48;
-const EXTENDED_STARTUPINFO_PRESENT: DWORD = 0x00080000;
-const CREATE_NO_WINDOW: DWORD = 0x08000000;
-/// Required when `lpEnvironment` points at a UTF-16 environment block. Without
-/// this flag, `CreateProcessW` interprets the block as ANSI, sees every other
-/// byte as NUL, and returns `ERROR_INVALID_PARAMETER` (87). Diagnosed via the
-/// 2026-05-17 Windows debug session — see docs/reviews/2026-05-17-windows-debug.md.
-const CREATE_UNICODE_ENVIRONMENT: DWORD = 0x00000400;
-const PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE: usize = 0x00020016;
 const CF_UNICODETEXT = 13;
 const GMEM_MOVEABLE = 0x0002;
 const WHEEL_DELTA = 120;
 const MAX_PASTE_BYTES = 64 * 1024;
 const AGENT_TRANSCRIPT_BYTES = 12 * 1024;
 const AGENT_PENDING_WRITE_BYTES = 1024;
-const WAIT_TIMEOUT: DWORD = 0x00000102;
-const CHILD_SHUTDOWN_GRACE_MS: DWORD = 750;
-const CHILD_SHUTDOWN_KILL_GRACE_MS: DWORD = 250;
 const MAX_PANES = 6;
 const MIN_PANE_COLS = 20;
 const MIN_PANE_ROWS = 5;
@@ -191,31 +177,11 @@ const TEXTMETRICW = extern struct {
     tmCharSet: BYTE,
 };
 
-const STARTUPINFOEXW = extern struct {
-    StartupInfo: win.STARTUPINFOW,
-    lpAttributeList: LPVOID,
-};
-
-extern "kernel32" fn CreatePipe(read_pipe: *HANDLE, write_pipe: *HANDLE, attrs: ?*win.SECURITY_ATTRIBUTES, size: DWORD) callconv(.winapi) BOOL;
-extern "kernel32" fn ReadFile(file: HANDLE, buffer: LPVOID, bytes_to_read: DWORD, bytes_read: *DWORD, overlapped: LPVOID) callconv(.winapi) BOOL;
-extern "kernel32" fn WriteFile(file: HANDLE, buffer: LPCVOID, bytes_to_write: DWORD, bytes_written: *DWORD, overlapped: LPVOID) callconv(.winapi) BOOL;
-extern "kernel32" fn PeekNamedPipe(file: HANDLE, buffer: LPVOID, buffer_size: DWORD, bytes_read: ?*DWORD, total_available: ?*DWORD, bytes_left_this_message: ?*DWORD) callconv(.winapi) BOOL;
 extern "kernel32" fn Sleep(milliseconds: DWORD) callconv(.winapi) void;
-extern "kernel32" fn GetLastError() callconv(.winapi) DWORD;
-extern "kernel32" fn CloseHandle(handle: HANDLE) callconv(.winapi) BOOL;
 extern "kernel32" fn GlobalAlloc(flags: UINT, bytes: usize) callconv(.winapi) HGLOBAL;
 extern "kernel32" fn GlobalLock(memory: HGLOBAL) callconv(.winapi) LPVOID;
 extern "kernel32" fn GlobalUnlock(memory: HGLOBAL) callconv(.winapi) BOOL;
 extern "kernel32" fn GlobalFree(memory: HGLOBAL) callconv(.winapi) HGLOBAL;
-extern "kernel32" fn WaitForSingleObject(handle: HANDLE, milliseconds: DWORD) callconv(.winapi) DWORD;
-extern "kernel32" fn TerminateProcess(handle: HANDLE, exit_code: UINT) callconv(.winapi) BOOL;
-extern "kernel32" fn CreatePseudoConsole(size: COORD, input: HANDLE, output: HANDLE, flags: DWORD, pseudoconsole: *HPCON) callconv(.winapi) HRESULT;
-extern "kernel32" fn ResizePseudoConsole(pseudoconsole: HPCON, size: COORD) callconv(.winapi) HRESULT;
-extern "kernel32" fn ClosePseudoConsole(pseudoconsole: HPCON) callconv(.winapi) void;
-extern "kernel32" fn InitializeProcThreadAttributeList(list: LPVOID, count: DWORD, flags: DWORD, size: *usize) callconv(.winapi) BOOL;
-extern "kernel32" fn UpdateProcThreadAttribute(list: LPVOID, flags: DWORD, attribute: usize, value: LPVOID, size: usize, previous: LPVOID, return_size: ?*usize) callconv(.winapi) BOOL;
-extern "kernel32" fn DeleteProcThreadAttributeList(list: LPVOID) callconv(.winapi) void;
-extern "kernel32" fn CreateProcessW(app_name: ?LPCWSTR, command_line: ?LPWSTR, proc_attrs: ?*win.SECURITY_ATTRIBUTES, thread_attrs: ?*win.SECURITY_ATTRIBUTES, inherit_handles: BOOL, flags: DWORD, environment: ?[*:0]const WCHAR, cwd: ?LPCWSTR, startup_info: *win.STARTUPINFOW, process_info: *win.PROCESS.INFORMATION) callconv(.winapi) BOOL;
 
 extern "user32" fn GetModuleHandleW(name: ?LPCWSTR) callconv(.winapi) HINSTANCE;
 extern "user32" fn RegisterClassExW(class: *const WNDCLASSEXW) callconv(.winapi) WORD;
@@ -423,10 +389,8 @@ const SplitOrientation = enum {
 
 const Pane = struct {
     grid: terminal.Grid,
-    input_write: ?HANDLE = null,
-    output_read: ?HANDLE = null,
-    pseudoconsole: ?HPCON = null,
-    process_info: ?win.PROCESS.INFORMATION = null,
+    /// Nil until a PTY is successfully spawned; set to null again after deinit.
+    pty: ?pty_module.Pty = null,
     reader_thread: ?std.Thread = null,
     status: Status = .{},
     scroll_offset: usize = 0,
@@ -702,37 +666,17 @@ const App = struct {
         const shell_path = try self.resolveShellPath();
         defer self.allocator.free(shell_path);
 
-        var pty_input_read: HANDLE = undefined;
-        var app_input_write: HANDLE = undefined;
-        var app_output_read: HANDLE = undefined;
-        var pty_output_write: HANDLE = undefined;
-
-        if (CreatePipe(&pty_input_read, &app_input_write, null, 0) == 0) return error.CreateInputPipeFailed;
-        errdefer _ = CloseHandle(pty_input_read);
-        errdefer _ = CloseHandle(app_input_write);
-        if (CreatePipe(&app_output_read, &pty_output_write, null, 0) == 0) return error.CreateOutputPipeFailed;
-        errdefer _ = CloseHandle(app_output_read);
-        errdefer _ = CloseHandle(pty_output_write);
-
-        var hpc: HPCON = undefined;
-        const size = COORD{ .X = @intCast(@min(pane.grid.width, 300)), .Y = @intCast(@min(pane.grid.height, 120)) };
-        if (failed(CreatePseudoConsole(size, pty_input_read, pty_output_write, 0, &hpc))) return error.CreatePseudoConsoleFailed;
-        pane.pseudoconsole = hpc;
-        errdefer {
-            ClosePseudoConsole(hpc);
-            pane.pseudoconsole = null;
-        }
-
-        const command_line = try std.unicode.utf8ToUtf16LeAllocZ(self.allocator, shell_path);
-        defer self.allocator.free(command_line);
+        // Resolve the working directory before calling Pty.spawn so the Pty
+        // backend stays unaware of desktop-config semantics.
         const cwd = if (self.config.profile.startup_directory.len > 0)
             try self.allocator.dupe(u8, self.config.profile.startup_directory)
         else
             try std.process.currentPathAlloc(self.io, self.allocator);
         defer self.allocator.free(cwd);
-        const cwd_w = try std.unicode.utf8ToUtf16LeAllocZ(self.allocator, cwd);
-        defer self.allocator.free(cwd_w);
 
+        // Build the child environment.  ZIGGYZAG_* mutations happen here, in
+        // the desktop host, so the Pty backend remains free of app-specific
+        // variable names.
         var child_env = try self.env.clone(self.allocator);
         defer child_env.deinit();
         try child_env.put("ZIGGYZAG_APP", "1");
@@ -742,74 +686,26 @@ const App = struct {
         // colour its prompt accent to match the desktop palette. See
         // docs/THEME_PROTOCOL.md.
         try child_env.put("ZIGGYZAG_THEME", self.config.selected_theme.id);
-        const env_block = try child_env.createWindowsBlock(self.allocator, .{});
-        defer env_block.deinit(self.allocator);
 
-        var attr_size: usize = 0;
-        _ = InitializeProcThreadAttributeList(null, 1, 0, &attr_size);
-        const attr_list = try self.allocator.alloc(u8, attr_size);
-        defer self.allocator.free(attr_list);
-        if (InitializeProcThreadAttributeList(attr_list.ptr, 1, 0, &attr_size) == 0) return error.InitializeAttributeListFailed;
-        defer DeleteProcThreadAttributeList(attr_list.ptr);
-        // PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE takes the HPCON *value* as
-        // lpValue, NOT a pointer to it: the MS "Creating a Pseudoconsole"
-        // PrepareStartupInformation sample and Windows Terminal's
-        // ConptyConnection both pass `hpc` directly. Isolation testing on
-        // 2026-05-17 showed the prior `&hpc_value` form still attached the
-        // child to the pseudoconsole but the integration handshake did not
-        // reach `ready` — i.e. it was genuinely wrong, just not in the way
-        // CREATE_NO_WINDOW was. Use the documented canonical form.
-        // See docs/reviews/2026-05-17-windows-debug.md.
-        if (UpdateProcThreadAttribute(attr_list.ptr, 0, PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, @ptrCast(hpc), @sizeOf(HPCON), null, null) == 0) {
-            return error.UpdateAttributeListFailed;
-        }
-
-        var startup: STARTUPINFOEXW = std.mem.zeroes(STARTUPINFOEXW);
-        startup.StartupInfo.cb = @sizeOf(STARTUPINFOEXW);
-        startup.lpAttributeList = attr_list.ptr;
-        var process_info: win.PROCESS.INFORMATION = undefined;
-        if (CreateProcessW(
-            null,
-            command_line.ptr,
-            null,
-            null,
-            0,
-            // CREATE_NO_WINDOW must NOT be set here. It is a console-allocation
-            // flag: it forces the child to allocate its own (hidden) conhost,
-            // which conflicts with PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE — the
-            // child then ignores our pseudoconsole and CreateProcessW still
-            // returns success, so the bridge silently produces no I/O. The
-            // pseudoconsole already runs the child headless; no window appears.
-            // MS "Creating a Pseudoconsole session" + Process Creation Flags
-            // both state CREATE_NO_WINDOW/CREATE_NEW_CONSOLE are incompatible
-            // with a pseudoconsole. Diagnosed 2026-05-17 — see
-            // docs/reviews/2026-05-17-windows-debug.md.
-            EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT,
-            env_block.view().ptr,
-            cwd_w.ptr,
-            &startup.StartupInfo,
-            &process_info,
-        ) == 0) return error.CreateProcessFailed;
-        errdefer {
-            if (WaitForSingleObject(process_info.hProcess, CHILD_SHUTDOWN_GRACE_MS) == WAIT_TIMEOUT) {
-                _ = TerminateProcess(process_info.hProcess, 0);
-                _ = WaitForSingleObject(process_info.hProcess, CHILD_SHUTDOWN_KILL_GRACE_MS);
-            }
-            _ = CloseHandle(process_info.hThread);
-            _ = CloseHandle(process_info.hProcess);
-        }
+        const argv = [_][]const u8{shell_path};
+        const spawned_pty = try pty_module.Pty.spawn(
+            self.allocator,
+            self.io,
+            &child_env,
+            &argv,
+            cwd,
+            @intCast(@min(pane.grid.width, 300)),
+            @intCast(@min(pane.grid.height, 120)),
+        );
+        errdefer spawned_pty.deinit();
 
         pane.running.store(true, .release);
-        const thread = std.Thread.spawn(.{}, readLoop, .{ self, pane, app_output_read }) catch |err| {
+        const thread = std.Thread.spawn(.{}, readLoop, .{ self, pane, spawned_pty }) catch |err| {
             pane.running.store(false, .release);
             return err;
         };
 
-        _ = CloseHandle(pty_input_read);
-        _ = CloseHandle(pty_output_write);
-        pane.input_write = app_input_write;
-        pane.output_read = app_output_read;
-        pane.process_info = process_info;
+        pane.pty = spawned_pty;
         pane.reader_thread = thread;
     }
 
@@ -907,31 +803,20 @@ const App = struct {
 
     fn shutdownPane(self: *App, pane: *Pane) void {
         _ = self;
+        // Signal the reader thread to stop polling, then tear down the PTY.
+        // deinit() closes input_write (EOF to child), ClosePseudoConsole,
+        // waits for child exit with grace-period/kill, then closes output_read
+        // so the reader thread sees EndOfStream and exits.  We join the thread
+        // after deinit returns so the sequence is always:
+        //   stop-reader-flag → deinit-pty → reader-exits → join.
         pane.running.store(false, .release);
-        if (pane.input_write) |handle| {
-            _ = CloseHandle(handle);
-            pane.input_write = null;
-        }
-        if (pane.pseudoconsole) |hpc| {
-            ClosePseudoConsole(hpc);
-            pane.pseudoconsole = null;
-        }
-        if (pane.process_info) |info| {
-            if (WaitForSingleObject(info.hProcess, CHILD_SHUTDOWN_GRACE_MS) == WAIT_TIMEOUT) {
-                _ = TerminateProcess(info.hProcess, 0);
-                _ = WaitForSingleObject(info.hProcess, CHILD_SHUTDOWN_KILL_GRACE_MS);
-            }
-            _ = CloseHandle(info.hThread);
-            _ = CloseHandle(info.hProcess);
-            pane.process_info = null;
+        if (pane.pty) |p| {
+            p.deinit();
+            pane.pty = null;
         }
         if (pane.reader_thread) |thread| {
             thread.join();
             pane.reader_thread = null;
-        }
-        if (pane.output_read) |handle| {
-            _ = CloseHandle(handle);
-            pane.output_read = null;
         }
     }
 
@@ -980,9 +865,8 @@ const App = struct {
     }
 
     fn writeInput(self: *App, bytes: []const u8) void {
-        const handle = self.activePane().input_write orelse return;
-        var written: DWORD = 0;
-        _ = WriteFile(handle, bytes.ptr, @intCast(bytes.len), &written, null);
+        const p = self.activePane().pty orelse return;
+        _ = p.write(bytes) catch {};
     }
 
     fn writeAgentLine(self: *App, line: []const u8) void {
@@ -1322,9 +1206,8 @@ const App = struct {
         ) catch return;
         for (self.panes) |pane_or_null| {
             if (pane_or_null) |pane| {
-                const handle = pane.input_write orelse continue;
-                var written: DWORD = 0;
-                _ = WriteFile(handle, payload.ptr, @intCast(payload.len), &written, null);
+                const p = pane.pty orelse continue;
+                _ = p.write(payload) catch {};
             }
         }
     }
@@ -1357,7 +1240,7 @@ const App = struct {
     fn startConfiguredPanes(self: *App, hwnd: HWND) void {
         for (self.panes) |pane_or_null| {
             const pane = pane_or_null orelse continue;
-            if (pane.process_info != null) continue;
+            if (pane.pty != null) continue;
             self.startPtyForPane(pane) catch |err| {
                 self.mutex.lock();
                 pane.setStartupError(err);
@@ -1619,8 +1502,8 @@ const App = struct {
             const rows: usize = @intCast(@max(@divTrunc(height_px, @max(self.char_height, 1)), MIN_PANE_ROWS));
             pane.grid.resize(cols, rows) catch continue;
             self.resetPaneScroll(pane);
-            if (pane.pseudoconsole) |hpc| {
-                _ = ResizePseudoConsole(hpc, .{ .X = @intCast(@min(cols, 300)), .Y = @intCast(@min(rows, 120)) });
+            if (pane.pty) |p| {
+                p.resize(@intCast(cols), @intCast(rows)) catch {};
             }
         }
     }
@@ -2315,24 +2198,19 @@ pub fn run(init_data: std.process.Init) !void {
     }
 }
 
-fn readLoop(app: *App, pane: *Pane, output_read: HANDLE) void {
+fn readLoop(app: *App, pane: *Pane, pty: pty_module.Pty) void {
     var parser = integration.Parser.init(std.heap.page_allocator);
     defer parser.deinit();
 
     var buffer: [8192]u8 = undefined;
     while (pane.running.load(.acquire)) {
-        var available: DWORD = 0;
-        if (PeekNamedPipe(output_read, null, 0, null, &available, null) == 0) break;
-        if (available == 0) {
+        const n = pty.read(&buffer) catch break;
+        if (n == 0) {
             Sleep(16);
             continue;
         }
 
-        var read: DWORD = 0;
-        const requested: DWORD = @intCast(@min(buffer.len, available));
-        if (ReadFile(output_read, &buffer, requested, &read, null) == 0 or read == 0) break;
-
-        var extracted = parser.feed(buffer[0..read]) catch continue;
+        var extracted = parser.feed(buffer[0..n]) catch continue;
         defer extracted.deinit(std.heap.page_allocator);
 
         app.mutex.lock();
@@ -2744,10 +2622,6 @@ fn brightenColor(color: theme.Color) theme.Color {
 
 fn toColorRef(color: theme.Color) COLORREF {
     return @as(COLORREF, color.r) | (@as(COLORREF, color.g) << 8) | (@as(COLORREF, color.b) << 16);
-}
-
-fn failed(hr: HRESULT) bool {
-    return hr < 0;
 }
 
 fn wideLiteral(comptime text: []const u8) LPCWSTR {

@@ -15,17 +15,31 @@ and the host is now verified driving a live shell. This does not unlock
 Wave 3; it makes the Windows host usable as the reference the cross-platform
 work will be proven against.
 
-## The load-bearing fact the masterplan elides
+## Step 0 — done (corrected 2026-05-18)
 
-`apps/desktop/src/pty.zig` is a non-wired stub. All four backends —
-`spawnConPty`, `spawnNativePosix`, `spawnScriptPosix`, `spawnDirectPosix`
-(lines 146–176) — return `error.NotImplemented`, and a test enforces it. The
-working ConPTY implementation lives inline in `windows_app.zig` (the
-`CreatePseudoConsole` call site is `windows_app.zig:717`); there are zero
-`pty.Pty` references in the Windows host. The masterplan's Move 2 ("native
-Linux and macOS desktop hosts on top of the shared PTY abstraction") presumes
-a shared abstraction that does not yet exist. So there is a **Step 0** before
-Move 2 that the masterplan does not name.
+**Honesty correction.** An earlier revision of this doc (and the masterplan
+Move 2 text) stated `pty.zig` was a non-wired stub with all backends
+returning `error.NotImplemented` and ConPTY living inline in
+`windows_app.zig`. That described the *committed* tree at the time it was
+written, but it was filed as a forward fact without noting it was about to
+change — and the "Step 0" it implied as unstarted work has since been
+**completed and verified this session**. The brand is radical honesty,
+including about our own planning docs: this section is rewritten to the
+verified state, not left as an aspirational claim.
+
+Current verified reality: `apps/desktop/src/pty.zig` exposes a real `Pty`
+vtable; the **Windows ConPTY backend is fully wired** behind it
+(`Pty.spawn` → `CreatePseudoConsole`, the session's three bug-fixes
+preserved — `EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT`,
+no `CREATE_NO_WINDOW`, `@ptrCast(hpc)` by value). `windows_app.zig` calls
+`pty_module.Pty.spawn` and consumes via `pty.read`/`resize`/`deinit`; zero
+inline Win32 PTY code remains. Reader-thread model: stays app-side
+(it runs the integration parser, holds `app.mutex`, feeds the grid) — the
+backend owns only the OS handles; documented in `pty.zig`. Verified: `zig
+build test` 196/198, and a live no-regression run (title→`ok`, cwd updates
+with single backslashes, shell has 0 child processes). The **POSIX
+backends remain honest `error.NotImplemented` stubs** — that is the real
+remaining Wave 3 work (native macOS/Linux), not the ConPTY wiring.
 
 ## Execution order (12h/week, masterplan-cited)
 
@@ -34,7 +48,7 @@ Effort is honest at the masterplan's solo 12h/week cap (masterplan §Risks).
 | # | Item | Masterplan | Effort | Weeks | Top risk |
 |---|---|---|---|---|---|
 | **GIF** | Demo GIF from `scripts/demo.sh` | success metric (≤2MB/≤10s) | S (~2h) | ~0.2 | none — cheapest "10-second wow"; zero new code |
-| **0** | Lift ConPTY behind the `pty.Pty` vtable | prerequisite to Move 2 | M (~8h) | ~1 | reader-thread ownership model — decide *before* writing the vtable; it constrains all three backends |
+| **0** | ~~Lift ConPTY behind the `pty.Pty` vtable~~ — **DONE 2026-05-18** (verified green + no live regression) | prerequisite to Move 2 | — | done | reader-thread stays app-side (documented in `pty.zig`); POSIX backends still stubs |
 | **3** | AgentD universal input (`Ctrl+Space` → NL → command preview, insert-not-execute) | Move 3 / W3 | M (~15h) | ~2 | LLM response quality; a tight `agent/suggest` system prompt; approval-sacred (Principle 4) holds — never auto-execute |
 | **2a** | Native macOS host (Cocoa via Obj-C runtime, all-Zig, Principle 5) | Move 2 / W3 | L (~50h) | ~4–5 mo | Core Text font-metric vs grid cell-width mismatch |
 | **2b** | Native Linux host (X11/Xlib; XWayland ok, native Wayland deferred) | Move 2 / W3 | M (~25h) | ~2 mo | XWayland clipboard/IME; Wayland-native = out of scope for W3 |
@@ -46,11 +60,12 @@ Effort is honest at the masterplan's solo 12h/week cap (masterplan §Risks).
 Wave 3, done honestly, is roughly **six months of 12h weeks**. "Wave 3 by
 end of 2026" is honest; sooner is not.
 
-The single most valuable immediately-actionable item is the demo GIF: it is
-already a masterplan success metric, needs no code, and closes the
-"10-second wow" gap in the current Windows state. The single most important
-decision is the `Pty` vtable's reader-thread model (Step 0) — getting it
-wrong makes Step 0 a two-pass refactor.
+With Step 0 done, the next immediately-actionable items are the demo GIF
+(already a masterplan success metric, zero code, closes the "10-second wow"
+gap) and the copy/paste + QoL quick wins surfaced by the feature research
+(multi-line paste guard, trailing-newline trim, right-click paste, Ctrl+scroll
+zoom) — all small, config-toggleable, masterplan-compliant. The real Wave 3
+weight is now the POSIX native backends (2a/2b), unblocked by the wired vtable.
 
 ## Scope discipline — temptations rejected
 

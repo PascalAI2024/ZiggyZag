@@ -40,7 +40,7 @@ At the time `alpha.3` was tagged the Windows ConPTY host was structurally broken
 
 ### Move 2 — Cross-platform parity (Wave 3)
 
-Native Linux and macOS desktop hosts. The `Pty` abstraction in `apps/desktop/src/pty.zig` is a Wave 3 scaffold today — every backend returns `error.NotImplemented` and the working ConPTY logic still lives inline in `windows_app.zig`; wiring it is part of this move, not a prerequisite already in hand. Today macOS/Linux get a terminal-attached launcher, not a native window. At 12 hours/week this is roughly a half-year of work, not a near-term deliverable. Until native hosts ship, every screenshot in the README must be honestly labeled `Windows / macOS / Linux`.
+Native Linux and macOS desktop hosts. The `Pty` abstraction in `apps/desktop/src/pty.zig` is real and the **Windows ConPTY backend is wired behind it** (`windows_app.zig` calls `Pty.spawn`; verified 2026-05-18, no inline Win32 PTY code remains) — that prerequisite is done. What remains for this move is the **POSIX backends** (`spawnNativePosix`/`spawnScriptPosix`/`spawnDirectPosix` still return `error.NotImplemented`) plus the native macOS (Cocoa) and Linux (X11) windows built on them. Today macOS/Linux get a terminal-attached launcher, not a native window. At 12 hours/week the remaining native-host work is roughly a half-year, not a near-term deliverable. Until native hosts ship, every screenshot in the README must be honestly labeled `Windows / macOS / Linux`.
 
 ### Move 3 — AgentD universal input (Wave 3)
 
