@@ -1,0 +1,5 @@
+// Windows application icon resource for ZiggyZag.
+// Icon id 1 is what Explorer, the taskbar, Alt-Tab, and shortcuts display.
+// ziggyzag.ico is generated from docs/assets/ziggyzag-logo.svg by
+// scripts/make-icon.py (run that to regenerate after a logo change).
+1 ICON "ziggyzag.ico"
