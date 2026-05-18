@@ -42,6 +42,7 @@ pub fn build(b: *std.Build) void {
         .root_module = desktop_module,
     });
     if (target.result.os.tag == .windows) {
+        desktop_exe.subsystem = .windows;
         desktop_module.linkSystemLibrary("user32", .{});
         desktop_module.linkSystemLibrary("gdi32", .{});
         desktop_module.linkSystemLibrary("kernel32", .{});
