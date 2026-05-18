@@ -11,11 +11,13 @@ Windows `TerminalMode.enable()` that puts the ConPTY client into raw VT mode
 termios path. Verified empirically: per-keystroke manual-echo redraws (proves
 raw mode active), a post-Enter command-output burst, and the integration
 status transitioning to `ok` (command lifecycle completed). The
-`alpha-launch-only` caveat is **lifted for the desktop I/O path**; two
-non-blocking cosmetic items remain (see below). The end-to-end command test
-used synthetic `WM_CHAR` over the exact `handleChar`→pipe→shell path a real
-keystroke takes; a human sit-down at the window is the final formality, not an
-open doubt.
+`alpha-launch-only` caveat is **lifted for the desktop I/O path**. The two
+secondary items are also resolved in branch `fix/windows-desktop-polish`
+(desktop now GUI-subsystem so no stray conhost; the "starting" title label
+diagnosed as a now-fixed symptom, not a bug; plus `readLine` CR-submit
+hardening). The end-to-end command test used synthetic `WM_CHAR` over the
+exact `handleChar`→pipe→shell path a real keystroke takes; a human sit-down
+at the window is the final formality, not an open doubt.
 
 ## TL;DR
 
@@ -178,13 +180,28 @@ confirmed `CREATE_NO_WINDOW` + pseudoconsole as the documented incompatibility
   same `WM_CHAR`). A human typing at the window is the final formality; the
   three-signal evidence makes the outcome not in real doubt.
 
-### Secondary cosmetic items (do not block)
+### Secondary items — RESOLVED in branch `fix/windows-desktop-polish`
 
-- `ziggyzag-desktop.exe` is itself a *console* subsystem binary, so it spawns
-  a `conhost.exe …0x4` of its own (possible brief console flash). Fix: link
-  the desktop as the `windows` subsystem.
-- The title's first segment still reads `starting` (the per-command/pane
-  label) even though `status` is `ready`. Display-only.
+- **Desktop subsystem (fixed):** `ziggyzag-desktop.exe` was a *console*
+  subsystem binary and spawned a stray `conhost.exe …0x4` (possible console
+  flash). Fixed by `desktop_exe.subsystem = .windows;` in `build.zig`,
+  mirroring the launcher. Verified: both exes are now PE subsystem 2 (GUI),
+  the desktop's only children are the headless pseudoconsole conhost +
+  `ziggyzag.exe` (no `conhost …0x4`), shell still runs commands.
+- **Title "starting" first segment (non-issue, no code change):**
+  investigated — `updateTitle` (windows_app.zig) shows the cwd in segment 1,
+  falling back to the literal `"starting"` only while `pane.status.cwd_len`
+  is 0. Pre-bridge-fix the handshake never landed so it stayed 0 forever;
+  post-fix the handshake sets the cwd within ~1s of spawn. The label was a
+  *symptom of the dead bridge*, not a display bug. At steady state the title
+  correctly reads `ZiggyZag - <cwd> - <status>`.
+- **`readLine` CR-submit hardening (added):** `readLine` submitted only on
+  `\n` and silently discarded `\r`. It worked because the desktop translates
+  Enter CR→LF and POSIX ICRNL maps CR→NL, but any client delivering a bare
+  CR got a dead Enter. `readLine` now submits on `\r` as well as `\n`, with
+  a `pending_cr_swallow` flag that coalesces a following `\n` so `\r\n`
+  counts as one submit. The Windows desktop path (LF only) is unaffected —
+  the flag is never set on it. 193 pass / 2 skip / 0 fail.
 
 ---
 
@@ -336,12 +353,14 @@ Honest about both wins and losses, per the brand:
   the tested behaviour, not the guess. Likewise the earlier "echoes prove
   input reaches the shell" was tightened to "reaches the pseudoconsole's
   input pipe" once cooked-mode buffering was understood.
-- **Remaining caveats (do not block a usable shell):** the desktop binary is
-  console-subsystem (possible brief conhost flash — fix: link `windows`
-  subsystem); the title's first segment label is display-only; final sign-off
-  is a human typing at the window (synthetic `WM_CHAR` exercised the real
-  code path, evidence is three-signal, but a person at the keyboard is the
-  last formality). `alpha-launch-only` is lifted for the I/O path with these
-  rough edges noted — not hidden.
+- **Secondary items resolved (branch `fix/windows-desktop-polish`):** the
+  desktop binary is now GUI-subsystem (no stray conhost / no flash); the
+  "starting" title label was diagnosed as a now-fixed symptom of the dead
+  bridge, not a display bug (no code change, evidence recorded); `readLine`
+  hardened to submit on CR as well as LF (CRLF-coalesced). The only thing
+  left is a human typing at the window for final sign-off — synthetic
+  `WM_CHAR` exercised the real `handleChar`→pipe→shell code path and the
+  evidence is three-signal, so this is a formality, not an open doubt.
+  `alpha-launch-only` is lifted for the I/O path.
 - The shell, AgentD, and the POSIX launcher remain solid; the Windows native
   host was the broken piece and now drives a live, interactive shell.

@@ -156,6 +156,9 @@ const Shell = struct {
     dir_history: std.ArrayList([]u8),
     dir_index: usize,
     manual_echo: bool,
+    /// Set after a CR submit so the next readLine call can swallow a leading LF,
+    /// turning a CRLF sequence into a single line submission.
+    pending_cr_swallow: bool,
     last_completion_prefix: ?[]u8,
     prompt_mode: PromptMode,
     prompt_snapshot: PromptSnapshot,
@@ -188,6 +191,7 @@ const Shell = struct {
             .dir_history = .empty,
             .dir_index = 0,
             .manual_echo = false,
+            .pending_cr_swallow = false,
             .last_completion_prefix = null,
             .prompt_mode = .classic,
             .prompt_snapshot = .{},
@@ -339,16 +343,24 @@ const Shell = struct {
                 else => |e| return e,
             };
 
+            // If the previous readLine call submitted on '\r', swallow one
+            // leading '\n' so that a CRLF pair counts as a single submit.
+            // Clear the flag on any byte so it cannot affect a later call.
+            if (self.pending_cr_swallow) {
+                self.pending_cr_swallow = false;
+                if (byte == '\n') continue;
+            }
+
             switch (byte) {
-                '\n' => {
+                '\n', '\r' => {
                     self.clearCompletionState();
                     if (self.manual_echo) {
                         try self.redrawPromptLine(stdout, line.items, line.items.len);
                         try stdout.writeByte('\n');
                     }
+                    if (byte == '\r') self.pending_cr_swallow = true;
                     return try line.toOwnedSlice(self.allocator);
                 },
-                '\r' => {},
                 '\t' => try self.completeCommand(&line, &cursor, stdout),
                 0x01 => {
                     self.clearCompletionState();
