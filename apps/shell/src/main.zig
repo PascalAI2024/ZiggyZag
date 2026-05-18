@@ -4403,12 +4403,87 @@ const Shell = struct {
 const TerminalMode = if (builtin.os.tag == .windows) struct {
     const Self = @This();
 
+    // ConPTY runs a console client in cooked line-input mode by default
+    // (ENABLE_LINE_INPUT|ENABLE_ECHO_INPUT|ENABLE_PROCESSED_INPUT). ZiggyZag's
+    // `readLine` is a raw-mode reader — it does its own line editing and
+    // (when manual_echo is set) its own echo, and submits on `\n`. Without
+    // switching the console to raw VT mode the cooked layer buffers input
+    // until CR and the shell's stdin reader never sees a submitted line, so
+    // typed commands never run under the Windows desktop host. This is the
+    // Windows equivalent of the POSIX termios raw-mode path below.
+    // See docs/reviews/2026-05-17-windows-debug.md.
+    const BOOL = i32;
+    const DWORD = u32;
+    const HANDLE = std.os.windows.HANDLE;
+    const INVALID_HANDLE_VALUE = std.os.windows.INVALID_HANDLE_VALUE;
+
+    // GetStdHandle pseudo-handle ids (winbase.h: (DWORD)-10 / (DWORD)-11).
+    const STD_INPUT_HANDLE: DWORD = 0xFFFF_FFF6;
+    const STD_OUTPUT_HANDLE: DWORD = 0xFFFF_FFF5;
+
+    const ENABLE_PROCESSED_INPUT: DWORD = 0x0001;
+    const ENABLE_LINE_INPUT: DWORD = 0x0002;
+    const ENABLE_ECHO_INPUT: DWORD = 0x0004;
+    const ENABLE_VIRTUAL_TERMINAL_INPUT: DWORD = 0x0200;
+    const COOKED_INPUT: DWORD = ENABLE_PROCESSED_INPUT | ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT;
+
+    const ENABLE_PROCESSED_OUTPUT: DWORD = 0x0001;
+    const ENABLE_VIRTUAL_TERMINAL_PROCESSING: DWORD = 0x0004;
+    const DISABLE_NEWLINE_AUTO_RETURN: DWORD = 0x0008;
+
+    extern "kernel32" fn GetStdHandle(id: DWORD) callconv(.winapi) ?HANDLE;
+    extern "kernel32" fn GetConsoleMode(handle: HANDLE, mode: *DWORD) callconv(.winapi) BOOL;
+    extern "kernel32" fn SetConsoleMode(handle: HANDLE, mode: DWORD) callconv(.winapi) BOOL;
+
+    stdin_handle: HANDLE,
+    stdin_original_mode: DWORD,
+    stdout_handle: ?HANDLE,
+    stdout_original_mode: DWORD,
+
     fn enable() !?Self {
-        return null;
+        const stdin = GetStdHandle(STD_INPUT_HANDLE) orelse return null;
+        if (stdin == INVALID_HANDLE_VALUE) return null;
+
+        var stdin_mode: DWORD = 0;
+        // GetConsoleMode fails when the handle is a pipe/file rather than a
+        // console — i.e. not a terminal. Mirror the POSIX `NotATerminal`
+        // branch and degrade gracefully instead of erroring.
+        if (GetConsoleMode(stdin, &stdin_mode) == 0) return null;
+
+        const stdout = GetStdHandle(STD_OUTPUT_HANDLE);
+        var stdout_mode: DWORD = 0;
+        const stdout_console: ?HANDLE = if (stdout) |h|
+            (if (h != INVALID_HANDLE_VALUE and GetConsoleMode(h, &stdout_mode) != 0) h else null)
+        else
+            null;
+
+        const raw_stdin = (stdin_mode & ~COOKED_INPUT) | ENABLE_VIRTUAL_TERMINAL_INPUT;
+        if (SetConsoleMode(stdin, raw_stdin) == 0) return error.SetConsoleModeFailed;
+
+        // Output-side VT processing is nice-to-have (the desktop/ConPTY
+        // renders the shell's VT regardless); best-effort with a fallback,
+        // never fatal.
+        if (stdout_console) |h| {
+            const full_out = stdout_mode | ENABLE_PROCESSED_OUTPUT |
+                ENABLE_VIRTUAL_TERMINAL_PROCESSING | DISABLE_NEWLINE_AUTO_RETURN;
+            if (SetConsoleMode(h, full_out) == 0) {
+                _ = SetConsoleMode(h, stdout_mode | ENABLE_PROCESSED_OUTPUT |
+                    ENABLE_VIRTUAL_TERMINAL_PROCESSING);
+            }
+        }
+
+        return .{
+            .stdin_handle = stdin,
+            .stdin_original_mode = stdin_mode,
+            .stdout_handle = stdout_console,
+            .stdout_original_mode = stdout_mode,
+        };
     }
 
     fn restore(self: Self) void {
-        _ = self;
+        // Best-effort, mirroring the POSIX `tcsetattr ... catch {}`.
+        _ = SetConsoleMode(self.stdin_handle, self.stdin_original_mode);
+        if (self.stdout_handle) |h| _ = SetConsoleMode(h, self.stdout_original_mode);
     }
 } else struct {
     const Self = @This();

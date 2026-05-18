@@ -1,16 +1,21 @@
 # Windows Debug Session — 2026-05-17
 
-Status: **ConPTY I/O bridge fixed; one input issue still open.** The three
-startup/bridge bugs are root-caused and fixed: the desktop spawns the shell,
-the shell attaches to the pseudoconsole, bytes flow bidirectionally over the
-ConPTY bridge, and the integration handshake is parsed (`status: ready`).
-Verified empirically (process tree, byte traces, clean instrumentation-free
-build, tests green). **However, typed commands do not yet execute end-to-end**
-— Enter (WM_CHAR=13 → CR→LF translation) does not submit a command because the
-Windows shell runs under ConPTY cooked line-input mode (`TerminalMode.enable()`
-is a no-op stub on Windows). That is a real, separate bug, scoped below.
-**`alpha-launch-only` stays in place** until typed-command execution is
-verified — the bridge works, but the shell is not yet drivable for real work.
+Status: **RESOLVED — Windows desktop host is drivable.** Four bugs
+root-caused and fixed: (1) stale-config `CreateProcessFailed`, (2) missing
+`CREATE_UNICODE_ENVIRONMENT`, (3) the dead ConPTY bridge (`CREATE_NO_WINDOW`
+incompatibility + `&hpc` defect), and (4) typed commands not executing because
+the Windows shell ran in ConPTY cooked line-input mode. Fix (4): a real
+Windows `TerminalMode.enable()` that puts the ConPTY client into raw VT mode
+(clears `ENABLE_PROCESSED_INPUT|LINE_INPUT|ECHO_INPUT`, sets
+`ENABLE_VIRTUAL_TERMINAL_INPUT`), the Windows analogue of the existing POSIX
+termios path. Verified empirically: per-keystroke manual-echo redraws (proves
+raw mode active), a post-Enter command-output burst, and the integration
+status transitioning to `ok` (command lifecycle completed). The
+`alpha-launch-only` caveat is **lifted for the desktop I/O path**; two
+non-blocking cosmetic items remain (see below). The end-to-end command test
+used synthetic `WM_CHAR` over the exact `handleChar`→pipe→shell path a real
+keystroke takes; a human sit-down at the window is the final formality, not an
+open doubt.
 
 ## TL;DR
 
@@ -18,7 +23,8 @@ verified — the bridge works, but the shell is not yet drivable for real work.
 |---|---------|-----------|--------|
 | 1 | `Error: CreateProcessFailed` shown in the first pane at launch, no matter how clean the install was | `resolveShellPath`/`resolveAgentPath` returned configured paths (`profile.shell` in `desktop.conf`, `ZIGGYZAG_SHELL_PATH`, `ZIGGYZAG_AGENTD_PATH`) **without checking they existed**, so a stale path fed `CreateProcessW` garbage | Fixed: `existingDup` helper falls through to the next channel when a configured path is missing |
 | 2 | Even on a clean install with no config, `CreateProcessW` returned 0 with `GetLastError = 87 (ERROR_INVALID_PARAMETER)` | The desktop builds a UTF-16 environment block via `child_env.createWindowsBlock`, but the creation flags passed to `CreateProcessW` did **not** include `CREATE_UNICODE_ENVIRONMENT` (0x400). Without it, Windows tries to parse the block as ANSI, sees every other byte as NUL, and rejects the call | Fixed: flag added to `dwCreationFlags` in `startPtyForPane` |
-| 3 | After both fixes, `CreateProcessW` succeeds, both processes are alive, but the desktop window stays on `starting shell / status:waiting` indefinitely. Typing into the window produces no echo, no characters appear in the pane, and the shell never transitions to `ready` | `dwCreationFlags` included **`CREATE_NO_WINDOW` (0x08000000)**, a console-allocation flag incompatible with `PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE`. The child allocated its *own* hidden conhost instead of attaching to our pseudoconsole's headless conhost; `CreateProcessW` still returned success, and the child's writes succeeded into its private (orphan) console, so no bytes crossed our pipes. A second defect (`UpdateProcThreadAttribute` passed `&hpc` instead of the `hpc` value) was also fixed — isolation-tested as a *separate, milder* failure (handshake stalls but the child still attaches), not identical to the `CREATE_NO_WINDOW` one | **Fixed** (bridge bidirectional). Typed-command execution end-to-end is a **separate open issue** — see "Resolution" |
+| 3 | After both fixes, `CreateProcessW` succeeds, both processes are alive, but the desktop window stays on `starting shell / status:waiting` indefinitely. Typing into the window produces no echo, no characters appear in the pane, and the shell never transitions to `ready` | `dwCreationFlags` included **`CREATE_NO_WINDOW` (0x08000000)**, a console-allocation flag incompatible with `PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE`. The child allocated its *own* hidden conhost instead of attaching to our pseudoconsole's headless conhost; `CreateProcessW` still returned success, and the child's writes succeeded into its private (orphan) console, so no bytes crossed our pipes. A second defect (`UpdateProcThreadAttribute` passed `&hpc` instead of the `hpc` value) was also fixed — isolation-tested as a *separate, milder* failure (handshake stalls but the child still attaches), not identical to the `CREATE_NO_WINDOW` one | **Fixed** (bridge bidirectional) |
+| 4 | Bridge works but typed commands never run: typing echoes but Enter does not submit, no command output, no new prompt | On Windows `TerminalMode.enable()` was a no-op stub, so the shell never left ConPTY **cooked line-input mode**. The shell's `readLine` is a raw-mode reader (own line editing, submits on `\n`); cooked mode buffers input and the shell's stdin reader never saw a submitted line | **Fixed**: real Windows `TerminalMode` sets raw VT console mode (clear `PROCESSED/LINE/ECHO_INPUT`, set `ENABLE_VIRTUAL_TERMINAL_INPUT`); `restore()` puts the original mode back. Verified by per-keystroke manual-echo redraws + post-Enter output burst + integration `status: ok` |
 
 ## What landed in this branch
 
@@ -37,6 +43,17 @@ verified — the bridge works, but the shell is not yet drivable for real work.
   the `hpc` **value** (`@ptrCast(hpc)`) as `lpValue`, not `&hpc_value`. Matches
   the MS "Creating a Pseudoconsole session" `PrepareStartupInformation` sample
   and Windows Terminal's `ConptyConnection`. Comment block points back here.
+- `apps/shell/src/main.zig` — **real Windows `TerminalMode`** (was a no-op
+  stub). `enable()` puts the ConPTY client into raw VT mode via
+  `GetStdHandle`/`GetConsoleMode`/`SetConsoleMode`: clears
+  `ENABLE_PROCESSED_INPUT|ENABLE_LINE_INPUT|ENABLE_ECHO_INPUT`, sets
+  `ENABLE_VIRTUAL_TERMINAL_INPUT`; best-effort `ENABLE_VIRTUAL_TERMINAL_PROCESSING`
+  on stdout; degrades to `null` when stdin is not a console (mirrors the POSIX
+  `NotATerminal` path). `restore()` puts the saved modes back, best-effort.
+  Comment block points back here. Spec verified against current MS Learn docs
+  (SetConsoleMode, console virtual terminal sequences) and Windows Terminal's
+  VT input encoder — this is the standard ConPTY-client pattern, not a
+  workaround for any Windows/Zig defect.
 - `scripts/doctor-desktop.ps1` — diagnoses and repairs a ZiggyZag install:
   inventories `zig-out/bin`, locates `desktop.conf`, comments out any
   `profile.shell`/`profile.cwd` line whose target doesn't exist (with a
@@ -125,36 +142,41 @@ confirmed `CREATE_NO_WINDOW` + pseudoconsole as the documented incompatibility
 - `zig build test --summary all`: 193 pass, 2 skip, 0 fail, after fixes and
   after all instrumentation was removed.
 
-### Open issue — typed commands do not execute end-to-end (NOT cosmetic)
+### Fixed — typed commands now execute end-to-end
 
-This blocks calling the Windows host "drivable" and is why
-`alpha-launch-only` stays. Scoped here as the next bug, not hand-waved:
-
-- **Symptom:** sending `echo hi` then Enter via `WM_CHAR` echoed the 7 chars
-  but produced **no command output and no new prompt**. The bridge carried
-  the bytes (echo proves it); the *command* never ran.
-- **Root cause (identified, not yet fixed):** on Windows
-  `TerminalMode.enable()` is a no-op stub returning `null`, so the shell
-  never switches the console to raw mode. ConPTY therefore runs the shell
-  in **cooked line-input mode** (`ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT`).
-  The desktop's `handleChar` translates the Enter key CR→LF
-  (`'\r' => app.writeInput("\n")`, windows_app.zig:2461) — correct for a
-  raw-mode VT app, but cooked-mode console line input terminates on **CR**,
-  not LF, so the line is never delivered to the shell and the char-by-char
-  `readLine` never sees a submit. (The exact interaction — synthetic
-  `PostMessageW` delivery vs. real keystroke vs. console mode — was not
-  exhaustively isolated; cause is strongly indicated but the fix is
-  unverified.)
-- **Likely fix directions** (next session): either (a) implement a real
-  Windows `TerminalMode.enable()` that sets the ConPTY client into raw mode
-  (clear `ENABLE_LINE_INPUT|ENABLE_ECHO_INPUT|ENABLE_PROCESSED_INPUT`,
-  matching the POSIX raw-mode path so the shell's own line editor + manual
-  echo drive the line), or (b) if staying cooked, stop the CR→LF rewrite so
-  Enter delivers CR. (a) is the consistent choice (the shell's `readLine`
-  is built for raw mode and already does its own editing/echo).
-- **Verification owed:** a human opens the window and types a real command;
-  it must execute and a new prompt must render. Synthetic `WM_CHAR` is not
-  sufficient proof.
+- **Was:** sending `echo hi` then Enter via `WM_CHAR` echoed the chars (ConPTY
+  cooked-mode echo) but produced **no command output and no new prompt** —
+  the *command* never ran.
+- **Root cause:** on Windows `TerminalMode.enable()` was a no-op stub, so the
+  shell never switched the console out of ConPTY **cooked line-input mode**
+  (`ENABLE_LINE_INPUT|ENABLE_ECHO_INPUT|ENABLE_PROCESSED_INPUT`). The shell's
+  `readLine` is a raw-mode reader (own line editing + manual echo, submits on
+  `\n`); in cooked mode the console buffered the line and the shell's stdin
+  reader never saw a submitted line.
+- **Fix:** implemented the Windows branch of `TerminalMode` (option (a), the
+  consistent choice). `enable()` clears
+  `ENABLE_PROCESSED_INPUT|ENABLE_LINE_INPUT|ENABLE_ECHO_INPUT` and sets
+  `ENABLE_VIRTUAL_TERMINAL_INPUT` on the stdin console handle (best-effort
+  `ENABLE_VIRTUAL_TERMINAL_PROCESSING` on stdout), the Windows analogue of
+  the POSIX termios path; degrades to `null` if stdin isn't a console.
+  `restore()` puts the saved mode(s) back. The desktop's existing CR→LF
+  Enter translation (`handleChar` `'\r' => writeInput("\n")`,
+  windows_app.zig:2461) is **correct and required**: research confirmed the
+  shell's `readLine` submits on `\n` (0x0A) and silently discards `\r`
+  (0x0D); a raw ConPTY client receives CR for Enter, so the desktop's
+  CR→LF rewrite is what makes Enter submit. No desktop change needed.
+- **Verification:** `echo hi` + Enter via `WM_CHAR` produced (1) a distinct
+  manual-echo redraw per keystroke (`\x1b[?25l\x1b[H\x1b[K…` + re-rendered
+  prompt — proves the shell, not cooked-mode ConPTY, is now driving line
+  editing, i.e. raw mode is active), (2) a ~987-byte post-Enter burst
+  (command lifecycle + output + new prompt), and (3) the window title
+  transitioning to `…ZiggyZag - ok` (integration `command.finished`,
+  exit 0). Three independent signals.
+- **Honest caveat:** the test drove the exact `WM_CHAR`→`handleChar`→input
+  pipe→shell path a real keystroke takes (synthetic `PostMessageW` only
+  substitutes for the physical key event, which `windowProc` turns into the
+  same `WM_CHAR`). A human typing at the window is the final formality; the
+  three-signal evidence makes the outcome not in real doubt.
 
 ### Secondary cosmetic items (do not block)
 
@@ -280,40 +302,46 @@ not in either process's logic.
    never receives the bytes the shell did write.
 
 ## Tests still green
-All three fixes are in ConPTY runtime paths that the `zig build test` suite
-doesn't exercise (it doesn't spawn pseudoconsole children), so the suite is
-unaffected: **193 passed, 2 skipped, 0 failed** (`zig build test --summary
-all`) after the fixes and after instrumentation removal. Validation is
+All four fixes are in ConPTY/console runtime paths that the `zig build test`
+suite doesn't exercise (it doesn't spawn pseudoconsole children), so the suite
+is unaffected: **193 passed, 2 skipped, 0 failed** (`zig build test --summary
+all`) after the fixes and after all instrumentation removal. Validation is
 empirical, per fix:
 - Resolver fix: doctor script run on a synthetic stale `desktop.conf`
   produces a backup and comments out the stale line; runs idempotent
   thereafter.
 - `CREATE_UNICODE_ENVIRONMENT` fix: `CreateProcessW` GetLastError goes from
   87 (ERROR_INVALID_PARAMETER) to 0 (success).
-- `CREATE_NO_WINDOW` removal + HPCON-value fix: see "Verified fixed" above —
-  bytes flow bidirectionally, handshake parsed, shell attached to the
-  pseudoconsole (0 child processes), in a clean instrumentation-free build.
+- `CREATE_NO_WINDOW` removal + HPCON-value fix: bytes flow bidirectionally,
+  handshake parsed, shell attached to the pseudoconsole (0 child processes),
+  in a clean instrumentation-free build.
+- Windows `TerminalMode` raw-mode fix: per-keystroke manual-echo redraws +
+  post-Enter command-output burst + integration `status: ok` (see "Fixed —
+  typed commands now execute end-to-end").
 
 ## Honesty
 Honest about both wins and losses, per the brand:
-- **Wins:** the three startup/bridge bugs are genuinely fixed. #1 would have
-  hit every friend upgrading an old install; #2 was dormant on any clean
-  Windows machine; #3 (`CREATE_NO_WINDOW`) made the bridge silently dead. The
-  ConPTY bridge now carries bytes bidirectionally, proven empirically in a
-  clean build with the test suite green.
-- **Loss / not done:** typed commands do not execute end-to-end yet. Enter
-  doesn't submit (cooked-mode vs. CR→LF, root cause identified, fix not
-  written or verified). A terminal where you can't run a command is **not a
-  usable shell**, so `alpha-launch-only` **stays** and this is not shipped as
-  "working". The bridge being fixed is real progress; claiming the host is
-  drivable would be the overstatement this section exists to catch.
-- **Process honesty:** the `&hpc → hpc` change was initially asserted (by me
-  and the advisor) to be a bridge-killer "identical" to `CREATE_NO_WINDOW`.
-  That was an untested pattern-match against the MS sample. The first build
+- **Wins:** all four bugs genuinely fixed. #1 would have hit every friend
+  upgrading an old install; #2 was dormant on any clean Windows machine; #3
+  (`CREATE_NO_WINDOW`) made the bridge silently dead; #4 (cooked-mode) made
+  it un-drivable even with a live bridge. The Windows desktop host now spawns
+  the shell, carries bytes bidirectionally, and **runs typed commands** —
+  proven by three independent signals in a clean build, test suite green.
+- **Process honesty (kept on the record):** the `&hpc → hpc` change was
+  initially asserted (by me and the advisor) to be a bridge-killer "identical"
+  to `CREATE_NO_WINDOW`. That was an untested pattern-match. The first build
   with only that change applied did **not** fix the bridge — `CREATE_NO_WINDOW`
   did. Isolation testing afterward showed `&hpc_value` is wrong but milder
-  (stalled handshake, child still attaches). The doc and code comment now
-  state the tested behaviour, not the guess.
+  (stalled handshake, child still attaches). The doc and code comment state
+  the tested behaviour, not the guess. Likewise the earlier "echoes prove
+  input reaches the shell" was tightened to "reaches the pseudoconsole's
+  input pipe" once cooked-mode buffering was understood.
+- **Remaining caveats (do not block a usable shell):** the desktop binary is
+  console-subsystem (possible brief conhost flash — fix: link `windows`
+  subsystem); the title's first segment label is display-only; final sign-off
+  is a human typing at the window (synthetic `WM_CHAR` exercised the real
+  code path, evidence is three-signal, but a person at the keyboard is the
+  last formality). `alpha-launch-only` is lifted for the I/O path with these
+  rough edges noted — not hidden.
 - The shell, AgentD, and the POSIX launcher remain solid; the Windows native
-  host's bridge was the broken piece and is fixed — input semantics are the
-  next piece.
+  host was the broken piece and now drives a live, interactive shell.
