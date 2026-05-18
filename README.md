@@ -6,6 +6,8 @@
   <b>A readable Zig shell, a native Windows terminal host, and a local AI sidecar — sharing themes, events, and approval semantics.</b>
 </p>
 
+> **Platform status — read this first.** The native graphical desktop runs on **Windows only** right now (verified working as of 2026-05-17). On **macOS and Linux** you get the shell, AgentD, and a terminal-attached launcher — there is **no native window yet**; native macOS and Linux hosts are in active development (Wave 3). Every screenshot and feature below is Windows unless stated otherwise.
+
 <p align="center">
   <a href="https://github.com/PascalAI2024/ZiggyZag/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/PascalAI2024/ZiggyZag/actions/workflows/ci.yml/badge.svg"></a>
   <a href="https://github.com/PascalAI2024/ZiggyZag/releases"><img alt="Latest release" src="https://img.shields.io/github/v/release/PascalAI2024/ZiggyZag?include_prereleases&color=9be28f&label=release"></a>
@@ -58,8 +60,8 @@ Pick a theme in the desktop with `Ctrl+Shift+T`. The terminal palette AND the sh
 
 | | |
 | --- | --- |
-| Zig lines | 18,170 |
-| Unit tests | 195 (193 pass, 2 skip) |
+| Zig lines | 18,395 |
+| Unit tests | 198 (196 pass, 2 skip) |
 | Binaries | 4 |
 | Cross-built targets | 5 (windows-x86_64, linux-x86_64, linux-aarch64, macos-x86_64, macos-aarch64) |
 | Third-party deps | 0 |
