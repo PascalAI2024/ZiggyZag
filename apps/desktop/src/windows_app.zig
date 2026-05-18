@@ -757,8 +757,16 @@ const App = struct {
         defer self.allocator.free(attr_list);
         if (InitializeProcThreadAttributeList(attr_list.ptr, 1, 0, &attr_size) == 0) return error.InitializeAttributeListFailed;
         defer DeleteProcThreadAttributeList(attr_list.ptr);
-        var hpc_value = hpc;
-        if (UpdateProcThreadAttribute(attr_list.ptr, 0, PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, @ptrCast(&hpc_value), @sizeOf(HPCON), null, null) == 0) {
+        // PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE takes the HPCON *value* as
+        // lpValue, NOT a pointer to it: the MS "Creating a Pseudoconsole"
+        // PrepareStartupInformation sample and Windows Terminal's
+        // ConptyConnection both pass `hpc` directly. Isolation testing on
+        // 2026-05-17 showed the prior `&hpc_value` form still attached the
+        // child to the pseudoconsole but the integration handshake did not
+        // reach `ready` — i.e. it was genuinely wrong, just not in the way
+        // CREATE_NO_WINDOW was. Use the documented canonical form.
+        // See docs/reviews/2026-05-17-windows-debug.md.
+        if (UpdateProcThreadAttribute(attr_list.ptr, 0, PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, @ptrCast(hpc), @sizeOf(HPCON), null, null) == 0) {
             return error.UpdateAttributeListFailed;
         }
 
@@ -772,7 +780,17 @@ const App = struct {
             null,
             null,
             0,
-            EXTENDED_STARTUPINFO_PRESENT | CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT,
+            // CREATE_NO_WINDOW must NOT be set here. It is a console-allocation
+            // flag: it forces the child to allocate its own (hidden) conhost,
+            // which conflicts with PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE — the
+            // child then ignores our pseudoconsole and CreateProcessW still
+            // returns success, so the bridge silently produces no I/O. The
+            // pseudoconsole already runs the child headless; no window appears.
+            // MS "Creating a Pseudoconsole session" + Process Creation Flags
+            // both state CREATE_NO_WINDOW/CREATE_NEW_CONSOLE are incompatible
+            // with a pseudoconsole. Diagnosed 2026-05-17 — see
+            // docs/reviews/2026-05-17-windows-debug.md.
+            EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT,
             env_block.view().ptr,
             cwd_w.ptr,
             &startup.StartupInfo,
