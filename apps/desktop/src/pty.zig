@@ -431,15 +431,219 @@ fn spawnConPty(opts: Pty.SpawnOptions) !Pty {
 }
 
 // ---------------------------------------------------------------------------
-// POSIX backend stubs
+// POSIX native backend (Wave 3)
 // ---------------------------------------------------------------------------
+//
+// Design notes (vtable contract vs ConPty):
+//
+// read_fn — non-blocking, matching ConPty semantics exactly:
+//   return 0   : no data currently available (ConPty: PeekNamedPipe avail==0)
+//   return N>0 : N bytes written into buf
+//   EndOfStream: fd closed / child exited (ConPty: PeekNamedPipe fails or
+//                ReadFile returns 0 bytes)
+//   Implementation: master_fd is set O_NONBLOCK after openPair; readFd's
+//   WouldBlock → 0, InputOutput (Linux EIO on slave close) → EndOfStream,
+//   return-0 from readFd (macOS on slave close) → EndOfStream.
+//
+// write_fn — delegates to posix_pty.writeAll; returns bytes.len on success.
+//
+// resize_fn — delegates to Session.resize (setWindowSize via TIOCSWINSZ).
+//
+// wait_fn — blocking: spins waitNoHang with a 10 ms nanosleep per iteration,
+//   consistent with ConPty's INFINITE WaitForSingleObject.
+//
+// deinit_fn — closes master fd, then reaps child via waitNoHang loop.
+//
+// argv/envp ownership: C-style sentinel arrays are allocated from
+// opts.allocator in the parent; freed immediately after spawnShell returns
+// (fork has already duplicated the address space; the child exec'd).
 
-// TODO Wave 3: wrap `posix_pty.spawnShell` + `relayPty` from `posix_app.zig`
-// behind the Pty vtable. The native backend is the long-term target for the
-// graphical host.
+const native_posix = if (builtin.os.tag != .windows) struct {
+    /// Heap-allocated context owned by the Pty vtable.  Freed in deinit_fn.
+    pub const NativePosixCtx = struct {
+        session: posix.Session,
+        allocator: Allocator,
+    };
+
+    // Set O_NONBLOCK on an fd using posix.system.fcntl, following the
+    // canonical std pattern from std/Io/Threaded.zig.
+    fn setNonBlock(fd: posix.Fd) !void {
+        const sys = std.posix.system;
+        const p = std.posix;
+        // GETFL: pass 0 as arg; result is the current flags as usize.
+        var flags: usize = fl: {
+            while (true) {
+                const rc = sys.fcntl(fd, p.F.GETFL, @as(usize, 0));
+                switch (p.errno(rc)) {
+                    .SUCCESS => break :fl @intCast(rc),
+                    .INTR => continue,
+                    else => return error.Unexpected,
+                }
+            }
+        };
+        flags |= @as(usize, 1) << @bitOffsetOf(std.posix.O, "NONBLOCK");
+        while (true) {
+            switch (p.errno(sys.fcntl(fd, p.F.SETFL, flags))) {
+                .SUCCESS => return,
+                .INTR => continue,
+                else => return error.Unexpected,
+            }
+        }
+    }
+
+    // Sleep ~10 ms without libc dependency.
+    // Mirrors posix_pty.zig's linux/libc split: linux syscall path for Linux
+    // (project does NOT link libc on Linux), std.c path for macOS/BSD.
+    fn sleepShort() void {
+        switch (builtin.os.tag) {
+            .linux => {
+                const ts = std.os.linux.timespec{ .sec = 0, .nsec = 10_000_000 };
+                _ = std.os.linux.nanosleep(&ts, null);
+            },
+            .macos, .freebsd, .netbsd, .openbsd => {
+                const ts = std.c.timespec{ .sec = 0, .nsec = 10_000_000 };
+                _ = std.c.nanosleep(&ts, null);
+            },
+            else => {},
+        }
+    }
+
+    pub fn deinit_fn(ctx: ?*anyopaque) void {
+        const self: *NativePosixCtx = @ptrCast(@alignCast(ctx.?));
+        // Close the master side — signals the child via SIGHUP.
+        self.session.closeMaster();
+        // Reap the child so it does not become a zombie.
+        while (true) {
+            const term = posix.waitNoHang(self.session.child_pid) catch break;
+            if (term != null) break;
+            sleepShort();
+        }
+        self.allocator.destroy(self);
+    }
+
+    /// Non-blocking read.  Returns 0 when no data is available;
+    /// returns error.EndOfStream when the master fd has been closed/drained.
+    pub fn read_fn(ctx: ?*anyopaque, buf: []u8) anyerror!usize {
+        const self: *NativePosixCtx = @ptrCast(@alignCast(ctx.?));
+        const n = posix.readFd(self.session.master_fd, buf) catch |err| switch (err) {
+            // On Linux, read(master) returns EIO when the slave side is closed.
+            // Map to EndOfStream to match ConPty's broken-pipe behaviour.
+            error.InputOutput => return error.EndOfStream,
+            // O_NONBLOCK: no data ready right now — return 0 (matches ConPty
+            // PeekNamedPipe avail==0 path).
+            error.WouldBlock => return 0,
+            else => return err,
+        };
+        // On macOS, read(master) returns 0 bytes when the slave side closes.
+        if (n == 0) return error.EndOfStream;
+        return n;
+    }
+
+    pub fn write_fn(ctx: ?*anyopaque, bytes: []const u8) anyerror!usize {
+        const self: *NativePosixCtx = @ptrCast(@alignCast(ctx.?));
+        try posix.writeAll(self.session.master_fd, bytes);
+        return bytes.len;
+    }
+
+    pub fn resize_fn(ctx: ?*anyopaque, cols: u16, rows: u16) anyerror!void {
+        const self: *NativePosixCtx = @ptrCast(@alignCast(ctx.?));
+        try self.session.resize(.{ .cols = cols, .rows = rows });
+    }
+
+    /// Blocking wait for the child to exit.  Spins waitNoHang + 10 ms sleep.
+    pub fn wait_fn(ctx: ?*anyopaque) anyerror!std.process.Child.Term {
+        const self: *NativePosixCtx = @ptrCast(@alignCast(ctx.?));
+        while (true) {
+            if (try posix.waitNoHang(self.session.child_pid)) |term| return term;
+            sleepShort();
+        }
+    }
+
+    const vtable: Pty.VTable = .{
+        .deinit_fn = deinit_fn,
+        .read_fn = read_fn,
+        .write_fn = write_fn,
+        .resize_fn = resize_fn,
+        .wait_fn = wait_fn,
+    };
+
+    pub fn spawn(opts: Pty.SpawnOptions) !Pty {
+        if (opts.argv.len == 0) return error.EmptyArgv;
+
+        const allocator = opts.allocator;
+
+        // --- Build NUL-terminated C argv array ---
+        // Each opts.argv element is a []const u8 Zig slice — not NUL-terminated.
+        // dupeZ allocates a NUL-terminated copy of each string so execve reads
+        // correct boundaries.  All copies are freed in the parent after fork.
+        const c_argv = try allocator.allocSentinel(?[*:0]const u8, opts.argv.len, null);
+        @memset(c_argv, null); // ensure defer is safe if dupeZ fails mid-loop
+        defer {
+            for (c_argv) |entry| {
+                if (entry) |p| allocator.free(std.mem.span(p));
+            }
+            allocator.free(c_argv);
+        }
+        for (opts.argv, 0..) |arg, i| {
+            const z = try allocator.dupeZ(u8, arg);
+            c_argv[i] = z.ptr;
+        }
+        // argv[0] is the shell path (same sentinel-terminated copy).
+        const shell_z: [*:0]const u8 = c_argv[0].?;
+
+        // --- Build C envp array from opts.env_map ---
+        const env_block = try opts.env_map.createPosixBlock(allocator, .{});
+        defer env_block.deinit(allocator);
+        // env_block.slice is [:null]const ?[*:0]const u8; reinterpret as
+        // the sentinel-pointer type that posix_pty.SpawnOptions.envp expects.
+        const c_envp: [*:null]const ?[*:0]const u8 = env_block.slice.ptr;
+
+        // --- Build NUL-terminated cwd if provided ---
+        const cwd_z: ?[:0]u8 = if (opts.cwd) |cwd|
+            try allocator.dupeZ(u8, cwd)
+        else
+            null;
+        defer if (cwd_z) |cz| allocator.free(cz);
+
+        // --- Spawn the shell ---
+        const session = try posix.spawnShell(.{
+            .shell_path = shell_z,
+            .argv = @ptrCast(c_argv.ptr),
+            .envp = c_envp,
+            .size = .{ .cols = opts.cols, .rows = opts.rows },
+            .cwd = if (cwd_z) |cz| cz.ptr else null,
+        });
+
+        // Set master_fd non-blocking so read_fn returns 0 when no data is
+        // available, matching ConPty's PeekNamedPipe non-blocking contract.
+        setNonBlock(session.master_fd) catch {};
+
+        const ctx = try allocator.create(NativePosixCtx);
+        ctx.* = .{
+            .session = session,
+            .allocator = allocator,
+        };
+        return Pty{ .ctx = ctx, .vtable = &vtable };
+    }
+} else struct {
+    // On Windows this namespace is empty; spawnNativePosix is never called
+    // (currentBackend() never returns .native_posix on Windows).
+    pub const NativePosixCtx = void;
+};
+
 fn spawnNativePosix(opts: Pty.SpawnOptions) !Pty {
-    _ = opts;
-    return error.NotImplemented;
+    // On Windows targets spawnNativePosix is a stub — the Windows ConPTY
+    // backend handles all PTY operations there.  The wired implementation
+    // lives in the `native_posix` namespace above and is compiled only for
+    // non-Windows targets.
+    //
+    // NOTE: The unit test "posix backend stubs return NotImplemented" asserts
+    // this returns error.NotImplemented when run on the Windows host, which
+    // is correct.  POSIX runtime behaviour (real fork/execve over /dev/ptmx,
+    // O_NONBLOCK semantics, EIO-on-EOF) can only be validated on Linux/macOS
+    // by the user.
+    if (builtin.os.tag == .windows) return error.NotImplemented;
+    return native_posix.spawn(opts);
 }
 
 // TODO Wave 3: wrap the `script(1)` fallback path from

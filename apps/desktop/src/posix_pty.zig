@@ -75,6 +75,9 @@ pub const SpawnOptions = struct {
     /// child shell should inherit or receive specific variables.
     envp: ?[*:null]const ?[*:0]const u8 = null,
     size: Size = .{},
+    /// Optional working directory for the child process. Null means inherit
+    /// the parent's cwd. Must be a NUL-terminated path.
+    cwd: ?[*:0]const u8 = null,
 };
 
 pub const Error = posix.OpenError || std.fmt.BufPrintError || error{
@@ -167,7 +170,7 @@ pub fn spawnShell(options: SpawnOptions) Error!Session {
 
     const pid = try forkProcess();
     if (pid == 0) {
-        childExec(pair, shell, argv, envp);
+        childExec(pair, shell, argv, envp, options.cwd);
     }
 
     pair.closeSlave();
@@ -297,11 +300,17 @@ fn childExec(
     shell: [*:0]const u8,
     argv: [*:null]const ?[*:0]const u8,
     envp: [*:null]const ?[*:0]const u8,
+    cwd: ?[*:0]const u8,
 ) noreturn {
     closeFd(pair.master_fd);
 
     if (setsidProcess()) |_| {} else |_| childExit(127);
     if (setControllingTty(pair.slave_fd)) |_| {} else |_| childExit(127);
+
+    // Change working directory in the child before exec, so the shell starts
+    // in the requested directory.  On failure the child exits with status 127,
+    // consistent with the other setup steps above.
+    if (cwd) |dir| chdirProcess(dir) catch childExit(127);
 
     dupTo(pair.slave_fd, 0) catch childExit(127);
     dupTo(pair.slave_fd, 1) catch childExit(127);
@@ -431,6 +440,26 @@ fn dupTo(old_fd: Fd, new_fd: Fd) Error!void {
             const rc = std.c.dup2(old_fd, new_fd);
             switch (std.c.errno(rc)) {
                 .SUCCESS => return,
+                else => |err| return errnoToError(err),
+            }
+        },
+        else => return error.UnsupportedOperatingSystem,
+    }
+}
+
+fn chdirProcess(path: [*:0]const u8) Error!void {
+    switch (native_os) {
+        .linux => {
+            const rc = linux.chdir(path);
+            switch (posix.errno(rc)) {
+                .SUCCESS => {},
+                else => |err| return errnoToError(err),
+            }
+        },
+        .macos, .freebsd, .netbsd, .openbsd => {
+            const rc = std.c.chdir(path);
+            switch (std.c.errno(rc)) {
+                .SUCCESS => {},
                 else => |err| return errnoToError(err),
             }
         },
