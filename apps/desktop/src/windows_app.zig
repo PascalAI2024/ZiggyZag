@@ -82,10 +82,7 @@ const WS_OVERLAPPEDWINDOW = 0x00CF0000;
 const WS_VISIBLE = 0x10000000;
 const SW_SHOW = 5;
 const COLOR_WINDOW = 5;
-const IDC_IBEAM = 32513;
-const IDI_APPLICATION = 32512;
 const TRANSPARENT = 1;
-const OPAQUE = 2;
 const FW_NORMAL = 400;
 const DEFAULT_CHARSET = 1;
 const OUT_DEFAULT_PRECIS = 0;
@@ -2552,7 +2549,7 @@ fn windowProc(hwnd: HWND, msg: UINT, wparam: WPARAM, lparam: LPARAM) callconv(.w
                     const pane_rect = app.paneRectForSlot(client_rect, app.active_pane);
                     const pane = app.activePane();
                     const col = pixelToCol(mx, pane_rect, app.char_width, pane.grid.width);
-                    const row = pixelToRow(my, pane_rect, app.char_height, app.status_height, pane.grid.height);
+                    const row = pixelToRow(my, pane_rect, app.char_height, pane.grid.height);
                     app.sel_end_row = row;
                     app.sel_end_col = col;
                     _ = InvalidateRect(hwnd, null, 0);
@@ -2571,7 +2568,7 @@ fn windowProc(hwnd: HWND, msg: UINT, wparam: WPARAM, lparam: LPARAM) callconv(.w
                 const pane_rect = app.paneRectForSlot(client_rect, app.active_pane);
                 const pane = app.activePane();
                 const col = pixelToCol(mx, pane_rect, app.char_width, pane.grid.width);
-                const row = pixelToRow(my, pane_rect, app.char_height, app.status_height, pane.grid.height);
+                const row = pixelToRow(my, pane_rect, app.char_height, pane.grid.height);
                 app.sel_start_row = row;
                 app.sel_start_col = col;
                 app.sel_end_row = row;
@@ -3114,8 +3111,7 @@ fn pixelToCol(x: i32, pane_rect: PaneRect, char_width: i32, grid_width: usize) u
     return @min(col, if (grid_width > 0) grid_width - 1 else 0);
 }
 
-fn pixelToRow(y: i32, pane_rect: PaneRect, char_height: i32, status_height: i32, grid_height: usize) usize {
-    _ = status_height;
+fn pixelToRow(y: i32, pane_rect: PaneRect, char_height: i32, grid_height: usize) usize {
     const rel = y - pane_rect.top - PANE_PAD_Y;
     if (rel < 0) return 0;
     const row: usize = @intCast(@divTrunc(rel, @max(char_height, 1)));
