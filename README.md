@@ -58,8 +58,8 @@ Pick a theme in the desktop with `Ctrl+Shift+T`. The terminal palette AND the sh
 
 | | |
 | --- | --- |
-| Zig lines | 16,570 |
-| Unit tests | 177 |
+| Zig lines | 18,170 |
+| Unit tests | 195 (193 pass, 2 skip) |
 | Binaries | 4 |
 | Cross-built targets | 5 (windows-x86_64, linux-x86_64, linux-aarch64, macos-x86_64, macos-aarch64) |
 | Third-party deps | 0 |
@@ -68,7 +68,7 @@ Pick a theme in the desktop with `Ctrl+Shift+T`. The terminal palette AND the sh
 
 ## Status — honestly
 
-- **Windows desktop**: alpha. Native Win32 + ConPTY host with split panes, palette (`Ctrl+Shift+P`), search (`Ctrl+Shift+F`), quick-select (`Ctrl+Shift+O`), AgentD panel (`Ctrl+Shift+A`), live theme cycle (`Ctrl+Shift+T`), settings overlay (`Ctrl+,`).
+- **Windows desktop**: alpha. Native Win32 + ConPTY host. The I/O bridge and typed-command execution were structurally broken at the `alpha.3` tag and were fixed 2026-05-17 (four bugs — see [CHANGELOG](CHANGELOG.md) and [`docs/reviews/2026-05-17-windows-debug.md`](docs/reviews/2026-05-17-windows-debug.md)); the host is now empirically drivable. Split panes, palette (`Ctrl+Shift+P`), search (`Ctrl+Shift+F`), quick-select (`Ctrl+Shift+O`), AgentD panel (`Ctrl+Shift+A`), live theme cycle via OSC 7777 (`Ctrl+Shift+T`), settings overlay (`Ctrl+,`).
 - **macOS / Linux desktop**: launcher only. Builds the shell, AgentD, and a terminal-attached launcher that prefers the native POSIX PTY relay. Native graphical hosts arrive in Wave 3 — see [`docs/vision/waves.md`](docs/vision/waves.md).
 - **Shell**: alpha-ready. 40+ builtins, native simple pipelines (`/bin/sh` fallback for complex), prompt themes (`classic`, `smart`, `compact`, `dev`, `dashboard`), abbreviations, autosuggestions, fuzzy Ctrl-R, history with metadata, project-aware tasks.
 - **AgentD**: alpha. Local-only by default. Tool list with approval policies, sandboxed reads, redacted output. Falls back gracefully when no provider is configured.
@@ -108,7 +108,7 @@ flowchart LR
     approval --> term
 ```
 
-Three processes, one product. The shell does parsing/execution. The desktop owns the window/grid/palette. The agent suggests and asks. Nothing in the diagram is mocked or aspirational — every arrow runs today.
+Three processes, one product. The shell does parsing/execution. The desktop owns the window/grid/palette. The agent suggests and asks. Nothing in the diagram is mocked or aspirational — every arrow runs today. The term↔shell PTY arrow was silently dead until 2026-05-17 (four Windows ConPTY bugs, now fixed — see [CHANGELOG](CHANGELOG.md)); it carries bytes bidirectionally now.
 
 ## Roadmap (waves, not dates)
 
@@ -116,13 +116,13 @@ Three processes, one product. The shell does parsing/execution. The desktop owns
 flowchart LR
     w1["W1: Dogfood"] --> w2["W2: Unified theme + brand"]
     w2 --> w3["W3: Native macOS/Linux\nAgentD universal input"]
-    w3 --> w4["W4: SQLite history\nStreaming pipelines\nOSC 7777 live themes"]
+    w3 --> w4["W4: SQLite history\nStreaming pipelines"]
     w4 --> w5["W5: Tabs + session restore\nKeybindings"]
     w5 --> w6["W6: 1.0\nSigned releases\n5 friend testers @ 2wk"]
-    style w2 stroke:#9be28f,stroke-width:2px
+    style w3 stroke:#9be28f,stroke-width:2px
 ```
 
-Wave 2 is the current wave — that is this push. Full gates in [`docs/vision/waves.md`](docs/vision/waves.md).
+Wave 2 is complete (tagged `v0.1.0-alpha.3`). Wave 3 is the current target. Full gates in [`docs/vision/waves.md`](docs/vision/waves.md).
 
 ## Credits
 

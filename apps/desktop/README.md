@@ -17,7 +17,7 @@ This directory contains a buildable Zig executable named `ziggyzag-desktop` plus
 - `integration.zig`: OSC 777 ZiggyZag event extraction that strips app-only events from display bytes.
 - `config.zig`: lightweight desktop settings model and key=value parser.
 - `theme.zig`: typed color, theme presets, lookup, and override primitives.
-- `pty.zig`: platform backend selector for Windows ConPTY and POSIX PTY work.
+- `pty.zig`: Wave 3 scaffold for a platform-abstracting `Pty` interface. Every backend currently returns `error.NotImplemented`; the working ConPTY path lives inline in `windows_app.zig` and is not yet behind this vtable.
 - `posix_app.zig`: macOS/Linux terminal-attached launcher used by alpha release artifacts, with native PTY relay and fallback launch paths.
 - `posix_pty.zig`: low-level POSIX PTY spawn, resize, relay, child-status, and tests for the future native POSIX host.
 

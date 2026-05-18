@@ -2,7 +2,9 @@
 
 You are one of the first three people outside Pascal to run ZiggyZag as a primary terminal. This page is what you read first.
 
-For background, the masterplan is at [`vision/masterplan.md`](../vision/masterplan.md), the wave plan with entry-gates and rollback criteria is at [`vision/waves.md`](../vision/waves.md), and the two external audits that opened this cohort are in [`reviews/2026-05-17-baseline.md`](../reviews/2026-05-17-baseline.md) and [`reviews/2026-05-17-polish.md`](../reviews/2026-05-17-polish.md). Read those when you want to know exactly what state the alpha is in. They are honest about what is broken.
+For background, the masterplan is at [`vision/masterplan.md`](../vision/masterplan.md), the wave plan with entry-gates and rollback criteria is at [`vision/waves.md`](../vision/waves.md), and the external audits that opened this cohort are in [`reviews/2026-05-17-baseline.md`](../reviews/2026-05-17-baseline.md), [`reviews/2026-05-17-polish.md`](../reviews/2026-05-17-polish.md), and [`reviews/2026-05-17-windows-debug.md`](../reviews/2026-05-17-windows-debug.md). Read those when you want to know exactly what state the alpha is in. They are honest about what is broken.
+
+A note for Windows testers: the `v0.1.0-alpha.3` zip spawns the desktop host but typed commands never execute — four structural ConPTY bugs were found and fixed after that tag. Build from the latest `main` branch (commit `eb8ab19` or later), or wait for `alpha.4`. Full record: [`reviews/2026-05-17-windows-debug.md`](../reviews/2026-05-17-windows-debug.md).
 
 ## Welcome
 
@@ -93,7 +95,7 @@ Don't waste a report on these — they are tracked and dated:
 - **Tabs.** Wave 5. Split panes work on Windows today; tabs do not.
 - **Native macOS window.** Wave 3 exit gate. Today the macOS desktop binary launches the shell in the calling terminal.
 - **SQLite history backend.** Wave 4. Today history is a TSV file with metadata.
-- **OSC 7777 live theme updates.** Wave 4. Today theme change requires a new process.
+- **OSC 7777 live theme updates.** Shipped in Wave 2. Press Ctrl+Shift+T in the Windows desktop host and themes update live, no restart.
 - **Signed Windows installer.** Wave 6. SmartScreen will warn on first run.
 
 Everything else is fair game. Thanks for being here.

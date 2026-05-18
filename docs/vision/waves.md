@@ -11,9 +11,9 @@ Companion documents: [`alpha-tasks.md`](alpha-tasks.md) is the line-by-line task
 | Wave | Codename | Audience | Headline | Status |
 | --- | --- | --- | --- | --- |
 | 1 | Dogfood | Pascal only | Pascal uses ZiggyZag every day | Complete |
-| 2 | Unified theme | Pascal + reviewer | One theme drives shell + desktop · brand · landing · ops | **Complete on disk · awaits `alpha.3` tag** |
+| 2 | Unified theme | Pascal + reviewer | One theme drives shell + desktop · brand · landing · ops | **Complete — tagged `v0.1.0-alpha.3`** |
 | 3 | Cross-platform | 3 friend testers | Native macOS & Linux desktop · AgentD universal input | Planned |
-| 4 | Durable state | 6 friend testers | SQLite history · streaming pipelines · OSC 7777 live themes | Planned |
+| 4 | Durable state | 6 friend testers | SQLite history · streaming pipelines | Planned |
 | 5 | Tabs & session | Public alpha | Tabs · session restore · keybindings · theme/prompt sync | Planned |
 | 6 | 1.0 | Public | Signed releases · 5 testers × 2 weeks · cross-platform parity | Planned |
 
@@ -94,7 +94,6 @@ Companion documents: [`alpha-tasks.md`](alpha-tasks.md) is the line-by-line task
 **Exit gate.**
 - SQLite history backend ships with Atuin-style schema (`id`, `command`, `cwd`, `hostname`, `exit_status`, `duration_ms`, `started_at`, `shell_session_id`). `HISTFILE` import on first run; `HISTFILE` retained as export target. New `history --where` query.
 - Streaming native pipelines: real OS pipe handles between stages, bounded captures, deadlock tests in CI.
-- OSC 7777 protocol shipped: live theme updates from desktop to shell without restart.
 - VT conformance binary in CI runs a fixed corpus and produces a diff against the grid snapshot.
 - 6 friend testers, each logging ≥ 1 week.
 

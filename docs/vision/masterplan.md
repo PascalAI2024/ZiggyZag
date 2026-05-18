@@ -30,13 +30,17 @@ Everything in this document is in service of those four sentences.
 
 These are the moves that change ZiggyZag's standing as a portfolio piece and as a usable tool. Tactical TODOs continue to live in `NEXT_20_FEATURES.md`; this list is *strategic*.
 
-### Move 1 — Unified theme protocol (✓ shipped in Wave 2 · `alpha.3` pending)
+### Move 1 — Unified theme protocol (✓ shipped in Wave 2 · tagged `alpha.3`)
 
-One config key drives the desktop palette AND the shell prompt colors. Implemented via env var (`ZIGGYZAG_THEME`) for child-process startup; v2 (OSC 7777 live updates) is specced for a compile-equipped session. See [`theme-protocol.md`](../reference/theme-protocol.md). Twenty themes ship today, every one audited for WCAG AA contrast — [`accessibility.md`](../reference/accessibility.md).
+One config key drives the desktop palette AND the shell prompt colors. Implemented via env var (`ZIGGYZAG_THEME`) for child-process startup; v2 (OSC 7777 live updates) is also shipped — the desktop's `cycleTheme` broadcasts an OSC 7777 sequence and the shell's `handleOscSequence` applies it without a restart. See [`theme-protocol.md`](../reference/theme-protocol.md). Twenty themes ship today, every one audited for WCAG AA contrast — [`accessibility.md`](../reference/accessibility.md).
+
+### Move 1.5 — Windows host I/O (✓ fixed 2026-05-17, post-`alpha.3`)
+
+At the time `alpha.3` was tagged the Windows ConPTY host was structurally broken: it spawned the shell but typed commands never executed. Four bugs: a stale-config resolver, a missing `CREATE_UNICODE_ENVIRONMENT` flag, a dead ConPTY bridge (`CREATE_NO_WINDOW` orphaned the child to a private conhost), and a no-op `TerminalMode` stub that left the shell in cooked line-input mode. All four were root-caused and fixed this session. The host is now empirically drivable — three independent signals: per-keystroke manual-echo redraws, a post-Enter command-output burst, and integration `status: ok`. Full record: [`../reviews/2026-05-17-windows-debug.md`](../reviews/2026-05-17-windows-debug.md).
 
 ### Move 2 — Cross-platform parity (Wave 3)
 
-Native Linux and macOS desktop hosts on top of the shared PTY abstraction. Today macOS/Linux get a launcher; by Wave 3 they get a native window. Until then, every screenshot in the README must be honestly labeled `Windows / macOS / Linux`.
+Native Linux and macOS desktop hosts. The `Pty` abstraction in `apps/desktop/src/pty.zig` is a Wave 3 scaffold today — every backend returns `error.NotImplemented` and the working ConPTY logic still lives inline in `windows_app.zig`; wiring it is part of this move, not a prerequisite already in hand. Today macOS/Linux get a terminal-attached launcher, not a native window. At 12 hours/week this is roughly a half-year of work, not a near-term deliverable. Until native hosts ship, every screenshot in the README must be honestly labeled `Windows / macOS / Linux`.
 
 ### Move 3 — AgentD universal input (Wave 3)
 

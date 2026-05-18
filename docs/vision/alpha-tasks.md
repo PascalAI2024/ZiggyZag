@@ -11,7 +11,7 @@ Navigation: use [task-system.md](../reference/task-system.md) for how task statu
 | Area | Status | Notes |
 | --- | --- | --- |
 | Shell core | Alpha-ready | REPL, builtins, history, completions, prompt themes, aliases, abbreviations, redirection, background jobs, project tasks, and simple native pipelines are present. |
-| Windows desktop host | Alpha | Win32/ConPTY host, terminal grid, keyboard input, resize, bounded scrollback, search, quick select, command palette, settings overlay, themes, copy-visible, paste, alternate screen, mouse-wheel handling, split panes, AgentD panel, and OSC 777 parsing are present. |
+| Windows desktop host | Alpha | Win32/ConPTY host, terminal grid, keyboard input, resize, bounded scrollback, search, quick select, command palette, settings overlay, themes, copy-visible, paste, alternate screen, mouse-wheel handling, split panes, AgentD panel, and OSC 777 parsing are present. I/O bridge and typed-command execution were broken at `alpha.3` and fixed 2026-05-17 (see `docs/reviews/2026-05-17-windows-debug.md`). |
 | macOS/Linux desktop host | Alpha launcher only | `ziggyzag-desktop` builds and launches ZiggyZag in the calling terminal, preferring the native POSIX PTY relay, then `script(1)`, then direct stdio. It is not a native graphical window yet. |
 | AgentD runtime | Alpha | `ziggyzag-agentd` exposes JSON-lines health, tool discovery, local read/search/git/build tools, approval metadata, host actions, and provider request shaping. |
 | AgentD desktop panel | Alpha | The Windows desktop host spawns AgentD, renders a bounded transcript, requests health/tools, previews `terminal.write`, and requires explicit approval before writing to the active PTY. |

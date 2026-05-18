@@ -64,12 +64,16 @@ zig build run-desktop
 
 On Windows, press `Ctrl+,` in the native desktop window to open the settings overlay. Press `Ctrl+Shift+P` for the command palette, `Ctrl+Shift+F` for scrollback search, `Ctrl+Shift+O` for quick select, `Ctrl+Shift+D` or `Ctrl+Shift+E` for vertical/horizontal splits, `Ctrl+Shift+N` for next pane, `Ctrl+Shift+W` to close the active pane, `Ctrl+Shift+A` for the AgentD panel, and `Ctrl+Shift+T` to cycle the built-in themes live.
 
-Built-in theme ids:
+Built-in theme ids (run `theme list` for the full set of 20):
 
 ```text
 ziggy
 catppuccin-mocha
+catppuccin-frappe
+catppuccin-macchiato
+catppuccin-latte
 tokyo-night
+tokyo-night-storm
 dracula
 nord
 rose-pine
@@ -77,8 +81,11 @@ gruvbox-dark
 everforest-dark
 kanagawa-wave
 solarized-dark
+solarized-light
 one-dark
+ayu-dark
 paper
+github-light
 ember
 ```
 
