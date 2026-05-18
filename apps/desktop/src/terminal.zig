@@ -2321,13 +2321,13 @@ test "DECAWM off: chars at the right margin overwrite last cell instead of wrapp
 test "DECAWM re-enable restores normal wrap behaviour" {
     var grid = try Grid.init(std.testing.allocator, 3, 2);
     defer grid.deinit();
-    grid.feed("\x1b[?7l");   // wrap off
-    grid.feed("ABCDE");      // D and E overwrite col 2
+    grid.feed("\x1b[?7l"); // wrap off
+    grid.feed("ABCDE"); // D and E overwrite col 2
 
-    grid.feed("\x1b[?7h");   // wrap back on
-    grid.feed("\x1b[1;1H");  // home
-    grid.feed("abc");        // fills row 0
-    grid.feed("X");          // should wrap to row 1, col 0
+    grid.feed("\x1b[?7h"); // wrap back on
+    grid.feed("\x1b[1;1H"); // home
+    grid.feed("abc"); // fills row 0
+    grid.feed("X"); // should wrap to row 1, col 0
 
     const line0 = try grid.lineAlloc(std.testing.allocator, 0);
     defer std.testing.allocator.free(line0);
@@ -2368,8 +2368,8 @@ test "CR embedded inside CSI moves cursor to column zero mid-sequence" {
     var grid = try Grid.init(std.testing.allocator, 8, 2);
     defer grid.deinit();
     // Move to col 4, then fire a CSI with a CR embedded before the final byte.
-    grid.feed("\x1b[1;5H");           // cursor at row 0 col 4
-    grid.feed("\x1b[1\r0;5HX");      // CR inside CSI -> col 0; then [10;5HX
+    grid.feed("\x1b[1;5H"); // cursor at row 0 col 4
+    grid.feed("\x1b[1\r0;5HX"); // CR inside CSI -> col 0; then [10;5HX
     // After CR cursor_x = 0, CSI "10;5H" -> row 10-1=9 clamped to 1, col 4.
     // After writing X at col 4, cursor advances to 5.
     try std.testing.expectEqual(@as(usize, 5), grid.cursor_x);
@@ -2380,8 +2380,8 @@ test "CR embedded inside CSI moves cursor to column zero mid-sequence" {
 test "BS embedded inside CSI moves cursor left mid-sequence" {
     var grid = try Grid.init(std.testing.allocator, 8, 1);
     defer grid.deinit();
-    grid.feed("ABC");                  // cursor at col 3
-    grid.feed("\x1b[3\x081mX");       // BS inside CSI -> cursor_x 2; [31m; X
+    grid.feed("ABC"); // cursor at col 3
+    grid.feed("\x1b[3\x081mX"); // BS inside CSI -> cursor_x 2; [31m; X
     // After BS cursor_x = 2, [31m applies, X written at col 2.
     try std.testing.expectEqual(@as(u8, 'X'), grid.cells[2].ch);
     try std.testing.expectEqual(Color.red, grid.cells[2].style.fg);
@@ -2406,9 +2406,9 @@ test "DECOM homes cursor to scroll_top on enable" {
     var grid = try Grid.init(std.testing.allocator, 4, 5);
     defer grid.deinit();
     // Set scroll region rows 2-4 (1-based), then enable DECOM.
-    grid.feed("\x1b[2;4r");     // scroll region, also homes cursor to (0,0)
-    grid.feed("\x1b[3;3H");     // move cursor away: row 3 col 3
-    grid.feed("\x1b[?6h");      // DECOM on — should home to (scroll_top=1, 0)
+    grid.feed("\x1b[2;4r"); // scroll region, also homes cursor to (0,0)
+    grid.feed("\x1b[3;3H"); // move cursor away: row 3 col 3
+    grid.feed("\x1b[?6h"); // DECOM on — should home to (scroll_top=1, 0)
     try std.testing.expectEqual(@as(usize, 0), grid.cursor_x);
     try std.testing.expectEqual(@as(usize, 1), grid.cursor_y); // scroll_top
 }
@@ -2418,7 +2418,7 @@ test "DECOM: CSI H row is relative to scroll_top and clamped" {
     defer grid.deinit();
     // Scroll region rows 3-5 (1-based), so scroll_top=2 scroll_bottom=4.
     grid.feed("\x1b[3;5r");
-    grid.feed("\x1b[?6h");      // DECOM on
+    grid.feed("\x1b[?6h"); // DECOM on
 
     // CSI 1;1H should go to (scroll_top+0, 0) = (2, 0).
     grid.feed("\x1b[1;1HX");
@@ -2437,7 +2437,7 @@ test "DECOM disable returns cursor home to row 0" {
     var grid = try Grid.init(std.testing.allocator, 4, 5);
     defer grid.deinit();
     grid.feed("\x1b[2;4r\x1b[?6h"); // DECOM on, homed to scroll_top
-    grid.feed("\x1b[?6l");           // DECOM off — homes to (0, 0)
+    grid.feed("\x1b[?6l"); // DECOM off — homes to (0, 0)
     try std.testing.expectEqual(@as(usize, 0), grid.cursor_x);
     try std.testing.expectEqual(@as(usize, 0), grid.cursor_y);
 }
@@ -2445,8 +2445,8 @@ test "DECOM disable returns cursor home to row 0" {
 test "DECOM: DECSTBM homes to scroll_top when origin mode is active" {
     var grid = try Grid.init(std.testing.allocator, 4, 6);
     defer grid.deinit();
-    grid.feed("\x1b[?6h");      // DECOM on (scroll_top still 0)
-    grid.feed("\x1b[3;5r");     // DECSTBM: should home to scroll_top=2
+    grid.feed("\x1b[?6h"); // DECOM on (scroll_top still 0)
+    grid.feed("\x1b[3;5r"); // DECSTBM: should home to scroll_top=2
     try std.testing.expectEqual(@as(usize, 0), grid.cursor_x);
     try std.testing.expectEqual(@as(usize, 2), grid.cursor_y);
 }
@@ -2457,11 +2457,11 @@ test "ESC H sets a tab stop at the current column" {
     defer grid.deinit();
 
     // Move to col 5 (not a default stop) and set a stop there.
-    grid.feed("\x1b[1;6H");   // col 5 (1-based -> 0-based col 5)
-    grid.feed("\x1bH");       // HTS: set stop at col 5
+    grid.feed("\x1b[1;6H"); // col 5 (1-based -> 0-based col 5)
+    grid.feed("\x1bH"); // HTS: set stop at col 5
 
     // Now tab from col 0: should land at 5 (our new stop), not 8.
-    grid.feed("\x1b[1;1H");  // home
+    grid.feed("\x1b[1;1H"); // home
     grid.feed("\tX");
     try std.testing.expectEqual(@as(usize, 5), grid.cursor_x - 1); // X at col 5, cursor at 6
     try std.testing.expectEqual(@as(u8, 'X'), grid.cells[5].ch);
@@ -2472,8 +2472,8 @@ test "TBC clears the tab stop at the cursor column" {
     defer grid.deinit();
 
     // Clear the default stop at column 8.
-    grid.feed("\x1b[1;9H");   // move to col 8 (1-based 9)
-    grid.feed("\x1b[0g");     // TBC: clear stop at cursor
+    grid.feed("\x1b[1;9H"); // move to col 8 (1-based 9)
+    grid.feed("\x1b[0g"); // TBC: clear stop at cursor
 
     // Tab from col 0: should skip 8 (cleared) and land at 16.
     grid.feed("\x1b[1;1H\tX");
@@ -2484,7 +2484,7 @@ test "TBC clears the tab stop at the cursor column" {
 test "TBC 3 clears all tab stops" {
     var grid = try Grid.init(std.testing.allocator, 20, 1);
     defer grid.deinit();
-    grid.feed("\x1b[3g");     // TBC 3: clear all stops
+    grid.feed("\x1b[3g"); // TBC 3: clear all stops
 
     // Tab from col 0 with no stops: cursor should jump to last column (19).
     // Then X is written at col 19; cursor stays at 19 with wrap_pending set.
@@ -2503,7 +2503,7 @@ test "HTS and TBC interact correctly with default eight-column stops" {
     try std.testing.expectEqual(@as(u8, 'X'), grid.cells[8].ch);
 
     // Add a stop at col 4, tab from col 1 -> col 4.
-    grid.feed("\x1b[1;5H\x1bH");  // set stop at col 4
+    grid.feed("\x1b[1;5H\x1bH"); // set stop at col 4
     grid.feed("\x1b[1;2H\tY");
     try std.testing.expectEqual(@as(u8, 'Y'), grid.cells[4].ch);
 }
@@ -2511,8 +2511,8 @@ test "HTS and TBC interact correctly with default eight-column stops" {
 test "ESC c resets tab stops to eight-column defaults" {
     var grid = try Grid.init(std.testing.allocator, 20, 1);
     defer grid.deinit();
-    grid.feed("\x1b[3g");   // clear all stops
-    grid.feed("\x1bc");     // hard reset — should restore defaults
+    grid.feed("\x1b[3g"); // clear all stops
+    grid.feed("\x1bc"); // hard reset — should restore defaults
 
     // Tab from col 0 -> col 8.
     grid.feed("\x1b[1;1H\tX");
@@ -2527,8 +2527,8 @@ test "ESC c resets tab stops to eight-column defaults" {
 test "vt: CSI H and f are equivalent for absolute cursor positioning" {
     var grid = try Grid.init(std.testing.allocator, 8, 4);
     defer grid.deinit();
-    grid.feed("\x1b[2;4HX");   // CSI H: row 2 col 4
-    grid.feed("\x1b[3;2fY");   // CSI f: row 3 col 2
+    grid.feed("\x1b[2;4HX"); // CSI H: row 2 col 4
+    grid.feed("\x1b[3;2fY"); // CSI f: row 3 col 2
     try std.testing.expectEqual(@as(u8, 'X'), grid.cells[1 * grid.width + 3].ch);
     try std.testing.expectEqual(@as(u8, 'Y'), grid.cells[2 * grid.width + 1].ch);
 }
@@ -2536,11 +2536,11 @@ test "vt: CSI H and f are equivalent for absolute cursor positioning" {
 test "vt: cursor save/restore preserves position across styles" {
     var grid = try Grid.init(std.testing.allocator, 8, 3);
     defer grid.deinit();
-    grid.feed("\x1b[2;3H");    // cursor at row 1 col 2
-    grid.feed("\x1b[s");       // save (CSI s)
-    grid.feed("\x1b[31m");     // change style
-    grid.feed("\x1b[3;1H");    // move elsewhere
-    grid.feed("\x1b[u");       // restore
+    grid.feed("\x1b[2;3H"); // cursor at row 1 col 2
+    grid.feed("\x1b[s"); // save (CSI s)
+    grid.feed("\x1b[31m"); // change style
+    grid.feed("\x1b[3;1H"); // move elsewhere
+    grid.feed("\x1b[u"); // restore
     try std.testing.expectEqual(@as(usize, 2), grid.cursor_x);
     try std.testing.expectEqual(@as(usize, 1), grid.cursor_y);
 }
@@ -2548,9 +2548,9 @@ test "vt: cursor save/restore preserves position across styles" {
 test "vt: ESC 7 / ESC 8 save-restore round-trips cursor" {
     var grid = try Grid.init(std.testing.allocator, 8, 4);
     defer grid.deinit();
-    grid.feed("\x1b[3;5H");    // cursor row 2 col 4
+    grid.feed("\x1b[3;5H"); // cursor row 2 col 4
     grid.feed("\x1b" ++ "7"); // ESC 7: save
-    grid.feed("\x1b[1;1H");   // home
+    grid.feed("\x1b[1;1H"); // home
     grid.feed("\x1b" ++ "8"); // ESC 8: restore
     try std.testing.expectEqual(@as(usize, 4), grid.cursor_x);
     try std.testing.expectEqual(@as(usize, 2), grid.cursor_y);
@@ -2560,7 +2560,7 @@ test "vt: ED 0 erases from cursor to end-of-screen" {
     var grid = try Grid.init(std.testing.allocator, 4, 3);
     defer grid.deinit();
     grid.feed("ABCD\nEFGH\nIJKL");
-    grid.feed("\x1b[2;3H");    // cursor row 1 col 2
+    grid.feed("\x1b[2;3H"); // cursor row 1 col 2
     grid.feed("\x1b[0J");
 
     const row0 = try grid.lineAlloc(std.testing.allocator, 0);
@@ -2615,12 +2615,12 @@ test "vt: EL 0/1/2 erase within the current line only" {
 test "vt: alternate screen switch preserves primary scrollback" {
     var grid = try Grid.initWithMaxScrollback(std.testing.allocator, 4, 2, 16);
     defer grid.deinit();
-    grid.feed("line\nnext\nlast");   // 1 line pushed to scrollback
+    grid.feed("line\nnext\nlast"); // 1 line pushed to scrollback
     const hist_before = grid.historyLen();
 
-    grid.feed("\x1b[?1049h");        // enter alt screen
-    grid.feed("alt1\nalt2\nalt3");   // scroll alt screen
-    grid.feed("\x1b[?1049l");        // exit alt screen
+    grid.feed("\x1b[?1049h"); // enter alt screen
+    grid.feed("alt1\nalt2\nalt3"); // scroll alt screen
+    grid.feed("\x1b[?1049l"); // exit alt screen
 
     try std.testing.expectEqual(hist_before, grid.historyLen());
     const row0 = try grid.lineAlloc(std.testing.allocator, 0);
@@ -2632,9 +2632,9 @@ test "vt: private mode 47 (simple alt screen) switches buffers" {
     var grid = try Grid.init(std.testing.allocator, 4, 2);
     defer grid.deinit();
     grid.feed("main");
-    grid.feed("\x1b[?47h");   // enter alt (no cursor save)
+    grid.feed("\x1b[?47h"); // enter alt (no cursor save)
     try std.testing.expect(grid.isAlternateScreen());
-    grid.feed("\x1b[?47l");   // exit
+    grid.feed("\x1b[?47l"); // exit
     try std.testing.expect(!grid.isAlternateScreen());
     const row0 = try grid.lineAlloc(std.testing.allocator, 0);
     defer std.testing.allocator.free(row0);
@@ -2681,7 +2681,7 @@ test "vt: stray ESC [ without final byte resyncs on next ESC" {
 test "vt: CSI with unknown final byte is silently ignored" {
     var grid = try Grid.init(std.testing.allocator, 8, 1);
     defer grid.deinit();
-    grid.feed("\x1b[99~");   // 0x7e is a valid final byte (DEL key VT); parsed but not handled
+    grid.feed("\x1b[99~"); // 0x7e is a valid final byte (DEL key VT); parsed but not handled
     grid.feed("X");
     try std.testing.expectEqual(@as(u8, 'X'), grid.cells[0].ch);
     try std.testing.expectEqual(@as(usize, 0), grid.cursor_y);
@@ -2737,8 +2737,8 @@ test "tab stops are reinitialised at new width after resize" {
 
     // Verify the stop is reachable: tab from col 0 should skip default stops
     // at 0, 8, 16 and land on the custom stop at 18, then X goes to col 19.
-    grid.feed("\x1b[1;1H");  // cursor home
-    grid.feed("\t\t\tX");    // three tabs: 0→8→16→18, then X at 18, cursor→19
+    grid.feed("\x1b[1;1H"); // cursor home
+    grid.feed("\t\t\tX"); // three tabs: 0→8→16→18, then X at 18, cursor→19
     try std.testing.expectEqual(@as(u8, 'X'), grid.cells[18].ch);
     try std.testing.expectEqual(@as(usize, 19), grid.cursor_x);
 }

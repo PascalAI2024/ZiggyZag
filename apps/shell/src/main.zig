@@ -5984,10 +5984,10 @@ test "OSC payload with malformed body is ignored" {
     var shell = Shell.init(std.testing.allocator, undefined, &env);
     defer shell.deinit();
 
-    applyOscPayload(&shell, "7777");                            // no separator
-    applyOscPayload(&shell, "7777;");                           // empty body
-    applyOscPayload(&shell, "7777;no-equals");                  // no key=value
-    applyOscPayload(&shell, "7777;wrong.key=ziggy");            // unknown key
+    applyOscPayload(&shell, "7777"); // no separator
+    applyOscPayload(&shell, "7777;"); // empty body
+    applyOscPayload(&shell, "7777;no-equals"); // no key=value
+    applyOscPayload(&shell, "7777;wrong.key=ziggy"); // unknown key
     try std.testing.expectEqualStrings("ziggy", shell.current_theme.id);
 }
 

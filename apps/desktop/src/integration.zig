@@ -236,21 +236,48 @@ pub fn jsonUnescapeInto(dest: []u8, src: []const u8) usize {
         if (si + 1 >= src.len) break;
         si += 1;
         switch (src[si]) {
-            '\\' => { dest[di] = '\\'; di += 1; },
-            '"'  => { dest[di] = '"';  di += 1; },
-            '/'  => { dest[di] = '/';  di += 1; },
-            'n'  => { dest[di] = '\n'; di += 1; },
-            'r'  => { dest[di] = '\r'; di += 1; },
-            't'  => { dest[di] = '\t'; di += 1; },
-            'b'  => { dest[di] = 0x08; di += 1; },
-            'f'  => { dest[di] = 0x0c; di += 1; },
-            'u'  => {
+            '\\' => {
+                dest[di] = '\\';
+                di += 1;
+            },
+            '"' => {
+                dest[di] = '"';
+                di += 1;
+            },
+            '/' => {
+                dest[di] = '/';
+                di += 1;
+            },
+            'n' => {
+                dest[di] = '\n';
+                di += 1;
+            },
+            'r' => {
+                dest[di] = '\r';
+                di += 1;
+            },
+            't' => {
+                dest[di] = '\t';
+                di += 1;
+            },
+            'b' => {
+                dest[di] = 0x08;
+                di += 1;
+            },
+            'f' => {
+                dest[di] = 0x0c;
+                di += 1;
+            },
+            'u' => {
                 // skip \uXXXX (4 hex digits); emit '?' as placeholder
                 if (si + 4 < src.len) si += 4;
                 dest[di] = '?';
                 di += 1;
             },
-            else => { dest[di] = src[si]; di += 1; },
+            else => {
+                dest[di] = src[si];
+                di += 1;
+            },
         }
         si += 1;
     }
