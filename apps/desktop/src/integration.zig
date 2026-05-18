@@ -216,6 +216,47 @@ fn isJsonWhitespace(byte: u8) bool {
     return byte == ' ' or byte == '\n' or byte == '\r' or byte == '\t';
 }
 
+/// Unescape a JSON string body (the raw bytes between the surrounding quotes,
+/// as returned by `jsonStringValue`) into `dest`. Returns the number of bytes
+/// written. Handles the common single-character escapes (`\\`, `\"`, `\/`,
+/// `\n`, `\r`, `\t`, `\b`, `\f`) and skips unrecognised `\uXXXX` sequences
+/// by emitting a replacement `?`. The destination is never overflowed; writing
+/// stops when `dest` is full.
+pub fn jsonUnescapeInto(dest: []u8, src: []const u8) usize {
+    var di: usize = 0;
+    var si: usize = 0;
+    while (si < src.len and di < dest.len) {
+        if (src[si] != '\\') {
+            dest[di] = src[si];
+            di += 1;
+            si += 1;
+            continue;
+        }
+        // backslash escape — need at least one more byte
+        if (si + 1 >= src.len) break;
+        si += 1;
+        switch (src[si]) {
+            '\\' => { dest[di] = '\\'; di += 1; },
+            '"'  => { dest[di] = '"';  di += 1; },
+            '/'  => { dest[di] = '/';  di += 1; },
+            'n'  => { dest[di] = '\n'; di += 1; },
+            'r'  => { dest[di] = '\r'; di += 1; },
+            't'  => { dest[di] = '\t'; di += 1; },
+            'b'  => { dest[di] = 0x08; di += 1; },
+            'f'  => { dest[di] = 0x0c; di += 1; },
+            'u'  => {
+                // skip \uXXXX (4 hex digits); emit '?' as placeholder
+                if (si + 4 < src.len) si += 4;
+                dest[di] = '?';
+                di += 1;
+            },
+            else => { dest[di] = src[si]; di += 1; },
+        }
+        si += 1;
+    }
+    return di;
+}
+
 test "extracts OSC 777 events and strips them from display bytes" {
     const input = "a\x1b]777;ziggyzag:event:{\"type\":\"command.finished\",\"status\":0}\x07b";
     var extracted = try extract(std.testing.allocator, input);
@@ -304,6 +345,35 @@ test "reads simple JSON string values" {
     try std.testing.expectEqualStrings("prompt.rendered", jsonStringValue(payload, "type").?);
     try std.testing.expectEqualStrings("C:/dev/ZiggyZag", jsonStringValue(payload, "cwd").?);
     try std.testing.expect(jsonStringValue(payload, "missing") == null);
+}
+
+test "jsonUnescapeInto unescapes Windows backslashes in cwd" {
+    // The shell emits Windows paths as JSON-escaped backslashes: C:\\Users\\foo
+    // jsonStringValue returns the raw JSON body (with \\); jsonUnescapeInto
+    // must convert each \\ pair back to a single backslash.
+    const raw = "C:\\\\Users\\\\pasca\\\\dev\\\\ZiggyZag";
+    var dest: [260]u8 = undefined;
+    const len = jsonUnescapeInto(&dest, raw);
+    try std.testing.expectEqualStrings("C:\\Users\\pasca\\dev\\ZiggyZag", dest[0..len]);
+}
+
+test "jsonUnescapeInto handles all common escapes" {
+    var dest: [64]u8 = undefined;
+    const len = jsonUnescapeInto(&dest, "tab\\there\\nnewline\\r\\\"quote\\\\slash");
+    try std.testing.expectEqualStrings("tab\there\nnewline\r\"quote\\slash", dest[0..len]);
+}
+
+test "jsonUnescapeInto round-trips a prompt.rendered cwd from Windows" {
+    // Simulate the full path from the shell: appendJsonString encodes
+    // C:\Users\pasca\dev\ZiggyZag as "C:\\Users\\pasca\\dev\\ZiggyZag" in JSON.
+    // jsonStringValue returns the body between quotes: C:\\Users\\pasca\\dev\\ZiggyZag
+    // jsonUnescapeInto must yield the original path.
+    const payload = "{\"type\":\"prompt.rendered\",\"cwd\":\"C:\\\\Users\\\\pasca\\\\dev\\\\ZiggyZag\"}";
+    const raw_cwd = jsonStringValue(payload, "cwd").?;
+    // raw_cwd is C:\\Users\\pasca\\dev\\ZiggyZag (doubled backslashes — raw JSON)
+    var dest: [260]u8 = undefined;
+    const len = jsonUnescapeInto(&dest, raw_cwd);
+    try std.testing.expectEqualStrings("C:\\Users\\pasca\\dev\\ZiggyZag", dest[0..len]);
 }
 
 test "reads simple JSON integer values" {

@@ -281,9 +281,7 @@ const Status = struct {
     jobs: usize = 0,
 
     fn setCwd(self: *Status, cwd: []const u8) void {
-        const len = @min(cwd.len, self.cwd.len);
-        @memcpy(self.cwd[0..len], cwd[0..len]);
-        self.cwd_len = len;
+        self.cwd_len = integration.jsonUnescapeInto(&self.cwd, cwd);
     }
 
     fn cwdSlice(self: *const Status) []const u8 {
@@ -291,9 +289,7 @@ const Status = struct {
     }
 
     fn setProjectKind(self: *Status, project_kind: []const u8) void {
-        const len = @min(project_kind.len, self.project_kind.len);
-        @memcpy(self.project_kind[0..len], project_kind[0..len]);
-        self.project_kind_len = len;
+        self.project_kind_len = integration.jsonUnescapeInto(&self.project_kind, project_kind);
     }
 
     fn projectKindSlice(self: *const Status) []const u8 {
@@ -301,9 +297,7 @@ const Status = struct {
     }
 
     fn setGitBranch(self: *Status, branch: []const u8) void {
-        const len = @min(branch.len, self.git_branch.len);
-        @memcpy(self.git_branch[0..len], branch[0..len]);
-        self.git_branch_len = len;
+        self.git_branch_len = integration.jsonUnescapeInto(&self.git_branch, branch);
     }
 
     fn gitBranchSlice(self: *const Status) []const u8 {
