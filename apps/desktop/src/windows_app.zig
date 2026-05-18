@@ -180,7 +180,9 @@ const TEXTMETRICW = extern struct {
 };
 
 extern "kernel32" fn Sleep(milliseconds: DWORD) callconv(.winapi) void;
-extern "kernel32" fn GetTickCount() callconv(.winapi) DWORD;
+// GetTickCount64 (not GetTickCount) — the 32-bit variant wraps at ~49.7
+// days of uptime, which would corrupt the hint's elapsed-time math.
+extern "kernel32" fn GetTickCount64() callconv(.winapi) u64;
 extern "kernel32" fn GlobalAlloc(flags: UINT, bytes: usize) callconv(.winapi) HGLOBAL;
 extern "kernel32" fn GlobalLock(memory: HGLOBAL) callconv(.winapi) LPVOID;
 extern "kernel32" fn GlobalUnlock(memory: HGLOBAL) callconv(.winapi) BOOL;
@@ -656,11 +658,13 @@ const App = struct {
     }
 
     fn rebuildFont(self: *App) !void {
-        if (self.font) |old| _ = DeleteObject(@ptrCast(old));
         const font_name = try std.unicode.utf8ToUtf16LeAllocZ(self.allocator, self.config.font.family);
         defer self.allocator.free(font_name);
         const font_height = -@as(i32, @intCast(self.config.font.size + 2));
-        self.font = CreateFontW(
+        // Create the replacement before destroying the current font, so a
+        // failed CreateFontW leaves the window with its working font rather
+        // than none.
+        const new_font = CreateFontW(
             font_height,
             0,
             0,
@@ -676,6 +680,10 @@ const App = struct {
             FIXED_PITCH | FF_MODERN,
             font_name.ptr,
         );
+        if (new_font) |nf| {
+            if (self.font) |old| _ = DeleteObject(@ptrCast(old));
+            self.font = nf;
+        }
     }
 
     fn rebuildThemeBrushes(self: *App) void {
@@ -2226,7 +2234,7 @@ const App = struct {
     }
 
     fn paintHintBar(self: *App, hdc: HDC, rect: RECT) void {
-        const now_ms: i64 = @intCast(GetTickCount());
+        const now_ms: i64 = @intCast(GetTickCount64());
         if (self.hint_first_paint_ms == 0) {
             self.hint_first_paint_ms = now_ms;
         }
