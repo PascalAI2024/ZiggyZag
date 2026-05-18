@@ -489,9 +489,11 @@ const App = struct {
     sel_end_row: usize = 0,
     sel_end_col: usize = 0,
     sel_dragging: bool = false,
-    // Hint state (item 8)
+    // Hint state (item 8). Rendered as a thin reserved ticker strip at the
+    // very top so it never overlaps the terminal grid / typed text.
     hint_dismissed: bool = false,
     hint_first_paint_ms: i64 = 0,
+    hint_reserved: bool = false,
 
     fn init(allocator: Allocator, io: std.Io, env: *std.process.Environ.Map) !App {
         var app = App{
@@ -1646,14 +1648,25 @@ const App = struct {
         }
     }
 
+    /// Whether the discoverability ticker is currently shown.
+    fn hintVisible(self: *const App) bool {
+        return self.config.options.show_hints and !self.hint_dismissed;
+    }
+
+    /// Thin single-line strip reserved at the very top for the ticker.
+    fn hintBarHeight(self: *const App) i32 {
+        return self.char_height + 4;
+    }
+
     fn paneRectForSlot(self: *const App, rect: RECT, slot: usize) PaneRect {
         const count = @max(self.paneCount(), 1);
         const ordinal = self.paneOrdinal(slot) orelse 0;
+        const hint_reserve: LONG = if (self.hintVisible()) self.hintBarHeight() else 0;
         var area = RECT{
             .left = rect.left,
-            .top = rect.top,
+            .top = rect.top + hint_reserve,
             .right = rect.right,
-            .bottom = @max(rect.top + self.char_height, rect.bottom - self.status_height),
+            .bottom = @max(rect.top + hint_reserve + self.char_height, rect.bottom - self.status_height),
         };
         if (count <= 1) return area;
         if (self.split_orientation == .vertical) {
@@ -1698,6 +1711,16 @@ const App = struct {
         if (GetTextMetricsW(hdc, &metrics) != 0) {
             self.char_width = @max(metrics.tmAveCharWidth, 6);
             self.char_height = @max(metrics.tmHeight + metrics.tmExternalLeading, 12);
+        }
+
+        // When the ticker appears or is dismissed, the reserved top strip
+        // changes — reflow the grid/PTY once so the terminal never renders
+        // under it (and reclaims the strip when it goes away). Done here,
+        // before the paint mutex is taken (resizeForClient takes it itself).
+        const hint_now = self.hintVisible();
+        if (hint_now != self.hint_reserved) {
+            self.hint_reserved = hint_now;
+            self.resizeForClient(rect);
         }
 
         self.mutex.lock();
@@ -2211,11 +2234,15 @@ const App = struct {
             self.hint_first_paint_ms = now_ms;
         }
         const elapsed = now_ms - self.hint_first_paint_ms;
-        if (elapsed > 8000) {
+        if (elapsed > 12000) {
+            // Auto-hide; the next paint's transition check reflows the grid
+            // to reclaim the strip.
             self.hint_dismissed = true;
             return;
         }
-        const bar_height = self.char_height + 10;
+        // Thin single-line strip occupying exactly the reserved top space
+        // (hintBarHeight) — never overlaps the grid below it.
+        const bar_height = self.hintBarHeight();
         const top = rect.top;
         var bar = RECT{ .left = rect.left, .top = top, .right = rect.right, .bottom = top + bar_height };
         _ = FillRect(hdc, &bar, self.panel_brush);
@@ -2227,9 +2254,16 @@ const App = struct {
         }
         _ = SetBkMode(hdc, TRANSPARENT);
         _ = SetTextColor(hdc, toColorRef(self.selected_theme.muted));
-        const hint = "Ctrl+Shift+T theme  |  Ctrl+, settings  |  Ctrl+Shift+P palette";
+        // Ticker: cycle the tips every ~3s so all controls surface in the
+        // slim strip without making it tall.
+        const tips = [_][]const u8{
+            "Ctrl+Shift+T  cycle theme",
+            "Ctrl+,  settings  ·  Ctrl+Shift+P  command palette",
+            "drag to select · right-click paste · Ctrl+Shift+F search",
+        };
+        const tip = tips[@as(usize, @intCast(@divTrunc(now_ms, 3000))) % tips.len];
         const max_width = rect.right - rect.left - 20;
-        drawUtf8TextFitted(hdc, 10, top + 5, hint, max_width, self.char_width);
+        drawUtf8TextFitted(hdc, 10, top + 2, tip, max_width, self.char_width);
     }
 
     fn dismissHint(self: *App) void {
