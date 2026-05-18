@@ -681,7 +681,7 @@
       <div class="terminal-body">
         <div><span class="pp">ziggy</span> <span class="pdir">~/dev/ZiggyZag</span> <span class="pgit">git:main</span></div>
         <div><span class="arrow">❯</span> <span class="pcmd">zig build test</span></div>
-        <div><span class="pout-acc">All 197 tests passed</span></div>
+        <div><span class="pout-acc">196/198 tests passed (2 skipped)</span></div>
         <div><span class="pout-warn">warning: bounded scrollback (10000 lines)</span></div>
         <div><span class="pout-err">error: file not found (recoverable)</span></div>
         <div><span class="pout-info">info: theme cycle next → catppuccin-mocha</span></div>
@@ -693,7 +693,7 @@
 
     <div style="margin-top: 32px;">
       <p style="color: var(--zz-fg-muted); font-size: 14px;">
-        <span class="pill violet">protocol</span> See <a href="reference/theme-protocol.md">theme-protocol.md</a> — env-var v1 today, OSC 7777 live updates queued for Wave 4.
+        <span class="pill violet">protocol</span> See <a href="reference/theme-protocol.md">theme-protocol.md</a> — v1 is the <code class="inline">ZIGGYZAG_THEME</code> env-var path; v2 OSC 7777 live updates are shipped: <kbd style="font-family:'Cascadia Mono',monospace; padding:2px 6px; border:1px solid var(--zz-border-strong); border-radius:4px; background:var(--zz-bg-panel); font-size:12px">Ctrl+Shift+T</kbd> in the Windows host cycles themes live with no restart.
         <span class="pill green">accessibility</span> Full WCAG AA contrast audit at <a href="reference/accessibility.md">accessibility.md</a> — 11 of 20 pass on every pair, 9 documented as needs-work with honest explanations.
       </p>
     </div>
@@ -706,7 +706,7 @@
   <div class="wrap">
     <span class="eyebrow-tag">FEATURE TOUR</span>
     <h2>What it does, in pictures</h2>
-    <p class="lede">Four surfaces that distinguish ZiggyZag from "yet another terminal." Each is built and shipping in the Windows alpha; macOS and Linux get them in Wave 3.</p>
+    <p class="lede">Four surfaces that distinguish ZiggyZag from "yet another terminal." Each is built and shipping in the Windows alpha; macOS and Linux are terminal-attached launchers today and will get native graphical hosts in Wave 3.</p>
 
     <div class="spotlight">
       <div class="spot-copy">
@@ -820,7 +820,7 @@
   <div class="wrap">
     <span class="eyebrow-tag">CHEATSHEET</span>
     <h2>Every shortcut, on one page</h2>
-    <p class="lede">All current keybindings, grouped by surface. Every chord listed here works in the Windows alpha today. macOS and Linux equivalents arrive with the native graphical hosts in Wave 3.</p>
+    <p class="lede">All current keybindings, grouped by surface. Every chord listed here works in the Windows alpha today. macOS and Linux native graphical hosts are planned for Wave 3; the shell shortcuts work in any terminal on those platforms now.</p>
 
     <div class="cheatsheet">
       <div class="cheat-group">
@@ -890,7 +890,7 @@
   <div class="wrap">
     <span class="eyebrow-tag">HONEST COMPARISON</span>
     <h2>Where ZiggyZag fits</h2>
-    <p class="lede">ZiggyZag is not trying to replace Ghostty, WezTerm, or Warp. It's trying to be a small enough codebase that a learner can read every byte, while still being good enough for daily use on Windows today and on macOS / Linux by Wave 3. Here is what each project chose differently.</p>
+    <p class="lede">ZiggyZag is not trying to replace Ghostty, WezTerm, or Warp. It's trying to be a small enough codebase that a learner can read every byte, while still being good enough for daily use on Windows today and eventually on macOS / Linux as native hosts mature in Wave 3. Here is what each project chose differently.</p>
 
     <table class="compare" aria-label="Comparison vs other terminals">
       <thead>
@@ -907,7 +907,7 @@
         <tr><td>Tabs</td><td class="n">Wave 5</td><td class="y">Yes</td><td class="y">Yes</td><td class="y">Yes</td></tr>
         <tr><td>Account required</td><td class="y">Never</td><td class="y">Never</td><td class="y">Never</td><td class="m">For some features</td></tr>
         <tr><td>License</td><td>MIT</td><td>MIT</td><td>MIT</td><td>Closed-source</td></tr>
-        <tr><td>Lines of code</td><td>~16.5k</td><td>~150k</td><td>~210k</td><td>Not public</td></tr>
+        <tr><td>Lines of code</td><td>~18.2k</td><td>~150k</td><td>~210k</td><td>Not public</td></tr>
       </tbody>
     </table>
     <p style="color: var(--zz-fg-muted); font-size: 13.5px; margin-top: 16px;">
@@ -922,8 +922,8 @@
     <h2>Numbers that matter</h2>
     <p class="lede">The number that matters most is "lines of Zig you can read in a focused sitting." The rest is supporting evidence.</p>
     <div class="stats">
-      <div class="stat"><div class="n" style="color: var(--zz-accent);">16,570</div><div class="l">lines of Zig</div></div>
-      <div class="stat"><div class="n" style="color: var(--zz-info);">197</div><div class="l">unit tests</div></div>
+      <div class="stat"><div class="n" style="color: var(--zz-accent);">18,170</div><div class="l">lines of Zig</div></div>
+      <div class="stat"><div class="n" style="color: var(--zz-info);">195</div><div class="l">unit tests (193 pass, 2 skip)</div></div>
       <div class="stat"><div class="n" style="color: var(--zz-violet);">20</div><div class="l">built-in themes</div></div>
       <div class="stat"><div class="n" style="color: var(--zz-warn);">5</div><div class="l">cross-built targets</div></div>
       <div class="stat"><div class="n">3</div><div class="l">binaries, one workspace</div></div>
@@ -940,10 +940,17 @@
     <h2>What works on which platform, today</h2>
     <p class="lede">ZiggyZag is alpha software. The Windows desktop is the only platform with a native graphical host right now; macOS and Linux build the shell and AgentD and run a terminal-attached launcher while native hosts mature.</p>
 
+    <div style="background: var(--zz-bg-panel); border: 1px solid var(--zz-border); border-left: 3px solid var(--zz-accent); border-radius: var(--zz-radius-md); padding: 16px 20px; margin-bottom: 32px; font-size: 14px; color: var(--zz-fg-muted); line-height: 1.6;">
+      <strong style="color: var(--zz-fg);">Recent: Windows I/O bridge repaired (2026-05-17).</strong>
+      Four bugs in the ConPTY path were root-caused and fixed this cycle: stale-path resolver, missing <code class="inline">CREATE_UNICODE_ENVIRONMENT</code>, <code class="inline">CREATE_NO_WINDOW</code> incompatibility with pseudoconsoles, and a no-op <code class="inline">TerminalMode.enable()</code> stub that left the shell in cooked line-input mode.
+      The bridge now carries bytes bidirectionally and typed commands execute — verified by per-keystroke manual-echo redraws, a post-Enter output burst, and integration <code class="inline">status: ok</code>.
+      Details: <a href="reviews/2026-05-17-windows-debug.md">windows-debug.md</a> · <a href="../CHANGELOG.md">CHANGELOG.md</a>.
+    </div>
+
     <div class="platforms">
       <div class="platform alpha">
         <h3>Windows <span class="status-badge">alpha</span></h3>
-        <div class="role">Native Win32 + ConPTY host. Daily-drivable for tolerant users.</div>
+        <div class="role">Native Win32 + ConPTY host. The ConPTY I/O bridge and typed-command execution were root-caused and fixed 2026-05-17 — bytes flow, typed commands execute, integration handshake verified. See <a href="reviews/2026-05-17-windows-debug.md">windows-debug.md</a> and <a href="../CHANGELOG.md">CHANGELOG.md</a>.</div>
         <ul>
           <li>Win32 window, GDI renderer, keyboard input</li>
           <li>PTY-backed splits, search, palette, quick-select</li>
@@ -1003,7 +1010,7 @@
       <div class="wave complete">
         <div class="num">wave 2</div>
         <h4>Unified theme</h4>
-        <p>Theme protocol v1, brand kit, landing page, ops infra, doc reorg, 5 bug fixes. Tagged <code class="inline">v0.1.0-alpha.3</code>.</p>
+        <p>Theme protocol v1+v2 (OSC 7777 live updates), brand kit, landing page, ops infra, doc reorg, ConPTY bridge fixes. Tagged <code class="inline">v0.1.0-alpha.3</code>.</p>
       </div>
       <div class="wave active">
         <div class="num">wave 3</div>
@@ -1013,7 +1020,7 @@
       <div class="wave">
         <div class="num">wave 4</div>
         <h4>Durable state</h4>
-        <p>SQLite history backend (Atuin-shaped), streaming pipelines, OSC 7777 live theme updates. Public alpha announcement.</p>
+        <p>SQLite history backend (Atuin-shaped), streaming pipelines, VT conformance suite. Public alpha announcement.</p>
       </div>
       <div class="wave">
         <div class="num">wave 5</div>
@@ -1041,7 +1048,7 @@
     <div class="audience">
       <div class="aud-card">
         <div class="who">…you&rsquo;re learning Zig</div>
-        <p class="why">Sixteen thousand lines is small enough to step through and big enough to teach real concerns — memory ownership, process spawning, terminal escape parsing, PTY lifecycle, JSON-lines protocols.</p>
+        <p class="why">About 18,000 lines is small enough to step through and big enough to teach real concerns — memory ownership, process spawning, terminal escape parsing, PTY lifecycle, JSON-lines protocols.</p>
       </div>
       <div class="aud-card">
         <div class="who">…you want to learn how shells work</div>
@@ -1076,7 +1083,7 @@
         <img src="assets/ziggyzag-logo.svg" alt="" width="28" height="28">
         <strong style="color: var(--zz-fg); font-size: 16px; letter-spacing: -0.3px;">ZiggyZag</strong>
       </div>
-      <p class="colophon">A readable Zig shell, a native terminal host, and a local AI sidecar.<br>MIT, alpha, MIT, built by <a href="https://github.com/PascalAI2024">PascalAI2024</a>.</p>
+      <p class="colophon">A readable Zig shell, a native terminal host, and a local AI sidecar.<br>MIT licensed · alpha · built by <a href="https://github.com/PascalAI2024">PascalAI2024</a>.</p>
     </div>
     <div>
       <h5>Get started</h5>
