@@ -41,6 +41,10 @@ const WM_KEYDOWN = 0x0100;
 const WM_SETFOCUS = 0x0007;
 const WM_KILLFOCUS = 0x0008;
 const WM_CLOSE = 0x0010;
+const WM_MOUSEMOVE = 0x0200;
+const WM_LBUTTONDOWN = 0x0201;
+const WM_LBUTTONUP = 0x0202;
+const WM_RBUTTONDOWN = 0x0204;
 const WM_MOUSEWHEEL = 0x020A;
 const WM_APP_OUTPUT_READY = 0x8000;
 const VK_A = 0x41;
@@ -89,6 +93,7 @@ const CLIP_DEFAULT_PRECIS = 0;
 const CLEARTYPE_QUALITY = 5;
 const FIXED_PITCH = 1;
 const FF_MODERN = 48;
+const DSTINVERT: DWORD = 0x00550009;
 const CF_UNICODETEXT = 13;
 const GMEM_MOVEABLE = 0x0002;
 const WHEEL_DELTA = 120;
@@ -178,6 +183,7 @@ const TEXTMETRICW = extern struct {
 };
 
 extern "kernel32" fn Sleep(milliseconds: DWORD) callconv(.winapi) void;
+extern "kernel32" fn GetTickCount() callconv(.winapi) DWORD;
 extern "kernel32" fn GlobalAlloc(flags: UINT, bytes: usize) callconv(.winapi) HGLOBAL;
 extern "kernel32" fn GlobalLock(memory: HGLOBAL) callconv(.winapi) LPVOID;
 extern "kernel32" fn GlobalUnlock(memory: HGLOBAL) callconv(.winapi) BOOL;
@@ -208,6 +214,7 @@ extern "user32" fn ShowCaret(hwnd: HWND) callconv(.winapi) BOOL;
 extern "user32" fn HideCaret(hwnd: HWND) callconv(.winapi) BOOL;
 extern "user32" fn DestroyCaret() callconv(.winapi) BOOL;
 extern "user32" fn GetKeyState(virt_key: i32) callconv(.winapi) i16;
+extern "user32" fn ShowCursor(show: BOOL) callconv(.winapi) i32;
 extern "user32" fn OpenClipboard(hwnd: HWND) callconv(.winapi) BOOL;
 extern "user32" fn CloseClipboard() callconv(.winapi) BOOL;
 extern "user32" fn EmptyClipboard() callconv(.winapi) BOOL;
@@ -215,6 +222,7 @@ extern "user32" fn GetClipboardData(format: UINT) callconv(.winapi) HGLOBAL;
 extern "user32" fn SetClipboardData(format: UINT, memory: HGLOBAL) callconv(.winapi) HGLOBAL;
 
 extern "gdi32" fn CreateSolidBrush(color: COLORREF) callconv(.winapi) HBRUSH;
+extern "gdi32" fn PatBlt(dc: HDC, x: i32, y: i32, w: i32, h: i32, rop: DWORD) callconv(.winapi) BOOL;
 extern "gdi32" fn DeleteObject(object: HGDIOBJ) callconv(.winapi) BOOL;
 extern "gdi32" fn FillRect(dc: HDC, rect: *const RECT, brush: HBRUSH) callconv(.winapi) i32;
 extern "gdi32" fn CreateFontW(height: i32, width: i32, escapement: i32, orientation: i32, weight: i32, italic: DWORD, underline: DWORD, strikeout: DWORD, charset: DWORD, out_precision: DWORD, clip_precision: DWORD, quality: DWORD, pitch_and_family: DWORD, face: LPCWSTR) callconv(.winapi) HFONT;
@@ -374,6 +382,7 @@ const Overlay = enum {
     search,
     quick_select,
     agent,
+    paste_confirm,
 };
 
 const MouseModeSnapshot = struct {
@@ -467,6 +476,22 @@ const App = struct {
     agent_next_id: u32 = 1,
     agent_pending_write: [AGENT_PENDING_WRITE_BYTES]u8 = undefined,
     agent_pending_write_len: usize = 0,
+    // Paste confirm overlay state (item 2)
+    paste_pending: [MAX_PASTE_BYTES]u8 = undefined,
+    paste_pending_len: usize = 0,
+    paste_pending_bracketed: bool = false,
+    // Mouse hide-while-typing state (item 6)
+    mouse_cursor_hidden: bool = false,
+    // Selection state (item 9)
+    sel_active: bool = false,
+    sel_start_row: usize = 0,
+    sel_start_col: usize = 0,
+    sel_end_row: usize = 0,
+    sel_end_col: usize = 0,
+    sel_dragging: bool = false,
+    // Hint state (item 8)
+    hint_dismissed: bool = false,
+    hint_first_paint_ms: i64 = 0,
 
     fn init(allocator: Allocator, io: std.Io, env: *std.process.Environ.Map) !App {
         var app = App{
@@ -628,6 +653,11 @@ const App = struct {
 
     fn setupGdi(self: *App) !void {
         self.rebuildThemeBrushes();
+        try self.rebuildFont();
+    }
+
+    fn rebuildFont(self: *App) !void {
+        if (self.font) |old| _ = DeleteObject(@ptrCast(old));
         const font_name = try std.unicode.utf8ToUtf16LeAllocZ(self.allocator, self.config.font.family);
         defer self.allocator.free(font_name);
         const font_height = -@as(i32, @intCast(self.config.font.size + 2));
@@ -1031,6 +1061,29 @@ const App = struct {
         setClipboardText(hwnd, self.allocator, text) catch return;
     }
 
+    /// Item 9: copy active selection if any, else full visible text.
+    fn copySelectionOrVisible(self: *App, hwnd: HWND) void {
+        if (self.sel_active) {
+            self.mutex.lock();
+            const pane = self.activePane();
+            const text = pane.grid.selectionAlloc(
+                self.allocator,
+                self.sel_start_row,
+                self.sel_start_col,
+                self.sel_end_row,
+                self.sel_end_col,
+            ) catch {
+                self.mutex.unlock();
+                return;
+            };
+            self.mutex.unlock();
+            defer self.allocator.free(text);
+            if (text.len > 0) setClipboardText(hwnd, self.allocator, text) catch {};
+        } else {
+            self.copyVisibleText(hwnd);
+        }
+    }
+
     fn pasteClipboardText(self: *App, hwnd: HWND) void {
         const text = getClipboardText(hwnd, self.allocator) catch return;
         defer self.allocator.free(text);
@@ -1048,18 +1101,73 @@ const App = struct {
             if (normalized.items.len >= MAX_PASTE_BYTES) break;
         }
         if (normalized.items.len == 0) return;
+
+        // Item 1: trim trailing newline/CR after normalization.
+        if (self.config.options.trim_paste_trailing_newline) {
+            var end = normalized.items.len;
+            while (end > 0 and (normalized.items[end - 1] == '\n' or normalized.items[end - 1] == '\r')) {
+                end -= 1;
+            }
+            normalized.items.len = end;
+        }
+        if (normalized.items.len == 0) return;
+
         self.mutex.lock();
         const pane = self.activePane();
         const bracketed_paste = pane.grid.isBracketedPasteEnabled();
         self.resetPaneScroll(pane);
         self.mutex.unlock();
-        if (bracketed_paste) {
+
+        // Item 2: multiline paste confirm.
+        if (self.config.options.multiline_paste_warn and
+            std.mem.indexOfScalar(u8, normalized.items, '\n') != null)
+        {
+            const len = @min(normalized.items.len, self.paste_pending.len);
+            @memcpy(self.paste_pending[0..len], normalized.items[0..len]);
+            self.paste_pending_len = len;
+            self.paste_pending_bracketed = bracketed_paste;
+            self.overlay = .paste_confirm;
+            _ = InvalidateRect(hwnd, null, 0);
+            return;
+        }
+
+        self.commitPaste(normalized.items, bracketed_paste);
+    }
+
+    fn commitPaste(self: *App, text: []const u8, bracketed: bool) void {
+        if (bracketed) {
             self.writeInput("\x1b[200~");
-            self.writeInput(normalized.items);
+            self.writeInput(text);
             self.writeInput("\x1b[201~");
         } else {
-            self.writeInput(normalized.items);
+            self.writeInput(text);
         }
+    }
+
+    fn paintPasteConfirmOverlay(self: *App, hdc: HDC, rect: RECT) void {
+        const line_count = 1 + countByte(self.paste_pending[0..self.paste_pending_len], '\n');
+        const panel_height = self.char_height + 20;
+        const top = rect.bottom - self.status_height - panel_height - 4;
+        if (top < rect.top) return;
+        var panel = RECT{
+            .left = rect.left,
+            .top = top,
+            .right = rect.right,
+            .bottom = rect.bottom - self.status_height - 4,
+        };
+        _ = FillRect(hdc, &panel, self.panel_brush);
+        var accent_line = RECT{ .left = panel.left, .top = panel.top, .right = panel.right, .bottom = panel.top + 2 };
+        const accent_brush = CreateSolidBrush(toColorRef(self.selected_theme.accent));
+        if (accent_brush) |brush| {
+            _ = FillRect(hdc, &accent_line, brush);
+            _ = DeleteObject(@ptrCast(brush));
+        }
+        _ = SetBkMode(hdc, TRANSPARENT);
+        _ = SetTextColor(hdc, toColorRef(self.selected_theme.foreground));
+        var line: [256]u8 = undefined;
+        const text = std.fmt.bufPrint(&line, "Paste {d} lines -- Enter to confirm, Esc to cancel", .{line_count}) catch "Paste -- Enter to confirm, Esc to cancel";
+        const max_width = rect.right - rect.left - 20;
+        drawUtf8TextFitted(hdc, 10, top + 10, text, max_width, self.char_width);
     }
 
     fn appendOverlayChar(self: *App, char: u21) void {
@@ -1107,6 +1215,7 @@ const App = struct {
     }
 
     fn closeOverlay(self: *App) void {
+        if (self.overlay == .paste_confirm) self.paste_pending_len = 0;
         self.overlay = .none;
     }
 
@@ -1143,6 +1252,17 @@ const App = struct {
                 self.overlay = .none;
             },
             .agent => self.approveAgentWrite(),
+            .paste_confirm => {
+                if (self.paste_pending_len > 0) {
+                    const text = self.paste_pending[0..self.paste_pending_len];
+                    const bracketed = self.paste_pending_bracketed;
+                    self.paste_pending_len = 0;
+                    self.overlay = .none;
+                    self.commitPaste(text, bracketed);
+                } else {
+                    self.overlay = .none;
+                }
+            },
             else => {},
         }
     }
@@ -1285,6 +1405,8 @@ const App = struct {
             const index = (self.active_pane + offset) % self.panes.len;
             if (self.panes[index] != null) {
                 self.active_pane = index;
+                self.sel_active = false;
+                self.sel_dragging = false;
                 self.updateCaret(hwnd);
                 _ = InvalidateRect(hwnd, null, 0);
                 return;
@@ -1294,6 +1416,8 @@ const App = struct {
 
     fn closeActivePane(self: *App, hwnd: HWND) void {
         if (self.paneCount() <= 1) return;
+        self.sel_active = false;
+        self.sel_dragging = false;
         const slot = self.active_pane;
         const pane = self.panes[slot] orelse return;
         self.shutdownPane(pane);
@@ -1443,6 +1567,20 @@ const App = struct {
 
     fn handleMouseWheel(self: *App, hwnd: HWND, wparam: WPARAM) void {
         const delta = mouseWheelDelta(wparam);
+
+        // Item 5: Ctrl+scroll font zoom.
+        if (self.config.options.ctrl_scroll_zoom and keyDown(VK_CONTROL)) {
+            const step: i32 = if (delta > 0) 1 else -1;
+            const new_size: i32 = @as(i32, @intCast(self.config.font.size)) + step;
+            // Clamp to same bounds as config.validate (6..72).
+            if (new_size >= 6 and new_size <= 72) {
+                self.config.font.size = @intCast(new_size);
+                self.rebuildFont() catch {};
+                _ = InvalidateRect(hwnd, null, 0);
+            }
+            return;
+        }
+
         const mouse_mode = self.mouseModeSnapshot();
         if (mouse_mode.alternate_screen and mouse_mode.tracking != .disabled) {
             self.writeMouseWheel(delta, mouse_mode.encoding);
@@ -1580,8 +1718,10 @@ const App = struct {
             .search => self.paintSearchOverlay(hdc, rect),
             .quick_select => self.paintQuickSelectOverlay(hdc, rect),
             .agent => self.paintAgentOverlay(hdc, rect),
+            .paste_confirm => self.paintPasteConfirmOverlay(hdc, rect),
             .none => {},
         }
+        if (self.config.options.show_hints and !self.hint_dismissed) self.paintHintBar(hdc, rect);
     }
 
     fn paintPane(self: *App, hdc: HDC, client_rect: RECT, pane: *Pane, slot: usize) void {
@@ -1636,6 +1776,32 @@ const App = struct {
             if (caret_rect.top < pane_rect.bottom) {
                 caret_rect.bottom = @min(caret_rect.bottom, pane_rect.bottom);
                 _ = FillRect(hdc, &caret_rect, self.cursor_brush);
+            }
+        }
+
+        // Item 9: paint selection highlight.
+        if ((self.sel_active or self.sel_dragging) and scroll_offset == 0 and slot == self.active_pane) {
+            var first_row = self.sel_start_row;
+            var first_col = self.sel_start_col;
+            var last_row = self.sel_end_row;
+            var last_col = self.sel_end_col;
+            if (last_row < first_row or (last_row == first_row and last_col < first_col)) {
+                std.mem.swap(usize, &first_row, &last_row);
+                std.mem.swap(usize, &first_col, &last_col);
+            }
+            var sel_row: usize = first_row;
+            while (sel_row <= last_row and sel_row < height) : (sel_row += 1) {
+                const col_start: usize = if (sel_row == first_row) first_col else 0;
+                const col_end: usize = if (sel_row == last_row) @min(last_col + 1, width) else width;
+                if (col_end > col_start) {
+                    const sx = origin_x + @as(i32, @intCast(col_start)) * self.char_width;
+                    const sy = pane_rect.top + PANE_PAD_Y + @as(i32, @intCast(sel_row)) * self.char_height;
+                    const sw = @as(i32, @intCast(col_end - col_start)) * self.char_width;
+                    if (sy < pane_rect.bottom) {
+                        const sh = @min(self.char_height, pane_rect.bottom - sy);
+                        _ = PatBlt(hdc, sx, sy, sw, sh, DSTINVERT);
+                    }
+                }
             }
         }
 
@@ -2039,6 +2205,37 @@ const App = struct {
         drawUtf8TextFitted(hdc, x, bottom - self.char_height - 8, "Enter approves pending write. Escape closes. Ctrl+Shift+A opens this panel.", max_width, self.char_width);
     }
 
+    fn paintHintBar(self: *App, hdc: HDC, rect: RECT) void {
+        const now_ms: i64 = @intCast(GetTickCount());
+        if (self.hint_first_paint_ms == 0) {
+            self.hint_first_paint_ms = now_ms;
+        }
+        const elapsed = now_ms - self.hint_first_paint_ms;
+        if (elapsed > 8000) {
+            self.hint_dismissed = true;
+            return;
+        }
+        const bar_height = self.char_height + 10;
+        const top = rect.top;
+        var bar = RECT{ .left = rect.left, .top = top, .right = rect.right, .bottom = top + bar_height };
+        _ = FillRect(hdc, &bar, self.panel_brush);
+        var accent_bottom = RECT{ .left = bar.left, .top = bar.bottom - 1, .right = bar.right, .bottom = bar.bottom };
+        const accent_brush = CreateSolidBrush(toColorRef(scaleColor(self.selected_theme.accent, 60)));
+        if (accent_brush) |brush| {
+            _ = FillRect(hdc, &accent_bottom, brush);
+            _ = DeleteObject(@ptrCast(brush));
+        }
+        _ = SetBkMode(hdc, TRANSPARENT);
+        _ = SetTextColor(hdc, toColorRef(self.selected_theme.muted));
+        const hint = "Ctrl+Shift+T theme  |  Ctrl+, settings  |  Ctrl+Shift+P palette";
+        const max_width = rect.right - rect.left - 20;
+        drawUtf8TextFitted(hdc, 10, top + 5, hint, max_width, self.char_width);
+    }
+
+    fn dismissHint(self: *App) void {
+        self.hint_dismissed = true;
+    }
+
     fn paintThemeOption(self: *App, hdc: HDC, preset: theme.Theme, x: i32, y: i32, max_width: i32) void {
         const swatch_size = @max(@min(self.char_height - 3, 14), 8);
         var bg = RECT{ .left = x, .top = y + 2, .right = x + swatch_size, .bottom = y + 2 + swatch_size };
@@ -2084,7 +2281,6 @@ const App = struct {
     }
 
     fn handleEvents(self: *App, pane: *Pane, events: []const integration.Event) void {
-        _ = self;
         for (events) |event| {
             switch (event.kind) {
                 .session_ready => pane.status.ready = true,
@@ -2106,6 +2302,8 @@ const App = struct {
                 .command_started => {
                     pane.status.commands += 1;
                     if (integration.jsonStringValue(event.payload, "cwd")) |cwd| pane.status.setCwd(cwd);
+                    // Item 8: auto-dismiss hint on first command.
+                    self.hint_dismissed = true;
                 },
                 .command_finished => {
                     if (integration.jsonStringValue(event.payload, "cwd")) |cwd| pane.status.setCwd(cwd);
@@ -2298,6 +2496,70 @@ fn windowProc(hwnd: HWND, msg: UINT, wparam: WPARAM, lparam: LPARAM) callconv(.w
             app.handleMouseWheel(hwnd, wparam);
             return 0;
         },
+        // Item 3: right-click paste.
+        WM_RBUTTONDOWN => {
+            if (app.overlay == .none and app.config.options.right_click_paste) {
+                app.pasteClipboardText(hwnd);
+            }
+            return 0;
+        },
+        // Item 6: show mouse cursor on mouse move.
+        WM_MOUSEMOVE => {
+            if (app.config.options.mouse_hide_while_typing and app.mouse_cursor_hidden) {
+                _ = ShowCursor(1);
+                app.mouse_cursor_hidden = false;
+            }
+            // Item 9: update selection drag.
+            if (app.sel_dragging) {
+                var client_rect: RECT = undefined;
+                if (GetClientRect(hwnd, &client_rect) != 0) {
+                    const mx = @as(i32, @intCast(lparam & 0xffff));
+                    const my = @as(i32, @intCast((lparam >> 16) & 0xffff));
+                    const pane_rect = app.paneRectForSlot(client_rect, app.active_pane);
+                    const pane = app.activePane();
+                    const col = pixelToCol(mx, pane_rect, app.char_width, pane.grid.width);
+                    const row = pixelToRow(my, pane_rect, app.char_height, app.status_height, pane.grid.height);
+                    app.sel_end_row = row;
+                    app.sel_end_col = col;
+                    _ = InvalidateRect(hwnd, null, 0);
+                }
+            }
+            return 0;
+        },
+        // Item 9: begin selection on left button down.
+        WM_LBUTTONDOWN => {
+            app.sel_dragging = true;
+            app.sel_active = false;
+            var client_rect: RECT = undefined;
+            if (GetClientRect(hwnd, &client_rect) != 0) {
+                const mx = @as(i32, @intCast(lparam & 0xffff));
+                const my = @as(i32, @intCast((lparam >> 16) & 0xffff));
+                const pane_rect = app.paneRectForSlot(client_rect, app.active_pane);
+                const pane = app.activePane();
+                const col = pixelToCol(mx, pane_rect, app.char_width, pane.grid.width);
+                const row = pixelToRow(my, pane_rect, app.char_height, app.status_height, pane.grid.height);
+                app.sel_start_row = row;
+                app.sel_start_col = col;
+                app.sel_end_row = row;
+                app.sel_end_col = col;
+                _ = InvalidateRect(hwnd, null, 0);
+            }
+            return 0;
+        },
+        // Item 9: finalize selection on left button up.
+        WM_LBUTTONUP => {
+            app.sel_dragging = false;
+            if (app.sel_start_row != app.sel_end_row or app.sel_start_col != app.sel_end_col) {
+                app.sel_active = true;
+                if (app.config.options.copy_on_select) {
+                    app.copySelectionOrVisible(hwnd);
+                }
+            } else {
+                app.sel_active = false;
+            }
+            _ = InvalidateRect(hwnd, null, 0);
+            return 0;
+        },
         WM_APP_OUTPUT_READY => {
             app.mutex.lock();
             app.updateTitle();
@@ -2319,6 +2581,13 @@ fn windowProc(hwnd: HWND, msg: UINT, wparam: WPARAM, lparam: LPARAM) callconv(.w
 
 fn handleChar(app: *App, wparam: WPARAM) void {
     const char: u21 = @intCast(wparam);
+
+    // Item 6: hide mouse cursor while typing.
+    if (app.config.options.mouse_hide_while_typing and !app.mouse_cursor_hidden) {
+        _ = ShowCursor(0);
+        app.mouse_cursor_hidden = true;
+    }
+
     if (app.overlay == .command_palette or app.overlay == .search) {
         switch (char) {
             '\r', 0x1b, 0x08, 0x03, 0x16 => {},
@@ -2373,6 +2642,7 @@ fn handleKey(app: *App, hwnd: HWND, wparam: WPARAM) bool {
     }
 
     if (keyDown(VK_CONTROL) and keyDown(VK_SHIFT) and wparam == VK_P) {
+        app.dismissHint();
         app.openPalette();
         _ = InvalidateRect(hwnd, null, 0);
         return true;
@@ -2412,16 +2682,23 @@ fn handleKey(app: *App, hwnd: HWND, wparam: WPARAM) bool {
         return true;
     }
     if (keyDown(VK_CONTROL) and wparam == VK_OEM_COMMA) {
+        app.dismissHint();
         app.dispatchAction(hwnd, .toggle_settings);
         _ = InvalidateRect(hwnd, null, 0);
         return true;
     }
     if (keyDown(VK_CONTROL) and keyDown(VK_SHIFT) and wparam == VK_T) {
+        app.dismissHint();
         app.dispatchAction(hwnd, .next_theme);
         return true;
     }
     if (keyDown(VK_CONTROL) and keyDown(VK_SHIFT) and wparam == VK_C) {
-        app.copyVisibleText(hwnd);
+        app.copySelectionOrVisible(hwnd);
+        return true;
+    }
+    // Item 4: Ctrl+Insert copy alias.
+    if (keyDown(VK_CONTROL) and wparam == VK_INSERT) {
+        app.copySelectionOrVisible(hwnd);
         return true;
     }
     if (keyDown(VK_CONTROL) and wparam == VK_C) {
@@ -2794,6 +3071,21 @@ fn looksLikeIssueKey(token: []const u8) bool {
         if (!std.ascii.isDigit(byte)) return false;
     }
     return true;
+}
+
+fn pixelToCol(x: i32, pane_rect: PaneRect, char_width: i32, grid_width: usize) usize {
+    const rel = x - pane_rect.left - PANE_PAD_X;
+    if (rel < 0) return 0;
+    const col: usize = @intCast(@divTrunc(rel, @max(char_width, 1)));
+    return @min(col, if (grid_width > 0) grid_width - 1 else 0);
+}
+
+fn pixelToRow(y: i32, pane_rect: PaneRect, char_height: i32, status_height: i32, grid_height: usize) usize {
+    _ = status_height;
+    const rel = y - pane_rect.top - PANE_PAD_Y;
+    if (rel < 0) return 0;
+    const row: usize = @intCast(@divTrunc(rel, @max(char_height, 1)));
+    return @min(row, if (grid_height > 0) grid_height - 1 else 0);
 }
 
 fn looksLikeHexHash(token: []const u8) bool {

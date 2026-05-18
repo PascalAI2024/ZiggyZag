@@ -11,6 +11,14 @@ pub const Options = struct {
     smooth_scroll: bool = true,
     bell: bool = false,
     scrollback_lines: usize = 10_000,
+    trim_paste_trailing_newline: bool = true,
+    multiline_paste_warn: bool = true,
+    right_click_paste: bool = true,
+    ctrl_scroll_zoom: bool = true,
+    mouse_hide_while_typing: bool = false,
+    private_history: bool = false,
+    show_hints: bool = true,
+    copy_on_select: bool = true,
 };
 
 /// A single NAME=VALUE environment entry supplied by a profile.
@@ -164,6 +172,22 @@ fn apply(config: *Config, key: []const u8, value: []const u8) ParseError!void {
         const n_lines = std.fmt.parseInt(usize, value, 10) catch return error.InvalidScrollback;
         if (n_lines > 250_000) return error.InvalidScrollback;
         config.options.scrollback_lines = n_lines;
+    } else if (std.ascii.eqlIgnoreCase(key, "trim_paste_trailing_newline")) {
+        config.options.trim_paste_trailing_newline = try parseBool(value);
+    } else if (std.ascii.eqlIgnoreCase(key, "multiline_paste_warn")) {
+        config.options.multiline_paste_warn = try parseBool(value);
+    } else if (std.ascii.eqlIgnoreCase(key, "right_click_paste")) {
+        config.options.right_click_paste = try parseBool(value);
+    } else if (std.ascii.eqlIgnoreCase(key, "ctrl_scroll_zoom")) {
+        config.options.ctrl_scroll_zoom = try parseBool(value);
+    } else if (std.ascii.eqlIgnoreCase(key, "mouse_hide_while_typing")) {
+        config.options.mouse_hide_while_typing = try parseBool(value);
+    } else if (std.ascii.eqlIgnoreCase(key, "private_history")) {
+        config.options.private_history = try parseBool(value);
+    } else if (std.ascii.eqlIgnoreCase(key, "show_hints")) {
+        config.options.show_hints = try parseBool(value);
+    } else if (std.ascii.eqlIgnoreCase(key, "copy_on_select")) {
+        config.options.copy_on_select = try parseBool(value);
     } else if (std.ascii.eqlIgnoreCase(key, "session.panes") or std.ascii.eqlIgnoreCase(key, "panes")) {
         const panes = std.fmt.parseInt(usize, value, 10) catch return error.InvalidSessionPanes;
         if (panes == 0 or panes > 6) return error.InvalidSessionPanes;
@@ -196,6 +220,14 @@ pub fn serialize(config: Config, writer: anytype) !void {
     try writer.print("smooth_scroll = {s}\n", .{boolStr(config.options.smooth_scroll)});
     try writer.print("bell = {s}\n", .{boolStr(config.options.bell)});
     try writer.print("scrollback.lines = {d}\n", .{config.options.scrollback_lines});
+    try writer.print("trim_paste_trailing_newline = {s}\n", .{boolStr(config.options.trim_paste_trailing_newline)});
+    try writer.print("multiline_paste_warn = {s}\n", .{boolStr(config.options.multiline_paste_warn)});
+    try writer.print("right_click_paste = {s}\n", .{boolStr(config.options.right_click_paste)});
+    try writer.print("ctrl_scroll_zoom = {s}\n", .{boolStr(config.options.ctrl_scroll_zoom)});
+    try writer.print("mouse_hide_while_typing = {s}\n", .{boolStr(config.options.mouse_hide_while_typing)});
+    try writer.print("private_history = {s}\n", .{boolStr(config.options.private_history)});
+    try writer.print("show_hints = {s}\n", .{boolStr(config.options.show_hints)});
+    try writer.print("copy_on_select = {s}\n", .{boolStr(config.options.copy_on_select)});
     if (config.profile.shell_path.len > 0) {
         try writer.print("profile.shell = {s}\n", .{config.profile.shell_path});
     }
