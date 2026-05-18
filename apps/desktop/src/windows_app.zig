@@ -94,6 +94,11 @@ const FIXED_PITCH = 1;
 const FF_MODERN = 48;
 const EXTENDED_STARTUPINFO_PRESENT: DWORD = 0x00080000;
 const CREATE_NO_WINDOW: DWORD = 0x08000000;
+/// Required when `lpEnvironment` points at a UTF-16 environment block. Without
+/// this flag, `CreateProcessW` interprets the block as ANSI, sees every other
+/// byte as NUL, and returns `ERROR_INVALID_PARAMETER` (87). Diagnosed via the
+/// 2026-05-17 Windows debug session — see docs/reviews/2026-05-17-windows-debug.md.
+const CREATE_UNICODE_ENVIRONMENT: DWORD = 0x00000400;
 const PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE: usize = 0x00020016;
 const CF_UNICODETEXT = 13;
 const GMEM_MOVEABLE = 0x0002;
@@ -767,7 +772,7 @@ const App = struct {
             null,
             null,
             0,
-            EXTENDED_STARTUPINFO_PRESENT | CREATE_NO_WINDOW,
+            EXTENDED_STARTUPINFO_PRESENT | CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT,
             env_block.view().ptr,
             cwd_w.ptr,
             &startup.StartupInfo,
