@@ -60,6 +60,13 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         }),
     });
+    if (target.result.os.tag == .windows) {
+        // AgentD is a stdio JSON-lines sidecar spawned by the desktop over
+        // pipes — it never needs a console. As a console-subsystem binary it
+        // popped a second window when the desktop launched it; the GUI
+        // subsystem suppresses that (same fix as the desktop/launcher).
+        agentd_exe.subsystem = .windows;
+    }
     b.installArtifact(agentd_exe);
 
     const launcher_module = b.createModule(.{
