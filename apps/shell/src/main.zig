@@ -1807,11 +1807,6 @@ const Shell = struct {
             return true;
         }
 
-        if (parsed.hasRedirection()) {
-            try self.runViaSystemShell(active_line);
-            return true;
-        }
-
         try self.runViaSystemShell(active_line);
         return true;
     }
@@ -4159,6 +4154,20 @@ const Shell = struct {
         };
         if (segments.items.len < 2) return false;
 
+        // Pre-validate every stage before running ANY of them. If a later
+        // stage has a redirection (or is empty) we must fall back to the
+        // system shell — but discovering that mid-run, after earlier stages
+        // already spawned, then re-running the whole line under /bin/sh would
+        // double-execute the non-idempotent earlier stages (e.g. the `rm f`
+        // in `rm f | grep x > out`). Command substitution can't reach here
+        // (isComplexPipelineSyntax rejects `$(`/backticks) and variable
+        // expansion is side-effect-free, so this extra parse is pure.
+        for (segments.items) |segment| {
+            var probe = try parseCommandExpanded(self.allocator, segment, self);
+            defer probe.deinit();
+            if (probe.argv.items.len == 0 or probe.hasRedirection()) return false;
+        }
+
         var input = try self.allocator.dupe(u8, "");
         defer self.allocator.free(input);
         var stderr_output: std.ArrayList(u8) = .empty;
@@ -4967,6 +4976,36 @@ fn childHasExited(child: *std.process.Child, io: std.Io) bool {
         while (true) {
             const result = linux.waitpid(pid, &status, linux.W.NOHANG);
             switch (linux.errno(result)) {
+                .SUCCESS => {
+                    if (result == 0) return false;
+                    child.id = null;
+                    return true;
+                },
+                .INTR => continue,
+                .CHILD => {
+                    child.id = null;
+                    return true;
+                },
+                else => return false,
+            }
+        }
+    }
+
+    // macOS and the BSDs: reap via libc waitpid(WNOHANG). Without this branch
+    // these targets fell through to `return false`, so background jobs were
+    // never marked done — finished children lingered as zombies and `jobs`
+    // showed them Running forever. We handle ECHILD ourselves rather than
+    // calling std.posix.waitpid (which panics on it) to keep the no-panic
+    // guarantee. libc is linked on macOS implicitly; BSD needs link_libc.
+    if (builtin.os.tag == .macos or builtin.os.tag == .freebsd or
+        builtin.os.tag == .netbsd or builtin.os.tag == .openbsd or
+        builtin.os.tag == .dragonfly)
+    {
+        const pid = child.id.?;
+        var status: c_int = 0;
+        while (true) {
+            const result = std.c.waitpid(pid, &status, @as(c_int, @intCast(std.posix.W.NOHANG)));
+            switch (std.posix.errno(result)) {
                 .SUCCESS => {
                     if (result == 0) return false;
                     child.id = null;

@@ -574,11 +574,11 @@ fn commandJsonAlloc(
     return out.toOwnedSlice(allocator);
 }
 
-const RedactedText = struct {
+pub const RedactedText = struct {
     text: []u8,
     changed: bool,
 
-    fn deinit(self: RedactedText, allocator: Allocator) void {
+    pub fn deinit(self: RedactedText, allocator: Allocator) void {
         allocator.free(self.text);
     }
 };
@@ -593,7 +593,7 @@ fn clippedView(text: []const u8, limit: usize) Clip {
     return .{ .text = text[0..limit], .truncated = true };
 }
 
-fn redactSecretsAlloc(allocator: Allocator, text: []const u8) !RedactedText {
+pub fn redactSecretsAlloc(allocator: Allocator, text: []const u8) !RedactedText {
     var out: std.ArrayList(u8) = .empty;
     errdefer out.deinit(allocator);
     var changed = false;
