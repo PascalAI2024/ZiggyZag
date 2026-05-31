@@ -244,11 +244,11 @@ const Shell = struct {
     fn run(self: *Shell) !void {
         var stdin_buffer: [4096]u8 = undefined;
         var stdin = std.Io.File.stdin().readerStreaming(self.io, &stdin_buffer);
-        var stdout = std.Io.File.stdout().writer(self.io, &.{});
+        var stdout = std.Io.File.stdout().writerStreaming(self.io, &.{});
 
         self.loadStartupConfig() catch |err| switch (err) {
             error.ConfigFileTooLarge => {
-                var stderr = std.Io.File.stderr().writer(self.io, &.{});
+                var stderr = std.Io.File.stderr().writerStreaming(self.io, &.{});
                 try stderr.interface.print("config: file too large (limit {d} bytes); skipping startup config\n", .{max_config_file_bytes});
             },
             else => |e| return e,
@@ -266,7 +266,7 @@ const Shell = struct {
             self.readHistoryFile(path) catch |err| switch (err) {
                 error.FileNotFound => {},
                 error.HistoryFileTooLarge => {
-                    var stderr = std.Io.File.stderr().writer(self.io, &.{});
+                    var stderr = std.Io.File.stderr().writerStreaming(self.io, &.{});
                     try stderr.interface.print("history: {s}: file too large (limit {d} bytes)\n", .{ path, max_history_file_bytes });
                 },
                 else => |e| return e,
@@ -280,7 +280,7 @@ const Shell = struct {
             self.readHistoryMetaFile(path) catch |err| switch (err) {
                 error.FileNotFound => {},
                 error.HistoryFileTooLarge => {
-                    var stderr = std.Io.File.stderr().writer(self.io, &.{});
+                    var stderr = std.Io.File.stderr().writerStreaming(self.io, &.{});
                     try stderr.interface.print("history-meta: {s}: file too large (limit {d} bytes)\n", .{ path, max_history_file_bytes });
                 },
                 else => |e| return e,
@@ -1872,14 +1872,14 @@ const Shell = struct {
         defer stdout_buffer.deinit(self.allocator);
         const rest = std.mem.trim(u8, line[end..], " \t");
         try self.inspectLine(rest, &stdout_buffer);
-        var stdout = std.Io.File.stdout().writer(self.io, &.{});
+        var stdout = std.Io.File.stdout().writerStreaming(self.io, &.{});
         try stdout.interface.writeAll(stdout_buffer.items);
         self.last_status = 0;
         return true;
     }
 
     fn printParseError(self: *Shell, line: []const u8, err: anyerror) !void {
-        var stderr = std.Io.File.stderr().writer(self.io, &.{});
+        var stderr = std.Io.File.stderr().writerStreaming(self.io, &.{});
         const message = switch (err) {
             error.UnterminatedSingleQuote => "unterminated single quote",
             error.UnterminatedDoubleQuote => "unterminated double quote",
@@ -3500,7 +3500,7 @@ const Shell = struct {
         });
         stored = true;
 
-        var stdout = std.Io.File.stdout().writer(self.io, &.{});
+        var stdout = std.Io.File.stdout().writerStreaming(self.io, &.{});
         try stdout.interface.print("[{d}] {d}\n", .{ job_number, childIdForDisplay(&child) });
     }
 
@@ -3802,7 +3802,7 @@ const Shell = struct {
         }
 
         if (output.items.len > 0) {
-            var stdout = std.Io.File.stdout().writer(self.io, &.{});
+            var stdout = std.Io.File.stdout().writerStreaming(self.io, &.{});
             try stdout.interface.writeAll(output.items);
         }
 
@@ -4089,14 +4089,14 @@ const Shell = struct {
         if (parsed.stdout_redirect) |redirect| {
             try self.writeRedirect(redirect, stdout_bytes);
         } else if (stdout_bytes.len > 0) {
-            var stdout = std.Io.File.stdout().writer(self.io, &.{});
+            var stdout = std.Io.File.stdout().writerStreaming(self.io, &.{});
             try stdout.interface.writeAll(stdout_bytes);
         }
 
         if (parsed.stderr_redirect) |redirect| {
             try self.writeRedirect(redirect, stderr_bytes);
         } else if (stderr_bytes.len > 0) {
-            var stderr = std.Io.File.stderr().writer(self.io, &.{});
+            var stderr = std.Io.File.stderr().writerStreaming(self.io, &.{});
             try stderr.interface.writeAll(stderr_bytes);
         }
     }
@@ -4207,9 +4207,9 @@ const Shell = struct {
             status = result.status;
         }
 
-        var stdout = std.Io.File.stdout().writer(self.io, &.{});
+        var stdout = std.Io.File.stdout().writerStreaming(self.io, &.{});
         try stdout.interface.writeAll(input);
-        var stderr = std.Io.File.stderr().writer(self.io, &.{});
+        var stderr = std.Io.File.stderr().writerStreaming(self.io, &.{});
         try stderr.interface.writeAll(stderr_output.items);
         self.last_status = status;
         return true;
