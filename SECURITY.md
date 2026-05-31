@@ -44,7 +44,8 @@ These are the protections shipped today. We expect to add more; new layers shoul
 - **Path sandboxing for `file.read`**: lexical filter (no `..`, no absolute paths, no NTFS Alternate Data Stream syntax), then a non-following `lstat` walk to reject any intermediate symlink component, then a canonicalising `realpath` workspace-containment guard. Sibling-prefix escapes (`/ws-evil/...`), final-symlink escapes, and directory-symlink escapes are covered by tests.
 - **Bounded output**: 64 KB per file read, 96 KB per command stdout, 24 KB per stderr; 16 KB max for `terminal.write` input.
 - **Per-tool execution timeout** with a watchdog kill in the AgentD process tools.
-- **Secret redaction** in tool output: `Authorization:` headers, Slack/GitHub/AWS-shaped tokens, PEM private-key blocks, and `KEY=value`-style secret-assignment patterns are scrubbed before the bytes leave AgentD.
+- **Secret redaction** in tool output: `Authorization:` headers, Slack/GitHub/AWS-shaped tokens, PEM private-key blocks, and `KEY=value`-style secret-assignment patterns are scrubbed before the bytes leave AgentD. Provider responses (`raw_response`/`stderr`) pass through the same redaction.
+- **Provider credentials never appear in process argv**: the provider API key (the `Authorization: Bearer …` header) is written to a private `0600` temp file and passed to `curl` via `-H @file`, then deleted — so it is not exposed to other local users through `ps` or `/proc/<pid>/cmdline`.
 - **OSC consumption**: the terminal core consumes non-777 OSC strings (BEL/ST/CAN/SUB-terminated) without acting on their payloads, so a hostile remote process cannot use OSC titles or clipboard sequences to drive UI state.
 - **No `@panic` calls** anywhere in the source. Errors propagate; the process does not crash on user input.
 - **No `std.debug.assert` calls** that would be compiled out — invariants are explicit `return error.X` instead.

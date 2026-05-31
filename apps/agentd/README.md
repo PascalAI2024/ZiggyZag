@@ -99,7 +99,7 @@ Responses are envelopes:
 
 ```json
 {"id":0,"ok":true,"result":{"provider":"ollama","model":"qwen2.5-coder:1.5b","endpoint":"http://127.0.0.1:11434/api/chat","health_endpoint":"http://127.0.0.1:11434/api/tags","stream":false,"curl":"available","api_key":"not_required","provider_status":"reachable","ready":true}}
-{"id":2,"ok":false,"error":{"code":"UnknownTool","message":"unknown tool name"}}
+{"id":2,"ok":false,"error":{"code":"unknown_tool","message":"unknown tool name"}}
 ```
 
 `agent/health` is a readiness check, not just a config echo. It reports `curl`, `api_key`, `provider_status`, and `ready`. Expected `provider_status` values include `reachable`, `unreachable`, `missing_api_key`, and `curl_unavailable`.

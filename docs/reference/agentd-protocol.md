@@ -54,10 +54,16 @@ Example `tools/call`:
 ### Response: Error
 
 ```json
-{"id":"1","ok":false,"error":{"code":"METHOD_NOT_FOUND","message":"unknown method: foo"}}
+{"id":"1","ok":false,"error":{"code":"unknown_method","message":"foo"}}
 ```
 
+Error `code` values are `snake_case` (e.g. `unknown_method`, `unknown_tool`, `unsafe_path`, `read_error`).
+
 If the request itself cannot be parsed, the `id` field is recovered via `bestEffortId` — a best-effort extraction of the raw `id` value from the line even when JSON parsing fails. This ensures the caller can correlate error responses with their requests.
+
+If a single input line exceeds the read buffer (or stdin read fails), AgentD emits `{"id":"","ok":false,"error":{"code":"read_error","message":"..."}}` and ends the session cleanly rather than crashing.
+
+All JSON strings are emitted as valid UTF-8: tool output that contains binary or non-UTF-8 bytes (e.g. `file.read` over a binary file) has each malformed byte substituted with U+FFFD, so the response envelope is always parseable. Well-formed UTF-8 passes through unchanged.
 
 ## Methods
 
@@ -94,6 +100,14 @@ Run an agent prompt. AgentD first attempts to call a configured provider via cur
 ```json
 {"id":"4","method":"agent/run","prompt":"Summarize what this project does."}
 ```
+
+When a provider is reached, the result envelope is:
+
+```json
+{"id":"4","ok":true,"result":{"provider":"openai-compatible","model":"...","endpoint":"...","status":"ok","raw_response":"...","stderr":"...","redacted":false}}
+```
+
+`status` is `"ok"` when the provider call exits 0, else `"provider_error"`. Both `raw_response` and `stderr` are passed through the same secret redaction as tool output before entering the envelope, and `redacted` is `true` when redaction changed either stream. The provider API key is never placed on the `curl` command line — it is written to a private `0600` temp file and passed via `-H @file`. On fallback (provider unavailable / no API key / curl missing) the result is instead `{"provider","model","endpoint","prompt","status","next_tools"}`.
 
 Provider configuration is via environment variables:
 
