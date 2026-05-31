@@ -186,25 +186,48 @@ pub fn writeErrorEnvelope(
 
 pub fn appendJsonString(allocator: Allocator, out: *std.ArrayList(u8), text: []const u8) !void {
     try out.append(allocator, '"');
-    for (text) |byte| {
-        switch (byte) {
-            '"' => try out.appendSlice(allocator, "\\\""),
-            '\\' => try out.appendSlice(allocator, "\\\\"),
-            '\n' => try out.appendSlice(allocator, "\\n"),
-            '\r' => try out.appendSlice(allocator, "\\r"),
-            '\t' => try out.appendSlice(allocator, "\\t"),
-            0x08 => try out.appendSlice(allocator, "\\b"),
-            0x0c => try out.appendSlice(allocator, "\\f"),
-            else => {
-                if (byte < 0x20) {
-                    var buf: [6]u8 = undefined;
-                    const escaped = std.fmt.bufPrint(&buf, "\\u{x:0>4}", .{byte}) catch unreachable;
-                    try out.appendSlice(allocator, escaped);
-                } else {
-                    try out.append(allocator, byte);
-                }
-            },
+    var i: usize = 0;
+    while (i < text.len) {
+        const byte = text[i];
+        if (byte < 0x80) {
+            switch (byte) {
+                '"' => try out.appendSlice(allocator, "\\\""),
+                '\\' => try out.appendSlice(allocator, "\\\\"),
+                '\n' => try out.appendSlice(allocator, "\\n"),
+                '\r' => try out.appendSlice(allocator, "\\r"),
+                '\t' => try out.appendSlice(allocator, "\\t"),
+                0x08 => try out.appendSlice(allocator, "\\b"),
+                0x0c => try out.appendSlice(allocator, "\\f"),
+                else => {
+                    if (byte < 0x20) {
+                        var buf: [6]u8 = undefined;
+                        const escaped = std.fmt.bufPrint(&buf, "\\u{x:0>4}", .{byte}) catch unreachable;
+                        try out.appendSlice(allocator, escaped);
+                    } else {
+                        try out.append(allocator, byte);
+                    }
+                },
+            }
+            i += 1;
+            continue;
         }
+        // A multibyte lead byte. Well-formed UTF-8 is legal verbatim inside a
+        // JSON string, but tool output (file.read / rg.search / git.diff) can
+        // carry binary or non-UTF-8 bytes; emitting those raw produces an
+        // envelope that strict JSON parsers reject. Validate each sequence and
+        // substitute U+FFFD for anything malformed so the envelope stays valid.
+        const seq_len = std.unicode.utf8ByteSequenceLength(byte) catch {
+            try out.appendSlice(allocator, "\u{fffd}");
+            i += 1;
+            continue;
+        };
+        if (i + seq_len > text.len or !std.unicode.utf8ValidateSlice(text[i .. i + seq_len])) {
+            try out.appendSlice(allocator, "\u{fffd}");
+            i += 1;
+            continue;
+        }
+        try out.appendSlice(allocator, text[i .. i + seq_len]);
+        i += seq_len;
     }
     try out.append(allocator, '"');
 }
@@ -370,6 +393,26 @@ test "escapes JSON strings" {
     defer out.deinit(std.testing.allocator);
     try appendJsonString(std.testing.allocator, &out, "a\"b\\c\n");
     try std.testing.expectEqualStrings("\"a\\\"b\\\\c\\n\"", out.items);
+}
+
+test "passes valid UTF-8 through and replaces invalid bytes with U+FFFD" {
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(std.testing.allocator);
+
+    // Well-formed multibyte UTF-8 (é = C3 A9) is legal verbatim in a JSON string.
+    try appendJsonString(std.testing.allocator, &out, "caf\u{e9}");
+    try std.testing.expectEqualStrings("\"caf\u{e9}\"", out.items);
+
+    // A lone continuation byte (0x80) is invalid UTF-8 and would otherwise make
+    // the whole envelope unparseable; it must collapse to U+FFFD.
+    out.clearRetainingCapacity();
+    try appendJsonString(std.testing.allocator, &out, "a\x80b");
+    try std.testing.expectEqualStrings("\"a\u{fffd}b\"", out.items);
+
+    // A truncated sequence at end-of-input (lead byte with no continuation).
+    out.clearRetainingCapacity();
+    try appendJsonString(std.testing.allocator, &out, "x\xc3");
+    try std.testing.expectEqualStrings("\"x\u{fffd}\"", out.items);
 }
 
 test "error envelope has consistent shape with ok false and snake_case code" {

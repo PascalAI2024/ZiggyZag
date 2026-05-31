@@ -2549,7 +2549,7 @@ const Shell = struct {
                 defer file.close(self.io);
                 var read_buffer: [4096]u8 = undefined;
                 var reader = file.readerStreaming(self.io, &read_buffer);
-                const existing = try reader.interface.allocRemaining(self.allocator, .unlimited);
+                const existing = try reader.interface.allocRemaining(self.allocator, .limited(max_history_file_bytes));
                 defer self.allocator.free(existing);
                 try output.appendSlice(self.allocator, existing);
                 if (existing.len > 0 and existing[existing.len - 1] != '\n') {
@@ -4125,7 +4125,7 @@ const Shell = struct {
             defer file.close(self.io);
             var read_buffer: [4096]u8 = undefined;
             var reader = file.readerStreaming(self.io, &read_buffer);
-            const existing = try reader.interface.allocRemaining(self.allocator, .unlimited);
+            const existing = try reader.interface.allocRemaining(self.allocator, .limited(max_history_file_bytes));
             defer self.allocator.free(existing);
             try output.appendSlice(self.allocator, existing);
         }

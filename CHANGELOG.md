@@ -5,6 +5,9 @@ All notable changes to ZiggyZag. The format is loosely [Keep a Changelog](https:
 ## [Unreleased] — Wave 2
 
 ### Fixed
+- **AgentD could emit invalid JSON.** `appendJsonString` passed bytes ≥ 0x80 through verbatim, so a `file.read`/`rg.search`/`git.diff` over a binary or non-UTF-8 file produced an envelope that strict JSON parsers reject. It now validates each UTF-8 sequence and substitutes `U+FFFD` for malformed bytes (well-formed UTF-8 still passes through unchanged).
+- **Unbounded reads when appending to history / redirect targets.** `writeHistoryFile` and the `>>` redirect append path read the existing file with no size cap while every other read path capped at `max_history_file_bytes`; both now use the same bound.
+- **Desktop config validation was dead code.** `loadDesktopConfig` never called the existing `migrate()`/`validate()`, so an out-of-range value (font size, scrollback, pane count, orientation) loaded silently. They are now wired into the load path.
 - **CI never ran.** `.github/workflows/ci.yml` triggered on `master`, but the default branch is `main`, so no push or PR ever exercised build/test/smoke. Pointed it at `main`.
 - **macOS/BSD background jobs were never reaped.** `childHasExited` only implemented the Windows and Linux paths and fell through to `return false` elsewhere, so on macOS finished children lingered as zombies and `jobs` showed them Running forever. Added a libc `waitpid(WNOHANG)` branch that handles `ECHILD` without panicking.
 - **Pipeline stages could double-execute.** `tryRunNativePipeline` detected an unsupported (redirected/empty) later stage only after earlier stages had already spawned, then fell back to the system shell and re-ran the whole line — running a non-idempotent first stage (e.g. `rm f | grep x > out`) twice. All stages are now validated before any run.

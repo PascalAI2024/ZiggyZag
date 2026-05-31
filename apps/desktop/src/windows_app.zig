@@ -546,11 +546,22 @@ const App = struct {
             return;
         };
 
+        // Upgrade an older/unversioned file to the current schema, then reject
+        // out-of-range values instead of silently loading them. migrate keeps
+        // every field slice borrowed from `contents`, so running it before
+        // `contents` is retained as config_buffer is safe.
+        const migrated = desktop_config.migrate(parsed);
+        desktop_config.validate(migrated) catch |err| {
+            self.setConfigError(err);
+            self.allocator.free(contents);
+            return;
+        };
+
         if (self.config_buffer) |old| self.allocator.free(old);
         self.config_buffer = contents;
-        self.config = parsed;
-        self.selected_theme = parsed.selected_theme;
-        self.status_height = if (parsed.options.show_status_bar) 28 else 0;
+        self.config = migrated;
+        self.selected_theme = migrated.selected_theme;
+        self.status_height = if (migrated.options.show_status_bar) 28 else 0;
         self.applyScrollbackLimit();
     }
 
