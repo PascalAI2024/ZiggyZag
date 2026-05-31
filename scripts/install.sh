@@ -131,5 +131,5 @@ case ":$PATH:" in
 esac
 
 printf "Try it:\n"
-printf "  %s\n" "$INSTALL_DIR/ziggyzag --version 2>/dev/null || $INSTALL_DIR/ziggyzag"
+printf "  %s\n" "$INSTALL_DIR/ziggyzag        # then type 'about' for version info"
 printf "\nDocs: https://github.com/$REPO\n"

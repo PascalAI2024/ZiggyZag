@@ -6,7 +6,6 @@ dist/
 
 # Compiled binary output
 bin/
-!bin/.gitkeep
 
 # Ignore any .o or .h files generated during build
 *.o
