@@ -4,6 +4,25 @@ All notable changes to ZiggyZag. The format is loosely [Keep a Changelog](https:
 
 ## [Unreleased] — Wave 2
 
+### Fixed
+- **AgentD could emit invalid JSON.** `appendJsonString` passed bytes ≥ 0x80 through verbatim, so a `file.read`/`rg.search`/`git.diff` over a binary or non-UTF-8 file produced an envelope that strict JSON parsers reject. It now validates each UTF-8 sequence and substitutes `U+FFFD` for malformed bytes (well-formed UTF-8 still passes through unchanged).
+- **Unbounded reads when appending to history / redirect targets.** `writeHistoryFile` and the `>>` redirect append path read the existing file with no size cap while every other read path capped at `max_history_file_bytes`; both now use the same bound.
+- **Desktop config validation was dead code.** `loadDesktopConfig` never called the existing `migrate()`/`validate()`, so an out-of-range value (font size, scrollback, pane count, orientation) loaded silently. They are now wired into the load path.
+- **CI never ran.** `.github/workflows/ci.yml` triggered on `master`, but the default branch is `main`, so no push or PR ever exercised build/test/smoke. Pointed it at `main`.
+- **macOS/BSD background jobs were never reaped.** `childHasExited` only implemented the Windows and Linux paths and fell through to `return false` elsewhere, so on macOS finished children lingered as zombies and `jobs` showed them Running forever. Added a libc `waitpid(WNOHANG)` branch that handles `ECHILD` without panicking.
+- **Pipeline stages could double-execute.** `tryRunNativePipeline` detected an unsupported (redirected/empty) later stage only after earlier stages had already spawned, then fell back to the system shell and re-ran the whole line — running a non-idempotent first stage (e.g. `rm f | grep x > out`) twice. All stages are now validated before any run.
+- **Desktop JSON value parser** mis-read a string value ending in a backslash (e.g. a Windows path `"C:\\dev\\"`) as unterminated. `jsonStringValue` now tracks escape state.
+- `.gitattributes` now pins `*.sh`/`*.zig` to LF and `*.ps1`/`*.bat` to CRLF so a Windows checkout can't commit CRLF shebangs that break POSIX CI.
+
+### Security
+- **AgentD no longer passes the provider API key as a curl argv element.** The `Authorization: Bearer …` header was visible to any local user via `ps` / `/proc/<pid>/cmdline`. It is now written to a private `0600` temp file and passed via `curl -H @file`, then deleted.
+- **AgentD provider responses are now redacted.** `raw_response`/`stderr` from the provider were emitted verbatim; they now pass through `redactSecretsAlloc` like the file/search/git tool outputs, matching the documented "redacted output" posture, and the envelope carries a `redacted` flag.
+- An oversized JSON-lines input no longer tears down the AgentD session — it returns a structured `read_error` envelope and stops cleanly.
+
+### Changed
+- Platform support trimmed to the targets that actually build, link, and are tested: **Windows, Linux, macOS**. The FreeBSD/NetBSD/OpenBSD entries (which never linked — no libc was linked for them) were dropped from the support gates; the inert BSD code paths remain but are no longer advertised.
+- README metrics corrected against the tree (Zig lines 18,395 → 18,850; unit tests 198 → 213).
+
 ### Added
 - **Unified theme protocol v1.** A single `ZIGGYZAG_THEME` environment variable now drives both the desktop terminal palette and the shell prompt accent. The desktop sets it when spawning the shell child; the shell reads it at startup. See [`docs/reference/theme-protocol.md`](docs/reference/theme-protocol.md).
 - `theme` shell builtin: `theme`, `theme list`, `theme <id>`, `theme --json`. Switches this session's active theme and reports the current one.

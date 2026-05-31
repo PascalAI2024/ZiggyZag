@@ -105,7 +105,18 @@ fn runStdio(
     var stdin_buffer: [4096]u8 = undefined;
     var stdin = std.Io.File.stdin().readerStreaming(io, &stdin_buffer);
     while (true) {
-        const line = (try stdin.interface.takeDelimiter('\n')) orelse break;
+        // A line longer than stdin_buffer (or an underlying read failure) would
+        // otherwise propagate out and tear down the whole JSON-lines session on
+        // a single bad input. Emit a structured error and stop cleanly — with a
+        // fixed buffer we can't safely resume mid-line, and continuing would
+        // re-hit the full buffer in a tight loop.
+        const maybe_line = stdin.interface.takeDelimiter('\n') catch |err| {
+            const json = agentd.protocol.writeErrorEnvelope(allocator, "", "read_error", @errorName(err)) catch break;
+            writer.writeAll(json) catch {};
+            allocator.free(json);
+            break;
+        };
+        const line = maybe_line orelse break;
         const request_line = std.mem.trim(u8, line, " \t\r");
         if (request_line.len == 0) continue;
         var request = agentd.protocol.parseRequestAlloc(allocator, request_line) catch |err| {
@@ -237,6 +248,15 @@ fn providerAgentRunJsonAlloc(
     const call = try callProviderCurl(allocator, io, env, config, endpoint, body);
     defer call.deinit(allocator);
 
+    // Provider stdout/stderr can echo secret-shaped strings (a key pasted into
+    // a prompt, an auth header bounced back in an error body). Redact both
+    // before they enter the envelope, matching the file.read / rg.search /
+    // git.diff tool paths and the "redacted output" posture in the README.
+    const response_redacted = try agentd.tools.redactSecretsAlloc(allocator, call.stdout);
+    defer response_redacted.deinit(allocator);
+    const stderr_redacted = try agentd.tools.redactSecretsAlloc(allocator, call.stderr);
+    defer stderr_redacted.deinit(allocator);
+
     var out: std.ArrayList(u8) = .empty;
     errdefer out.deinit(allocator);
     try out.appendSlice(allocator, "{\"provider\":");
@@ -248,9 +268,11 @@ fn providerAgentRunJsonAlloc(
     try out.appendSlice(allocator, ",\"status\":");
     try agentd.protocol.appendJsonString(allocator, &out, if (call.status == 0) "ok" else "provider_error");
     try out.appendSlice(allocator, ",\"raw_response\":");
-    try agentd.protocol.appendJsonString(allocator, &out, call.stdout);
+    try agentd.protocol.appendJsonString(allocator, &out, response_redacted.text);
     try out.appendSlice(allocator, ",\"stderr\":");
-    try agentd.protocol.appendJsonString(allocator, &out, call.stderr);
+    try agentd.protocol.appendJsonString(allocator, &out, stderr_redacted.text);
+    try out.appendSlice(allocator, ",\"redacted\":");
+    try out.appendSlice(allocator, if (response_redacted.changed or stderr_redacted.changed) "true" else "false");
     try out.append(allocator, '}');
     return out.toOwnedSlice(allocator);
 }
@@ -307,8 +329,14 @@ fn callProviderCurl(
 ) !ProviderCall {
     var argv: std.ArrayList([]const u8) = .empty;
     defer argv.deinit(allocator);
-    var auth_header: ?[]u8 = null;
-    defer if (auth_header) |header| allocator.free(header);
+    // The bearer token goes through a private 0600 temp file passed as
+    // `-H @path`, never as an argv element — see writeAuthHeaderFile. Both the
+    // file and the `@path` argument live until this function returns, by which
+    // point curl has already run to completion.
+    var auth_file: ?agentd.provider.AuthHeaderFile = null;
+    defer if (auth_file) |f| f.deinit(allocator, io);
+    var auth_arg: ?[]u8 = null;
+    defer if (auth_arg) |a| allocator.free(a);
 
     try argv.appendSlice(allocator, &.{
         "curl",
@@ -322,8 +350,9 @@ fn callProviderCurl(
     });
     if (config.kind == .openai_compatible) {
         const api_key = config.api_key orelse return error.MissingApiKey;
-        auth_header = try std.fmt.allocPrint(allocator, "Authorization: Bearer {s}", .{api_key});
-        try argv.appendSlice(allocator, &.{ "-H", auth_header.? });
+        auth_file = try agentd.provider.writeAuthHeaderFile(allocator, io, env, api_key);
+        auth_arg = try std.fmt.allocPrint(allocator, "@{s}", .{auth_file.?.path});
+        try argv.appendSlice(allocator, &.{ "-H", auth_arg.? });
     }
     try argv.appendSlice(allocator, &.{ "-d", "@-", endpoint });
 

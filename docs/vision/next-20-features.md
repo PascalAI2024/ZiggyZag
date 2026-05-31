@@ -74,7 +74,7 @@ The remaining work is concentrated in four buckets:
   Primary paths: `apps/shell/src/main.zig`.
 
 - [ ] 11. Cross-platform background jobs
-  Harden nonblocking child status on Windows, macOS, Linux, and BSD; define which process-group semantics, terminal control, and foreground/background behaviors are intentionally absent.
+  Harden nonblocking child status on Windows, macOS, and Linux; define which process-group semantics, terminal control, and foreground/background behaviors are intentionally absent.
   Progress: practical `wait`, `kill`, `disown`, `fg`, and `bg` builtins are implemented around ZiggyZag's background job table. Full process-group job control is intentionally not claimed yet.
   Primary paths: `apps/shell/src/main.zig`.
 

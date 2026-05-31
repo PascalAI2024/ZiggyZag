@@ -1,1 +1,12 @@
+# Normalize text files to LF in the repo, but pin line endings where the
+# platform demands a specific one. POSIX shells choke on CRLF shebangs;
+# Windows batch/PowerShell scripts expect CRLF.
 * text=auto
+
+*.zig   text eol=lf
+*.sh    text eol=lf
+*.ps1   text eol=crlf
+*.bat   text eol=crlf
+
+*.png   binary
+*.ico   binary

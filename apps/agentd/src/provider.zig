@@ -196,8 +196,10 @@ fn probeProviderHealth(
 ) bool {
     var argv: std.ArrayList([]const u8) = .empty;
     defer argv.deinit(allocator);
-    var auth_header: ?[]u8 = null;
-    defer if (auth_header) |header| allocator.free(header);
+    var auth_file: ?AuthHeaderFile = null;
+    defer if (auth_file) |f| f.deinit(allocator, io);
+    var auth_arg: ?[]u8 = null;
+    defer if (auth_arg) |a| allocator.free(a);
 
     argv.appendSlice(allocator, &.{
         "curl",
@@ -210,8 +212,9 @@ fn probeProviderHealth(
 
     if (config.kind == .openai_compatible) {
         const api_key = config.api_key orelse return false;
-        auth_header = std.fmt.allocPrint(allocator, "Authorization: Bearer {s}", .{api_key}) catch return false;
-        argv.appendSlice(allocator, &.{ "-H", auth_header.? }) catch return false;
+        auth_file = writeAuthHeaderFile(allocator, io, env, api_key) catch return false;
+        auth_arg = std.fmt.allocPrint(allocator, "@{s}", .{auth_file.?.path}) catch return false;
+        argv.appendSlice(allocator, &.{ "-H", auth_arg.? }) catch return false;
     }
 
     argv.append(allocator, health_endpoint) catch return false;
@@ -231,6 +234,71 @@ fn probeProviderHealth(
 
 fn nullDevicePath() []const u8 {
     return if (builtin.os.tag == .windows) "NUL" else "/dev/null";
+}
+
+/// A short-lived, private file holding the `Authorization` header. curl reads
+/// it via `-H @path` (curl >= 7.55) so the bearer token never appears as a
+/// curl argv element — argv is world-readable through `ps` and
+/// `/proc/<pid>/cmdline` on multi-user POSIX hosts, which would otherwise leak
+/// the most sensitive secret the daemon holds for the lifetime of the request.
+pub const AuthHeaderFile = struct {
+    path: []u8,
+
+    pub fn deinit(self: AuthHeaderFile, allocator: Allocator, io: std.Io) void {
+        std.Io.Dir.cwd().deleteFile(io, self.path) catch {};
+        allocator.free(self.path);
+    }
+};
+
+fn authTempRoot(env: *const std.process.Environ.Map) []const u8 {
+    if (env.get("TMPDIR")) |p| return p;
+    if (env.get("TEMP")) |p| return p;
+    if (env.get("TMP")) |p| return p;
+    return if (builtin.os.tag == .windows) "." else "/tmp";
+}
+
+pub fn writeAuthHeaderFile(
+    allocator: Allocator,
+    io: std.Io,
+    env: *std.process.Environ.Map,
+    api_key: []const u8,
+) !AuthHeaderFile {
+    const root = authTempRoot(env);
+    var attempts: usize = 0;
+    while (attempts < 16) : (attempts += 1) {
+        var random_bytes: [12]u8 = undefined;
+        io.random(&random_bytes);
+        const hex = std.fmt.bytesToHex(random_bytes, .lower);
+        const name = try std.fmt.allocPrint(allocator, "ziggyzag-auth-{s}", .{hex[0..]});
+        defer allocator.free(name);
+
+        const path = try std.fs.path.join(allocator, &.{ root, name });
+        errdefer allocator.free(path);
+
+        var file = std.Io.Dir.cwd().createFile(io, path, .{ .exclusive = true }) catch |err| switch (err) {
+            error.PathAlreadyExists => {
+                allocator.free(path);
+                continue;
+            },
+            else => |e| return e,
+        };
+        errdefer std.Io.Dir.cwd().deleteFile(io, path) catch {};
+        defer file.close(io);
+
+        // Restrict the auth-header file to owner read/write (0600) on POSIX so
+        // the bearer token is not world-readable. `CreateFileOptions` has no
+        // `mode` field, so permissions are set explicitly after creation.
+        // Windows ACL defaults already deny other users; `mode` is meaningless there.
+        if (builtin.os.tag != .windows) {
+            try file.setPermissions(io, std.Io.File.Permissions.fromMode(0o600));
+        }
+
+        const header = try std.fmt.allocPrint(allocator, "Authorization: Bearer {s}\n", .{api_key});
+        defer allocator.free(header);
+        try file.writeStreamingAll(io, header);
+        return .{ .path = path };
+    }
+    return error.TempFileCreateFailed;
 }
 
 fn trimTrailingSlash(value: []const u8) []const u8 {

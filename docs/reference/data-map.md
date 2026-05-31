@@ -30,4 +30,4 @@ Start at [README.md](../README.md) for the documentation hub. Use [task-system.m
 - No committed template for friend-test reports; [daily-driver-qa.md](../guides/daily-driver-qa.md) has a report section, but generated reports are local.
 - AgentD audit events are described in docs and visible in runtime transcripts, but there is no documented exported audit file path yet.
 - Linux/macOS release runtime results still require real hosts or CI runners before cross-platform artifacts can be called fully runtime-tested.
-- Config migration/versioning and support bundle paths are still planned work, so config data recovery is not yet mapped to a stable artifact.
+- Config migration/versioning is now enforced on the desktop config load path (`config.zig` `migrate()`/`validate()` run at load, upgrading older schemas and rejecting out-of-range values); crash-time support-bundle paths remain planned work, so config data recovery is not yet mapped to a stable artifact.

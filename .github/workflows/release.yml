@@ -4,7 +4,7 @@ name: Release
 # Windows runner, smoke-tests the extracted binaries on Linux and macOS,
 # generates checksums, and uploads everything to a draft GitHub Release.
 #
-# See docs/RELEASE_CHECKLIST.md for the human checklist that wraps this.
+# See docs/guides/release-checklist.md for the human checklist that wraps this.
 
 on:
   push:

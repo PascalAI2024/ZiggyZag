@@ -244,11 +244,11 @@ const Shell = struct {
     fn run(self: *Shell) !void {
         var stdin_buffer: [4096]u8 = undefined;
         var stdin = std.Io.File.stdin().readerStreaming(self.io, &stdin_buffer);
-        var stdout = std.Io.File.stdout().writer(self.io, &.{});
+        var stdout = std.Io.File.stdout().writerStreaming(self.io, &.{});
 
         self.loadStartupConfig() catch |err| switch (err) {
             error.ConfigFileTooLarge => {
-                var stderr = std.Io.File.stderr().writer(self.io, &.{});
+                var stderr = std.Io.File.stderr().writerStreaming(self.io, &.{});
                 try stderr.interface.print("config: file too large (limit {d} bytes); skipping startup config\n", .{max_config_file_bytes});
             },
             else => |e| return e,
@@ -266,7 +266,7 @@ const Shell = struct {
             self.readHistoryFile(path) catch |err| switch (err) {
                 error.FileNotFound => {},
                 error.HistoryFileTooLarge => {
-                    var stderr = std.Io.File.stderr().writer(self.io, &.{});
+                    var stderr = std.Io.File.stderr().writerStreaming(self.io, &.{});
                     try stderr.interface.print("history: {s}: file too large (limit {d} bytes)\n", .{ path, max_history_file_bytes });
                 },
                 else => |e| return e,
@@ -280,7 +280,7 @@ const Shell = struct {
             self.readHistoryMetaFile(path) catch |err| switch (err) {
                 error.FileNotFound => {},
                 error.HistoryFileTooLarge => {
-                    var stderr = std.Io.File.stderr().writer(self.io, &.{});
+                    var stderr = std.Io.File.stderr().writerStreaming(self.io, &.{});
                     try stderr.interface.print("history-meta: {s}: file too large (limit {d} bytes)\n", .{ path, max_history_file_bytes });
                 },
                 else => |e| return e,
@@ -1807,11 +1807,6 @@ const Shell = struct {
             return true;
         }
 
-        if (parsed.hasRedirection()) {
-            try self.runViaSystemShell(active_line);
-            return true;
-        }
-
         try self.runViaSystemShell(active_line);
         return true;
     }
@@ -1877,14 +1872,14 @@ const Shell = struct {
         defer stdout_buffer.deinit(self.allocator);
         const rest = std.mem.trim(u8, line[end..], " \t");
         try self.inspectLine(rest, &stdout_buffer);
-        var stdout = std.Io.File.stdout().writer(self.io, &.{});
+        var stdout = std.Io.File.stdout().writerStreaming(self.io, &.{});
         try stdout.interface.writeAll(stdout_buffer.items);
         self.last_status = 0;
         return true;
     }
 
     fn printParseError(self: *Shell, line: []const u8, err: anyerror) !void {
-        var stderr = std.Io.File.stderr().writer(self.io, &.{});
+        var stderr = std.Io.File.stderr().writerStreaming(self.io, &.{});
         const message = switch (err) {
             error.UnterminatedSingleQuote => "unterminated single quote",
             error.UnterminatedDoubleQuote => "unterminated double quote",
@@ -2554,7 +2549,7 @@ const Shell = struct {
                 defer file.close(self.io);
                 var read_buffer: [4096]u8 = undefined;
                 var reader = file.readerStreaming(self.io, &read_buffer);
-                const existing = try reader.interface.allocRemaining(self.allocator, .unlimited);
+                const existing = try reader.interface.allocRemaining(self.allocator, .limited(max_history_file_bytes));
                 defer self.allocator.free(existing);
                 try output.appendSlice(self.allocator, existing);
                 if (existing.len > 0 and existing[existing.len - 1] != '\n') {
@@ -3505,7 +3500,7 @@ const Shell = struct {
         });
         stored = true;
 
-        var stdout = std.Io.File.stdout().writer(self.io, &.{});
+        var stdout = std.Io.File.stdout().writerStreaming(self.io, &.{});
         try stdout.interface.print("[{d}] {d}\n", .{ job_number, childIdForDisplay(&child) });
     }
 
@@ -3807,7 +3802,7 @@ const Shell = struct {
         }
 
         if (output.items.len > 0) {
-            var stdout = std.Io.File.stdout().writer(self.io, &.{});
+            var stdout = std.Io.File.stdout().writerStreaming(self.io, &.{});
             try stdout.interface.writeAll(output.items);
         }
 
@@ -4094,14 +4089,14 @@ const Shell = struct {
         if (parsed.stdout_redirect) |redirect| {
             try self.writeRedirect(redirect, stdout_bytes);
         } else if (stdout_bytes.len > 0) {
-            var stdout = std.Io.File.stdout().writer(self.io, &.{});
+            var stdout = std.Io.File.stdout().writerStreaming(self.io, &.{});
             try stdout.interface.writeAll(stdout_bytes);
         }
 
         if (parsed.stderr_redirect) |redirect| {
             try self.writeRedirect(redirect, stderr_bytes);
         } else if (stderr_bytes.len > 0) {
-            var stderr = std.Io.File.stderr().writer(self.io, &.{});
+            var stderr = std.Io.File.stderr().writerStreaming(self.io, &.{});
             try stderr.interface.writeAll(stderr_bytes);
         }
     }
@@ -4130,7 +4125,7 @@ const Shell = struct {
             defer file.close(self.io);
             var read_buffer: [4096]u8 = undefined;
             var reader = file.readerStreaming(self.io, &read_buffer);
-            const existing = try reader.interface.allocRemaining(self.allocator, .unlimited);
+            const existing = try reader.interface.allocRemaining(self.allocator, .limited(max_history_file_bytes));
             defer self.allocator.free(existing);
             try output.appendSlice(self.allocator, existing);
         }
@@ -4158,6 +4153,20 @@ const Shell = struct {
             else => |e| return e,
         };
         if (segments.items.len < 2) return false;
+
+        // Pre-validate every stage before running ANY of them. If a later
+        // stage has a redirection (or is empty) we must fall back to the
+        // system shell — but discovering that mid-run, after earlier stages
+        // already spawned, then re-running the whole line under /bin/sh would
+        // double-execute the non-idempotent earlier stages (e.g. the `rm f`
+        // in `rm f | grep x > out`). Command substitution can't reach here
+        // (isComplexPipelineSyntax rejects `$(`/backticks) and variable
+        // expansion is side-effect-free, so this extra parse is pure.
+        for (segments.items) |segment| {
+            var probe = try parseCommandExpanded(self.allocator, segment, self);
+            defer probe.deinit();
+            if (probe.argv.items.len == 0 or probe.hasRedirection()) return false;
+        }
 
         var input = try self.allocator.dupe(u8, "");
         defer self.allocator.free(input);
@@ -4198,9 +4207,9 @@ const Shell = struct {
             status = result.status;
         }
 
-        var stdout = std.Io.File.stdout().writer(self.io, &.{});
+        var stdout = std.Io.File.stdout().writerStreaming(self.io, &.{});
         try stdout.interface.writeAll(input);
-        var stderr = std.Io.File.stderr().writer(self.io, &.{});
+        var stderr = std.Io.File.stderr().writerStreaming(self.io, &.{});
         try stderr.interface.writeAll(stderr_output.items);
         self.last_status = status;
         return true;
@@ -4967,6 +4976,33 @@ fn childHasExited(child: *std.process.Child, io: std.Io) bool {
         while (true) {
             const result = linux.waitpid(pid, &status, linux.W.NOHANG);
             switch (linux.errno(result)) {
+                .SUCCESS => {
+                    if (result == 0) return false;
+                    child.id = null;
+                    return true;
+                },
+                .INTR => continue,
+                .CHILD => {
+                    child.id = null;
+                    return true;
+                },
+                else => return false,
+            }
+        }
+    }
+
+    // macOS: reap via libc waitpid(WNOHANG). Without this branch macOS fell
+    // through to `return false`, so background jobs were never marked done —
+    // finished children lingered as zombies and `jobs` showed them Running
+    // forever. We handle ECHILD ourselves rather than calling
+    // std.posix.waitpid (which panics on it) to keep the no-panic guarantee.
+    // libSystem (libc) is always linked on macOS, so std.c is available.
+    if (builtin.os.tag == .macos) {
+        const pid = child.id.?;
+        var status: c_int = 0;
+        while (true) {
+            const result = std.c.waitpid(pid, &status, @as(c_int, @intCast(std.posix.W.NOHANG)));
+            switch (std.posix.errno(result)) {
                 .SUCCESS => {
                     if (result == 0) return false;
                     child.id = null;

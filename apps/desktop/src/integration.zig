@@ -178,10 +178,22 @@ pub fn jsonStringValue(payload: []const u8, key: []const u8) ?[]const u8 {
 
         const value_start = index + 1;
         var value_end = value_start;
+        var escaped = false;
         while (value_end < payload.len) : (value_end += 1) {
-            if (payload[value_end] == '"' and (value_end == value_start or payload[value_end - 1] != '\\')) {
-                return payload[value_start..value_end];
+            const byte = payload[value_end];
+            if (escaped) {
+                // Previous byte was a backslash; this byte is escaped. This
+                // correctly handles `\\` (the second backslash clears the
+                // flag) so a value ending in a backslash — e.g. a Windows
+                // path like "C:\\dev\\" — is not mistaken for an open string.
+                escaped = false;
+                continue;
             }
+            if (byte == '\\') {
+                escaped = true;
+                continue;
+            }
+            if (byte == '"') return payload[value_start..value_end];
         }
         return null;
     }

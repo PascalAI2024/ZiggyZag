@@ -60,8 +60,8 @@ Pick a theme in the desktop with `Ctrl+Shift+T`. The terminal palette AND the sh
 
 | | |
 | --- | --- |
-| Zig lines | 18,395 |
-| Unit tests | 198 (196 pass, 2 skip) |
+| Zig lines | 18,850 |
+| Unit tests | 213 (some skip on non-target platforms) |
 | Binaries | 4 |
 | Cross-built targets | 5 (windows-x86_64, linux-x86_64, linux-aarch64, macos-x86_64, macos-aarch64) |
 | Third-party deps | 0 |

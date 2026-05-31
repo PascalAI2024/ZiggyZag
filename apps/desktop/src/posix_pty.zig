@@ -5,8 +5,11 @@ const posix = std.posix;
 const linux = std.os.linux;
 const native_os = builtin.os.tag;
 
+// Linux and macOS are the supported POSIX targets. The BSD-specific code
+// paths below are retained but inert: the BSDs are not built, linked, or
+// tested, so `supported` excludes them.
 pub const supported = switch (native_os) {
-    .linux, .macos, .freebsd, .netbsd, .openbsd => true,
+    .linux, .macos => true,
     else => false,
 };
 
