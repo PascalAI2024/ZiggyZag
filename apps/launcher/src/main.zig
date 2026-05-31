@@ -7,7 +7,7 @@ pub fn main(init_data: std.process.Init) !void {
         try desktop.windows_app.run(init_data);
         return;
     }
-    if (builtin.os.tag == .linux or builtin.os.tag == .macos or builtin.os.tag == .freebsd or builtin.os.tag == .netbsd or builtin.os.tag == .openbsd) {
+    if (builtin.os.tag == .linux or builtin.os.tag == .macos) {
         try desktop.posix_app.run(init_data);
         return;
     }

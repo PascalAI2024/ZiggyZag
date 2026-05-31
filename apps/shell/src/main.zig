@@ -4991,16 +4991,13 @@ fn childHasExited(child: *std.process.Child, io: std.Io) bool {
         }
     }
 
-    // macOS and the BSDs: reap via libc waitpid(WNOHANG). Without this branch
-    // these targets fell through to `return false`, so background jobs were
-    // never marked done — finished children lingered as zombies and `jobs`
-    // showed them Running forever. We handle ECHILD ourselves rather than
-    // calling std.posix.waitpid (which panics on it) to keep the no-panic
-    // guarantee. libc is linked on macOS implicitly; BSD needs link_libc.
-    if (builtin.os.tag == .macos or builtin.os.tag == .freebsd or
-        builtin.os.tag == .netbsd or builtin.os.tag == .openbsd or
-        builtin.os.tag == .dragonfly)
-    {
+    // macOS: reap via libc waitpid(WNOHANG). Without this branch macOS fell
+    // through to `return false`, so background jobs were never marked done —
+    // finished children lingered as zombies and `jobs` showed them Running
+    // forever. We handle ECHILD ourselves rather than calling
+    // std.posix.waitpid (which panics on it) to keep the no-panic guarantee.
+    // libSystem (libc) is always linked on macOS, so std.c is available.
+    if (builtin.os.tag == .macos) {
         const pid = child.id.?;
         var status: c_int = 0;
         while (true) {

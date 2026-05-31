@@ -19,8 +19,11 @@ pub const Backend = enum {
 };
 
 pub fn isPosixPtyTarget(os_tag: std.Target.Os.Tag) bool {
+    // Linux and macOS are the supported POSIX targets. The BSDs share the
+    // libc PTY code path but are not built, linked, or tested, so they are
+    // not advertised as supported.
     return switch (os_tag) {
-        .linux, .macos, .freebsd, .netbsd, .openbsd => true,
+        .linux, .macos => true,
         else => false,
     };
 }
@@ -31,7 +34,7 @@ pub fn isPosixPtyTarget(os_tag: std.Target.Os.Tag) bool {
 pub fn currentBackend() Backend {
     return switch (builtin.os.tag) {
         .windows => .conpty_windows,
-        .linux, .macos, .freebsd, .netbsd, .openbsd => .script_posix,
+        .linux, .macos => .script_posix,
         else => .unavailable,
     };
 }
@@ -673,9 +676,9 @@ test "preferred backend is named" {
 test "posix target helper matches preferred backend coverage" {
     try std.testing.expect(isPosixPtyTarget(.linux));
     try std.testing.expect(isPosixPtyTarget(.macos));
-    try std.testing.expect(isPosixPtyTarget(.freebsd));
-    try std.testing.expect(isPosixPtyTarget(.netbsd));
-    try std.testing.expect(isPosixPtyTarget(.openbsd));
+    try std.testing.expect(!isPosixPtyTarget(.freebsd));
+    try std.testing.expect(!isPosixPtyTarget(.netbsd));
+    try std.testing.expect(!isPosixPtyTarget(.openbsd));
     try std.testing.expect(!isPosixPtyTarget(.windows));
 }
 
@@ -683,7 +686,7 @@ test "currentBackend resolves per OS tag" {
     const backend = currentBackend();
     switch (builtin.os.tag) {
         .windows => try std.testing.expectEqual(Backend.conpty_windows, backend),
-        .linux, .macos, .freebsd, .netbsd, .openbsd => {
+        .linux, .macos => {
             // Today the POSIX host ships through `script(1)`; once the native
             // PTY backend lands this branch will tighten to `.native_posix`.
             try std.testing.expect(backend == .script_posix or backend == .native_posix);
