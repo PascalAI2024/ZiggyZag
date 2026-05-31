@@ -715,7 +715,13 @@ test "posix backend stubs return NotImplemented" {
         .rows = 24,
     };
 
-    try std.testing.expectError(error.NotImplemented, spawnNativePosix(opts));
+    // `spawnNativePosix` only returns NotImplemented on Windows; on POSIX it
+    // delegates to the real fork/execve implementation, whose runtime behaviour
+    // cannot be validated in CI. `spawnScriptPosix`/`spawnDirectPosix` remain
+    // genuine stubs that return NotImplemented on every platform.
+    if (builtin.os.tag == .windows) {
+        try std.testing.expectError(error.NotImplemented, spawnNativePosix(opts));
+    }
     try std.testing.expectError(error.NotImplemented, spawnScriptPosix(opts));
     try std.testing.expectError(error.NotImplemented, spawnDirectPosix(opts));
 }

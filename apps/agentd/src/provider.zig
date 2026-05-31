@@ -275,7 +275,7 @@ pub fn writeAuthHeaderFile(
         const path = try std.fs.path.join(allocator, &.{ root, name });
         errdefer allocator.free(path);
 
-        var file = std.Io.Dir.cwd().createFile(io, path, .{ .exclusive = true, .mode = 0o600 }) catch |err| switch (err) {
+        var file = std.Io.Dir.cwd().createFile(io, path, .{ .exclusive = true }) catch |err| switch (err) {
             error.PathAlreadyExists => {
                 allocator.free(path);
                 continue;
@@ -284,6 +284,14 @@ pub fn writeAuthHeaderFile(
         };
         errdefer std.Io.Dir.cwd().deleteFile(io, path) catch {};
         defer file.close(io);
+
+        // Restrict the auth-header file to owner read/write (0600) on POSIX so
+        // the bearer token is not world-readable. `CreateFileOptions` has no
+        // `mode` field, so permissions are set explicitly after creation.
+        // Windows ACL defaults already deny other users; `mode` is meaningless there.
+        if (builtin.os.tag != .windows) {
+            try file.setPermissions(io, std.Io.File.Permissions.fromMode(0o600));
+        }
 
         const header = try std.fmt.allocPrint(allocator, "Authorization: Bearer {s}\n", .{api_key});
         defer allocator.free(header);
