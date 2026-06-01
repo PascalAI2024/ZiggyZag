@@ -30,13 +30,13 @@ The daily-driver terminal backlog now lives in [next-20-features.md](next-20-fea
 
 ```mermaid
 flowchart LR
-    a["Done: MVP modern UX sprint"] --> b["Done: Cursor-aware line editor"]
+    a["MVP modern UX sprint"] --> b["Cursor-aware line editor"]
     b --> c["1. Full SQLite history backend"]
     c --> d["2. Streaming native pipelines"]
     d --> e["3. Completion option schemas"]
-    e --> f["Done: Shell integration protocol MVP"]
-    f --> g["Done: Windows all-Zig desktop MVP"]
-    g --> h["Done: Zig-native agentd MVP"]
+    e --> f["Shell integration protocol MVP"]
+    f --> g["Windows all-Zig desktop MVP"]
+    g --> h["Zig-native agentd MVP"]
     h --> i["4. Desktop hardening and packaging"]
     i --> j["5. Structured output experiments"]
 ```

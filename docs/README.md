@@ -15,6 +15,7 @@ If a doc cannot find a clean home in one of those folders, it probably should no
 | You want to | Open |
 | --- | --- |
 | Build and run it for the first time | [guides/quick-start.md](guides/quick-start.md) |
+| Configure the shell and desktop | [reference/config.md](reference/config.md) |
 | Understand the strategic direction | [vision/masterplan.md](vision/masterplan.md) |
 | See the public-facing pitch | [index.html](index.html) |
 | Read an external review | [reviews/2026-05-17-baseline.md](reviews/2026-05-17-baseline.md) |
@@ -42,6 +43,7 @@ Top-level contracts that act like guides also live in the root: [`../CONTRIBUTIN
 | [Theme authoring](reference/theme-authoring.md) | How to add a new theme to the registry |
 | [OSC 8 hyperlinks](reference/osc8-hyperlinks.md) | Cell model, parser, renderer, and scheme allowlist for `ESC ] 8` |
 | [Accessibility](reference/accessibility.md) | WCAG AA contrast audit across every built-in theme |
+| [Config](reference/config.md) | Shell and desktop configuration reference |
 | [Terminal parser](reference/terminal-parser.md) | VT/CSI/OSC state machine internals |
 | [Terminal app](reference/terminal-app.md) | Desktop host strategy, layer boundaries |
 | [All-Zig terminal direction](reference/all-zig-terminal.md) | Why no Tauri, no xterm.js, no embedded renderer |

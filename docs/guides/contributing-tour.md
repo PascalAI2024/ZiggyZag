@@ -107,14 +107,14 @@ See [CONTRIBUTING.md](../../CONTRIBUTING.md) for the full checklist. The short v
 ```powershell
 zig build
 zig build test
-.\scripts\smoke.ps1        # Windows
+.\scripts\smoke.ps1
+.\scripts\qa-tomorrow.ps1
 # or: bash scripts/smoke.sh  # POSIX
 ```
 
 For desktop or AgentD changes, also run:
 
 ```powershell
-.\scripts\qa-tomorrow.ps1
 .\scripts\daily-driver-qa.ps1 -Automated
 ```
 

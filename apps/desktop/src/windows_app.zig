@@ -55,6 +55,7 @@ const VK_F = 0x46;
 const VK_N = 0x4E;
 const VK_O = 0x4F;
 const VK_P = 0x50;
+const VK_B = 0x42;
 const VK_R = 0x52;
 const VK_T = 0x54;
 const VK_V = 0x56;
@@ -328,6 +329,7 @@ const PaletteActionKind = enum {
     split_vertical,
     split_horizontal,
     focus_next_pane,
+    focus_previous_pane,
     close_pane,
     open_agent_panel,
     agent_health,
@@ -358,6 +360,7 @@ const palette_actions = [_]PaletteAction{
     .{ .title = "Split pane right", .detail = "Create a vertical split with a fresh shell", .kind = .split_vertical },
     .{ .title = "Split pane down", .detail = "Create a horizontal split with a fresh shell", .kind = .split_horizontal },
     .{ .title = "Focus next pane", .detail = "Move keyboard focus to the next terminal pane", .kind = .focus_next_pane },
+    .{ .title = "Focus previous pane", .detail = "Move keyboard focus to the previous terminal pane", .kind = .focus_previous_pane },
     .{ .title = "Close pane", .detail = "Close the active pane and its shell", .kind = .close_pane },
     .{ .title = "AgentD panel", .detail = "Open the local AgentD sidecar transcript", .kind = .open_agent_panel },
     .{ .title = "AgentD health", .detail = "Ask AgentD for provider and runtime status", .kind = .agent_health },
@@ -464,6 +467,7 @@ const App = struct {
     search_query_len: usize = 0,
     search_match_label: [192]u8 = undefined,
     search_match_label_len: usize = 0,
+    search_match_line: usize = 0,
     quick_items: [32]QuickItem = undefined,
     quick_item_count: usize = 0,
     quick_selected: usize = 0,
@@ -1261,7 +1265,20 @@ const App = struct {
                 self.overlay = .none;
                 self.dispatchAction(hwnd, action.kind);
             },
-            .search => {},
+            .search => {
+                // Enter jumps to the matched line in scrollback
+                if (self.search_match_line > 0) {
+                    self.mutex.lock();
+                    const pane = self.activePane();
+                    const grid_height = pane.grid.height;
+                    const target_y = self.search_match_line - 1;
+                    if (target_y >= grid_height) {
+                        pane.scroll_offset = target_y - grid_height + 1;
+                    }
+                    self.mutex.unlock();
+                }
+                self.overlay = .none;
+            },
             .quick_select => {
                 if (self.quick_selected < self.quick_item_count) {
                     const item = self.quick_items[self.quick_selected].slice();
@@ -1294,6 +1311,7 @@ const App = struct {
             .split_vertical => self.splitPane(hwnd, .vertical),
             .split_horizontal => self.splitPane(hwnd, .horizontal),
             .focus_next_pane => self.focusNextPane(hwnd),
+            .focus_previous_pane => self.focusPreviousPane(hwnd),
             .close_pane => self.closeActivePane(hwnd),
             .open_agent_panel => self.openAgentPanel(),
             .agent_health => self.requestAgentHealth(),
@@ -1432,6 +1450,19 @@ const App = struct {
         }
     }
 
+    fn focusPreviousPane(self: *App, hwnd: HWND) void {
+        var offset: usize = 1;
+        while (offset <= self.panes.len) : (offset += 1) {
+            const index = (self.active_pane + self.panes.len - offset) % self.panes.len;
+            if (self.panes[index] != null) {
+                self.active_pane = index;
+                self.updateCaret(hwnd);
+                _ = InvalidateRect(hwnd, null, 0);
+                return;
+            }
+        }
+    }
+
     fn closeActivePane(self: *App, hwnd: HWND) void {
         if (self.paneCount() <= 1) return;
         self.sel_active = false;
@@ -1504,19 +1535,23 @@ const App = struct {
     fn updateSearchMatch(self: *App) void {
         self.search_match_label_len = 0;
         const query = self.search_query[0..self.search_query_len];
-        if (query.len == 0) return;
+        if (query.len == 0) {
+            self.search_match_line = 0;
+            return;
+        }
         const text = self.scrollbackTextAlloc() catch return;
         defer self.allocator.free(text);
 
         if (indexOfIgnoreCase(text, query)) |index| {
-            const line_no = 1 + countByte(text[0..index], '\n');
+            self.search_match_line = 1 + countByte(text[0..index], '\n');
             const label = std.fmt.bufPrint(
                 self.search_match_label[0..],
                 "Found at scrollback line {d}",
-                .{line_no},
+                .{self.search_match_line},
             ) catch return;
             self.search_match_label_len = label.len;
         } else {
+            self.search_match_line = 0;
             self.search_match_label_len = copyBounded(self.search_match_label[0..], "No match");
         }
     }
@@ -2069,7 +2104,7 @@ const App = struct {
         }
 
         _ = SetTextColor(hdc, toColorRef(self.selected_theme.muted));
-        drawUtf8TextFitted(hdc, text_x, bottom - self.char_height - 12, "Ctrl+Shift+T cycles theme. Ctrl+Shift+P opens palette. Edit desktop.conf to persist.", max_width, self.char_width);
+        drawUtf8TextFitted(hdc, text_x, bottom - self.char_height - 12, "Ctrl+Shift+T cycles theme. Ctrl+Shift+P opens palette. Run `config sample` to see all options.", max_width, self.char_width);
     }
 
     fn paintCommandPaletteOverlay(self: *App, hdc: HDC, rect: RECT) void {
@@ -2220,10 +2255,16 @@ const App = struct {
         y += self.char_height + 8;
 
         if (pending_len > 0) {
-            _ = SetTextColor(hdc, toColorRef(self.selected_theme.accent));
+            // Make pending write visually prominent — this is a security-relevant action
+            _ = SetTextColor(hdc, toColorRef(self.selected_theme.ansi[1]));
             var pending_line: [256]u8 = undefined;
-            const preview = std.fmt.bufPrint(&pending_line, "Pending write: {s}", .{pending[0..pending_len]}) catch "Pending write";
+            const preview = std.fmt.bufPrint(&pending_line, "⚠ PENDING APPROVAL — this will be typed into the shell:", .{}) catch "⚠ PENDING";
             drawUtf8TextFitted(hdc, x, y, preview, max_width, self.char_width);
+            y += self.char_height + 4;
+            _ = SetTextColor(hdc, toColorRef(self.selected_theme.accent));
+            var write_line: [256]u8 = undefined;
+            const write_preview = std.fmt.bufPrint(&write_line, "  {s}", .{pending[0..pending_len]}) catch "  pending";
+            drawUtf8TextFitted(hdc, x, y, write_preview, max_width, self.char_width);
             y += self.char_height + 6;
         }
 
@@ -2241,7 +2282,7 @@ const App = struct {
         }
 
         _ = SetTextColor(hdc, toColorRef(self.selected_theme.muted));
-        drawUtf8TextFitted(hdc, x, bottom - self.char_height - 8, "Enter approves pending write. Escape closes. Ctrl+Shift+A opens this panel.", max_width, self.char_width);
+        drawUtf8TextFitted(hdc, x, bottom - self.char_height - 8, "Enter approves write. Escape dismisses. Ctrl+Shift+A opens this panel.", max_width, self.char_width);
     }
 
     fn paintHintBar(self: *App, hdc: HDC, rect: RECT) void {
@@ -2716,6 +2757,10 @@ fn handleKey(app: *App, hwnd: HWND, wparam: WPARAM) bool {
     }
     if (keyDown(VK_CONTROL) and keyDown(VK_SHIFT) and wparam == VK_N) {
         app.dispatchAction(hwnd, .focus_next_pane);
+        return true;
+    }
+    if (keyDown(VK_CONTROL) and keyDown(VK_SHIFT) and wparam == VK_B) {
+        app.focusPreviousPane(hwnd);
         return true;
     }
     if (keyDown(VK_CONTROL) and keyDown(VK_SHIFT) and wparam == VK_W) {
