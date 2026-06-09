@@ -644,9 +644,7 @@ test "TsvBackend append and query round-trip" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    var dir_buf: [4096]u8 = undefined;
-    const dir_path = try tmp.dir.realpath(".", &dir_buf);
-    const file_path = try std.fs.path.join(allocator, &.{ dir_path, "history.tsv" });
+    const file_path = try std.fs.path.join(allocator, &.{ ".zig-cache", "tmp", &tmp.sub_path, "history.tsv" });
     defer allocator.free(file_path);
 
     var tsv = try TsvBackend.init(allocator, io, file_path);
@@ -682,9 +680,7 @@ test "TsvBackend query filters by cwd_prefix and command_substring" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    var dir_buf: [4096]u8 = undefined;
-    const dir_path = try tmp.dir.realpath(".", &dir_buf);
-    const file_path = try std.fs.path.join(allocator, &.{ dir_path, "history2.tsv" });
+    const file_path = try std.fs.path.join(allocator, &.{ ".zig-cache", "tmp", &tmp.sub_path, "history2.tsv" });
     defer allocator.free(file_path);
 
     var tsv = try TsvBackend.init(allocator, io, file_path);
@@ -719,11 +715,9 @@ test "TsvBackend export_tsv writes last max_export_rows lines" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    var dir_buf: [4096]u8 = undefined;
-    const dir_path = try tmp.dir.realpath(".", &dir_buf);
-    const src_path = try std.fs.path.join(allocator, &.{ dir_path, "src.tsv" });
+    const src_path = try std.fs.path.join(allocator, &.{ ".zig-cache", "tmp", &tmp.sub_path, "src.tsv" });
     defer allocator.free(src_path);
-    const dst_path = try std.fs.path.join(allocator, &.{ dir_path, "dst.tsv" });
+    const dst_path = try std.fs.path.join(allocator, &.{ ".zig-cache", "tmp", &tmp.sub_path, "dst.tsv" });
     defer allocator.free(dst_path);
 
     var tsv = try TsvBackend.init(allocator, io, src_path);
