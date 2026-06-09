@@ -316,11 +316,13 @@ pub const TsvBackend = struct {
         // Build the new row.
         var row: std.ArrayList(u8) = .empty;
         defer row.deinit(self.allocator);
-        try row.writer(self.allocator).print("{d}\t{d}\t{d}\t", .{
+        var num_buf: [64]u8 = undefined;
+        const num_str = try std.fmt.bufPrint(&num_buf, "{d}\t{d}\t{d}\t", .{
             entry.timestamp,
-            if (entry.exit_status) |s| @as(u64, s) else @as(u64, 0),
+            if (entry.exit_status) |s| @as(i64, s) else @as(i64, 0),
             if (entry.duration_ms) |d| d else @as(i64, 0),
         });
+        try row.appendSlice(self.allocator, num_str);
         try appendTsvFieldToList(self.allocator, &row, entry.cwd);
         try row.append(self.allocator, '\t');
         try appendTsvFieldToList(self.allocator, &row, entry.command);

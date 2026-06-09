@@ -29,12 +29,10 @@ pub fn isPosixPtyTarget(os_tag: std.Target.Os.Tag) bool {
 }
 
 /// Comptime selection of the most capable backend for the build target.
-/// Today POSIX hosts ship the `script(1)` fallback; once `native_posix` lands
-/// (Wave 3 native window host) this returns `.native_posix` instead.
 pub fn currentBackend() Backend {
     return switch (builtin.os.tag) {
         .windows => .conpty_windows,
-        .linux, .macos => .script_posix,
+        .linux, .macos => .native_posix,
         else => .unavailable,
     };
 }
