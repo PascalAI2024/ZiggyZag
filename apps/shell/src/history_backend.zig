@@ -163,21 +163,126 @@ pub const HistoryBackend = struct {
     }
 };
 
+// ---------------------------------------------------------------------------
+// Private TSV helpers
+// ---------------------------------------------------------------------------
+
+const tsv_max_file_bytes: usize = 8 * 1024 * 1024;
+
+fn appendTsvFieldToList(allocator: Allocator, buf: *std.ArrayList(u8), value: []const u8) !void {
+    for (value) |c| {
+        switch (c) {
+            '\t' => try buf.appendSlice(allocator, "\\t"),
+            '\n' => try buf.appendSlice(allocator, "\\n"),
+            '\r' => try buf.appendSlice(allocator, "\\r"),
+            '\\' => try buf.appendSlice(allocator, "\\\\"),
+            else => try buf.append(allocator, c),
+        }
+    }
+}
+
+fn unescapeTsvFieldAlloc(allocator: Allocator, value: []const u8) ![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(allocator);
+    var i: usize = 0;
+    while (i < value.len) : (i += 1) {
+        if (value[i] == '\\' and i + 1 < value.len) {
+            const escaped: u8 = switch (value[i + 1]) {
+                't' => '\t',
+                'n' => '\n',
+                'r' => '\r',
+                '\\' => '\\',
+                else => value[i + 1],
+            };
+            try out.append(allocator, escaped);
+            i += 1;
+            continue;
+        }
+        try out.append(allocator, value[i]);
+    }
+    return out.toOwnedSlice(allocator);
+}
+
+/// Parse one TSV row into a HistoryEntry. Returns null for blank/invalid lines.
+/// Allocates `entry.cwd` and `entry.command` from `allocator`; caller frees.
+fn parseTsvRow(allocator: Allocator, line: []const u8) !?HistoryEntry {
+    const trimmed = if (line.len > 0 and line[line.len - 1] == '\r')
+        line[0 .. line.len - 1]
+    else
+        line;
+    if (trimmed.len == 0) return null;
+
+    var fields = std.mem.splitScalar(u8, trimmed, '\t');
+    const ts_text = fields.next() orelse return null;
+    const status_text = fields.next() orelse return null;
+    const dur_text = fields.next() orelse return null;
+    const cwd_esc = fields.next() orelse return null;
+    const cmd_esc = fields.next() orelse return null;
+
+    const timestamp = std.fmt.parseInt(i64, ts_text, 10) catch return null;
+    const exit_status: ?u8 = std.fmt.parseInt(u8, status_text, 10) catch null;
+    const duration_ms: ?i64 = std.fmt.parseInt(i64, dur_text, 10) catch null;
+
+    const cwd = try unescapeTsvFieldAlloc(allocator, cwd_esc);
+    errdefer allocator.free(cwd);
+    const command = try unescapeTsvFieldAlloc(allocator, cmd_esc);
+
+    return HistoryEntry{
+        .timestamp = timestamp,
+        .exit_status = exit_status,
+        .duration_ms = duration_ms,
+        .cwd = cwd,
+        .command = command,
+    };
+}
+
+fn readTsvFileOrEmptyAlloc(io: std.Io, allocator: Allocator, path: []const u8) ![]u8 {
+    const file = if (std.fs.path.isAbsolute(path))
+        std.Io.Dir.openFileAbsolute(io, path, .{}) catch |err| switch (err) {
+            error.FileNotFound => return try allocator.alloc(u8, 0),
+            else => |e| return e,
+        }
+    else
+        std.Io.Dir.cwd().openFile(io, path, .{}) catch |err| switch (err) {
+            error.FileNotFound => return try allocator.alloc(u8, 0),
+            else => |e| return e,
+        };
+    defer file.close(io);
+    var read_buf: [4096]u8 = undefined;
+    var reader = file.readerStreaming(io, &read_buf);
+    return reader.interface.allocRemaining(allocator, .limited(tsv_max_file_bytes)) catch |err| switch (err) {
+        error.StreamTooLong => error.FileTooLarge,
+        else => |e| e,
+    };
+}
+
+fn writeTsvFile(io: std.Io, path: []const u8, data: []const u8) !void {
+    if (std.fs.path.isAbsolute(path)) {
+        var file = try std.Io.Dir.createFileAbsolute(io, path, .{});
+        defer file.close(io);
+        try file.writeStreamingAll(io, data);
+    } else {
+        try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = data });
+    }
+}
+
+// ---------------------------------------------------------------------------
+// TsvBackend
+// ---------------------------------------------------------------------------
+
 /// TSV-backed implementation. The on-disk format is the one already produced by
 /// `writeHistoryMetaFile` and consumed by `readHistoryMetaFile` in `main.zig`:
 ///   `{timestamp}\t{status}\t{duration_ms}\t{esc_cwd}\t{esc_command}\n`
-/// with `\t`, `\n`, `\r`, and `\\` escaped per `appendTsvField`. Wave 4 will
-/// implement these methods by calling those existing helpers; for now every
-/// entry point returns `error.NotImplemented` so the vtable wiring can be
-/// exercised by tests without touching the live history path.
+/// with `\t`, `\n`, `\r`, and `\\` escaped per `appendTsvField`.
 pub const TsvBackend = struct {
     allocator: Allocator,
+    io: std.Io,
     path: []u8,
 
-    pub fn init(allocator: Allocator, path: []const u8) !TsvBackend {
+    pub fn init(allocator: Allocator, io: std.Io, path: []const u8) !TsvBackend {
         const owned = try allocator.dupe(u8, path);
         errdefer allocator.free(owned);
-        return .{ .allocator = allocator, .path = owned };
+        return .{ .allocator = allocator, .io = io, .path = owned };
     }
 
     pub fn deinit(self: *TsvBackend) void {
@@ -201,44 +306,150 @@ pub const TsvBackend = struct {
         self.deinit();
     }
 
-    /// Production form: open `self.path` with `O_APPEND`, format the row with
-    /// the same `appendFmt` + `appendTsvField` sequence used by
-    /// `writeHistoryMetaFile` (main.zig line 2669), write it, fsync the file
-    /// if `self.fsync_on_append` is on (a future config knob).
     fn appendErased(ptr: *anyopaque, entry: HistoryEntry) anyerror!void {
-        _ = ptr;
-        _ = entry;
-        return error.NotImplemented;
+        const self: *TsvBackend = @ptrCast(@alignCast(ptr));
+
+        // Read existing file content (empty slice if file doesn't exist yet).
+        const existing = try readTsvFileOrEmptyAlloc(self.io, self.allocator, self.path);
+        defer self.allocator.free(existing);
+
+        // Build the new row.
+        var row: std.ArrayList(u8) = .empty;
+        defer row.deinit(self.allocator);
+        try row.writer(self.allocator).print("{d}\t{d}\t{d}\t", .{
+            entry.timestamp,
+            if (entry.exit_status) |s| @as(u64, s) else @as(u64, 0),
+            if (entry.duration_ms) |d| d else @as(i64, 0),
+        });
+        try appendTsvFieldToList(self.allocator, &row, entry.cwd);
+        try row.append(self.allocator, '\t');
+        try appendTsvFieldToList(self.allocator, &row, entry.command);
+        try row.append(self.allocator, '\n');
+
+        // Combine existing + new row.
+        var out: std.ArrayList(u8) = .empty;
+        defer out.deinit(self.allocator);
+        try out.appendSlice(self.allocator, existing);
+        if (existing.len > 0 and existing[existing.len - 1] != '\n') {
+            try out.append(self.allocator, '\n');
+        }
+        try out.appendSlice(self.allocator, row.items);
+
+        try writeTsvFile(self.io, self.path, out.items);
     }
 
-    /// Production form: stream the file through `unescapeTsvFieldAlloc` (main.zig
-    /// line 4898), apply the `QuerySpec` filters in Zig (no indices to lean on),
-    /// stop at `spec.limit`. O(n) over the whole TSV — acceptable up to ~10k
-    /// rows per the budget in spec section 6.
     fn queryErased(ptr: *anyopaque, allocator: Allocator, spec: QuerySpec) anyerror![]HistoryEntry {
-        _ = ptr;
-        _ = allocator;
-        _ = spec;
-        return error.NotImplemented;
+        const self: *TsvBackend = @ptrCast(@alignCast(ptr));
+        const limit = @min(spec.limit, max_query_rows);
+
+        const contents = try readTsvFileOrEmptyAlloc(self.io, self.allocator, self.path);
+        defer self.allocator.free(contents);
+
+        // Collect all lines so we can iterate in reverse (most recent last in file).
+        var line_list: std.ArrayList([]const u8) = .empty;
+        defer line_list.deinit(self.allocator);
+        var it = std.mem.splitScalar(u8, contents, '\n');
+        while (it.next()) |line| try line_list.append(self.allocator, line);
+
+        var entries: std.ArrayList(HistoryEntry) = .empty;
+        errdefer {
+            for (entries.items) |e| {
+                allocator.free(e.command);
+                allocator.free(e.cwd);
+            }
+            entries.deinit(allocator);
+        }
+
+        var idx = line_list.items.len;
+        while (idx > 0 and entries.items.len < limit) {
+            idx -= 1;
+            const entry = parseTsvRow(allocator, line_list.items[idx]) catch continue orelse continue;
+
+            var keep = true;
+            if (spec.cwd_prefix) |prefix| {
+                if (!std.mem.startsWith(u8, entry.cwd, prefix)) keep = false;
+            }
+            if (keep) if (spec.exit_status) |status| {
+                if (entry.exit_status == null or entry.exit_status.? != status) keep = false;
+            };
+            if (keep) if (spec.since_ms) |since| {
+                if (entry.timestamp < since) keep = false;
+            };
+            if (keep) if (spec.command_substring) |sub| {
+                if (std.mem.indexOf(u8, entry.command, sub) == null) keep = false;
+            };
+
+            if (keep) {
+                try entries.append(allocator, entry);
+            } else {
+                allocator.free(entry.command);
+                allocator.free(entry.cwd);
+            }
+        }
+
+        return entries.toOwnedSlice(allocator);
     }
 
-    /// Production form: a TSV-to-TSV import is a `std.fs.copyFileAbsolute` from
-    /// the source into `self.path`. Reports `error.AlreadyExists` if the target
-    /// is non-empty (no merge story between two TSVs — that's a SQLite-only
-    /// feature).
     fn importTsvErased(ptr: *anyopaque, tsv_path: []const u8) anyerror!usize {
-        _ = ptr;
-        _ = tsv_path;
-        return error.NotImplemented;
+        const self: *TsvBackend = @ptrCast(@alignCast(ptr));
+
+        const src = try readTsvFileOrEmptyAlloc(self.io, self.allocator, tsv_path);
+        defer self.allocator.free(src);
+        const dst = try readTsvFileOrEmptyAlloc(self.io, self.allocator, self.path);
+        defer self.allocator.free(dst);
+
+        var out: std.ArrayList(u8) = .empty;
+        defer out.deinit(self.allocator);
+        try out.appendSlice(self.allocator, dst);
+
+        var count: usize = 0;
+        var lines = std.mem.splitScalar(u8, src, '\n');
+        while (lines.next()) |raw| {
+            if (count >= max_import_rows) break;
+            const line = if (raw.len > 0 and raw[raw.len - 1] == '\r') raw[0 .. raw.len - 1] else raw;
+            if (line.len == 0) continue;
+            // Validate row is parseable; skip corrupt rows silently.
+            const entry = parseTsvRow(self.allocator, line) catch continue orelse continue;
+            self.allocator.free(entry.command);
+            self.allocator.free(entry.cwd);
+            try out.appendSlice(self.allocator, line);
+            try out.append(self.allocator, '\n');
+            count += 1;
+        }
+
+        try writeTsvFile(self.io, self.path, out.items);
+        return count;
     }
 
-    /// Production form: a TSV-to-TSV export is a `std.fs.copyFileAbsolute` from
-    /// `self.path` to `tsv_path`. No row cap is applied — the cap in spec
-    /// section 2 is a SQLite-only concession to keep the export window small.
     fn exportTsvErased(ptr: *anyopaque, tsv_path: []const u8) anyerror!void {
-        _ = ptr;
-        _ = tsv_path;
-        return error.NotImplemented;
+        const self: *TsvBackend = @ptrCast(@alignCast(ptr));
+
+        const contents = try readTsvFileOrEmptyAlloc(self.io, self.allocator, self.path);
+        defer self.allocator.free(contents);
+
+        // Collect non-empty lines; keep only the last max_export_rows.
+        var line_list: std.ArrayList([]const u8) = .empty;
+        defer line_list.deinit(self.allocator);
+        var it = std.mem.splitScalar(u8, contents, '\n');
+        while (it.next()) |raw| {
+            const line = if (raw.len > 0 and raw[raw.len - 1] == '\r') raw[0 .. raw.len - 1] else raw;
+            if (line.len == 0) continue;
+            try line_list.append(self.allocator, line);
+        }
+
+        const start = if (line_list.items.len > max_export_rows)
+            line_list.items.len - max_export_rows
+        else
+            0;
+
+        var out: std.ArrayList(u8) = .empty;
+        defer out.deinit(self.allocator);
+        for (line_list.items[start..]) |line| {
+            try out.appendSlice(self.allocator, line);
+            try out.append(self.allocator, '\n');
+        }
+
+        try writeTsvFile(self.io, tsv_path, out.items);
     }
 };
 
@@ -407,12 +618,8 @@ test "QuerySpec defaults are sensible" {
     try std.testing.expect(spec.command_substring == null);
 }
 
-test "TsvBackend and SqliteBackend currently return NotImplemented" {
+test "SqliteBackend returns NotImplemented (Wave 4 stub)" {
     const allocator = std.testing.allocator;
-
-    var tsv = try TsvBackend.init(allocator, "history.tsv");
-    defer tsv.deinit();
-    const tsv_be = tsv.backend();
     const entry: HistoryEntry = .{
         .command = "ls",
         .cwd = "/tmp",
@@ -420,10 +627,6 @@ test "TsvBackend and SqliteBackend currently return NotImplemented" {
         .duration_ms = 1,
         .timestamp = 0,
     };
-    try std.testing.expectError(error.NotImplemented, tsv_be.append(entry));
-    try std.testing.expectError(error.NotImplemented, tsv_be.query(allocator, .{}));
-    try std.testing.expectError(error.NotImplemented, tsv_be.import_tsv("src.tsv"));
-    try std.testing.expectError(error.NotImplemented, tsv_be.export_tsv("dst.tsv"));
 
     var sql = try SqliteBackend.init(allocator, "history.sqlite");
     defer sql.deinit();
@@ -432,4 +635,113 @@ test "TsvBackend and SqliteBackend currently return NotImplemented" {
     try std.testing.expectError(error.NotImplemented, sql_be.query(allocator, .{}));
     try std.testing.expectError(error.NotImplemented, sql_be.import_tsv("src.tsv"));
     try std.testing.expectError(error.NotImplemented, sql_be.export_tsv("dst.tsv"));
+}
+
+test "TsvBackend append and query round-trip" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var dir_buf: [4096]u8 = undefined;
+    const dir_path = try tmp.dir.realpath(".", &dir_buf);
+    const file_path = try std.fs.path.join(allocator, &.{ dir_path, "history.tsv" });
+    defer allocator.free(file_path);
+
+    var tsv = try TsvBackend.init(allocator, io, file_path);
+    defer tsv.deinit();
+    const be = tsv.backend();
+
+    // Append two entries.
+    try be.append(.{ .command = "echo hello", .cwd = "/home/user", .exit_status = 0, .duration_ms = 5, .timestamp = 1000 });
+    try be.append(.{ .command = "ls -la", .cwd = "/tmp", .exit_status = 0, .duration_ms = 12, .timestamp = 2000 });
+
+    // Query returns most recent first (reverse order), default limit 100.
+    const results = try be.query(allocator, .{});
+    defer {
+        for (results) |r| {
+            allocator.free(r.command);
+            allocator.free(r.cwd);
+        }
+        allocator.free(results);
+    }
+
+    try std.testing.expectEqual(@as(usize, 2), results.len);
+    // Most recent entry is first.
+    try std.testing.expectEqualStrings("ls -la", results[0].command);
+    try std.testing.expectEqualStrings("/tmp", results[0].cwd);
+    try std.testing.expectEqual(@as(i64, 2000), results[0].timestamp);
+    try std.testing.expectEqualStrings("echo hello", results[1].command);
+}
+
+test "TsvBackend query filters by cwd_prefix and command_substring" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var dir_buf: [4096]u8 = undefined;
+    const dir_path = try tmp.dir.realpath(".", &dir_buf);
+    const file_path = try std.fs.path.join(allocator, &.{ dir_path, "history2.tsv" });
+    defer allocator.free(file_path);
+
+    var tsv = try TsvBackend.init(allocator, io, file_path);
+    defer tsv.deinit();
+    const be = tsv.backend();
+
+    try be.append(.{ .command = "git status", .cwd = "/project", .exit_status = 0, .duration_ms = 1, .timestamp = 1 });
+    try be.append(.{ .command = "ls", .cwd = "/other", .exit_status = 0, .duration_ms = 1, .timestamp = 2 });
+    try be.append(.{ .command = "git log", .cwd = "/project", .exit_status = 0, .duration_ms = 1, .timestamp = 3 });
+
+    // Filter by cwd_prefix.
+    const proj_results = try be.query(allocator, .{ .cwd_prefix = "/project" });
+    defer {
+        for (proj_results) |r| { allocator.free(r.command); allocator.free(r.cwd); }
+        allocator.free(proj_results);
+    }
+    try std.testing.expectEqual(@as(usize, 2), proj_results.len);
+
+    // Filter by command_substring.
+    const git_results = try be.query(allocator, .{ .command_substring = "git" });
+    defer {
+        for (git_results) |r| { allocator.free(r.command); allocator.free(r.cwd); }
+        allocator.free(git_results);
+    }
+    try std.testing.expectEqual(@as(usize, 2), git_results.len);
+}
+
+test "TsvBackend export_tsv writes last max_export_rows lines" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var dir_buf: [4096]u8 = undefined;
+    const dir_path = try tmp.dir.realpath(".", &dir_buf);
+    const src_path = try std.fs.path.join(allocator, &.{ dir_path, "src.tsv" });
+    defer allocator.free(src_path);
+    const dst_path = try std.fs.path.join(allocator, &.{ dir_path, "dst.tsv" });
+    defer allocator.free(dst_path);
+
+    var tsv = try TsvBackend.init(allocator, io, src_path);
+    defer tsv.deinit();
+    const be = tsv.backend();
+
+    try be.append(.{ .command = "cmd1", .cwd = "/", .exit_status = 0, .duration_ms = 1, .timestamp = 1 });
+    try be.append(.{ .command = "cmd2", .cwd = "/", .exit_status = 0, .duration_ms = 1, .timestamp = 2 });
+    try be.export_tsv(dst_path);
+
+    // dst should contain the same rows.
+    var dst_tsv = try TsvBackend.init(allocator, io, dst_path);
+    defer dst_tsv.deinit();
+    const dst_be = dst_tsv.backend();
+    const results = try dst_be.query(allocator, .{});
+    defer {
+        for (results) |r| { allocator.free(r.command); allocator.free(r.cwd); }
+        allocator.free(results);
+    }
+    try std.testing.expectEqual(@as(usize, 2), results.len);
 }

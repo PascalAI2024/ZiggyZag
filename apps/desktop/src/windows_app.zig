@@ -60,6 +60,7 @@ const VK_R = 0x52;
 const VK_T = 0x54;
 const VK_V = 0x56;
 const VK_W = 0x57;
+const VK_S = 0x53;
 const VK_INSERT = 0x2D;
 const VK_ESCAPE = 0x1B;
 const VK_RETURN = 0x0D;
@@ -339,6 +340,7 @@ const PaletteActionKind = enum {
     toggle_settings,
     next_theme,
     reload_config,
+    save_config,
     restart_shell,
     clear_scrollback,
     copy_cwd,
@@ -370,6 +372,7 @@ const palette_actions = [_]PaletteAction{
     .{ .title = "Settings", .detail = "Toggle the settings and theme overlay", .kind = .toggle_settings },
     .{ .title = "Next theme", .detail = "Cycle through built-in terminal themes", .kind = .next_theme },
     .{ .title = "Reload config", .detail = "Reload desktop.conf and apply safe settings", .kind = .reload_config },
+    .{ .title = "Save config", .detail = "Write current settings to desktop.conf", .kind = .save_config },
     .{ .title = "Restart shell", .detail = "Restart the current ZiggyZag PTY session", .kind = .restart_shell },
     .{ .title = "Clear scrollback", .detail = "Clear terminal history without clearing the screen", .kind = .clear_scrollback },
     .{ .title = "Copy current directory", .detail = "Copy shell integration cwd from the status bar", .kind = .copy_cwd },
@@ -1321,6 +1324,7 @@ const App = struct {
             .toggle_settings => self.overlay = if (self.overlay == .settings) .none else .settings,
             .next_theme => self.cycleTheme(),
             .reload_config => self.reloadDesktopConfig(hwnd),
+            .save_config => self.saveDesktopConfig(),
             .restart_shell => self.restartShell(hwnd),
             .clear_scrollback => {
                 self.mutex.lock();
@@ -1376,6 +1380,46 @@ const App = struct {
         if (GetClientRect(hwnd, &rect) != 0) self.resizeForClient(rect);
         self.startConfiguredPanes(hwnd);
         _ = InvalidateRect(hwnd, null, 0);
+    }
+
+    fn saveDesktopConfig(self: *App) void {
+        desktop_config.validate(self.config) catch |err| {
+            self.setConfigError(err);
+            return;
+        };
+        if (self.config_path_len == 0) {
+            const p = self.desktopConfigPathAlloc() catch |err| {
+                self.setConfigError(err);
+                return;
+            };
+            self.setConfigPath(p);
+            self.allocator.free(p);
+        }
+        const write_path = self.configPathSlice();
+        var aw = std.Io.Writer.Allocating.init(self.allocator);
+        defer aw.deinit();
+        desktop_config.serialize(self.config, &aw.writer) catch |err| {
+            self.setConfigError(err);
+            return;
+        };
+        const contents = aw.written();
+        if (std.fs.path.isAbsolute(write_path)) {
+            var file = std.Io.Dir.createFileAbsolute(self.io, write_path, .{}) catch |err| {
+                self.setConfigError(err);
+                return;
+            };
+            defer file.close(self.io);
+            file.writeStreamingAll(self.io, contents) catch |err| {
+                self.setConfigError(err);
+                return;
+            };
+        } else {
+            std.Io.Dir.cwd().writeFile(self.io, .{ .sub_path = write_path, .data = contents }) catch |err| {
+                self.setConfigError(err);
+                return;
+            };
+        }
+        self.config_error_len = 0;
     }
 
     fn restartShell(self: *App, hwnd: HWND) void {
@@ -2104,7 +2148,7 @@ const App = struct {
         }
 
         _ = SetTextColor(hdc, toColorRef(self.selected_theme.muted));
-        drawUtf8TextFitted(hdc, text_x, bottom - self.char_height - 12, "Ctrl+Shift+T cycles theme. Ctrl+Shift+P opens palette. Run `config sample` to see all options.", max_width, self.char_width);
+        drawUtf8TextFitted(hdc, text_x, bottom - self.char_height - 12, "Ctrl+S  Save config   Ctrl+Shift+R  Reload config   Ctrl+Shift+T  Cycle theme   Esc  Close", max_width, self.char_width);
     }
 
     fn paintCommandPaletteOverlay(self: *App, hdc: HDC, rect: RECT) void {
@@ -2253,6 +2297,29 @@ const App = struct {
         const status_text = std.fmt.bufPrint(&status_line, "Sidecar: {s}  |  Palette: health, tools, preview write, approve write", .{status}) catch "Sidecar";
         drawUtf8TextFitted(hdc, x, y, status_text, max_width, self.char_width);
         y += self.char_height + 8;
+
+        // "No provider" inline hint — shown when a health response exists but
+        // no provider is reachable. Guides the user to install Ollama or set
+        // an OpenAI-compatible endpoint without leaving the panel.
+        const show_provider_hint = blk: {
+            if (transcript_len == 0) break :blk false;
+            const t = snapshot[0..transcript_len];
+            const has_health = std.mem.indexOf(u8, t, "provider_status") != null;
+            const is_reachable = std.mem.indexOf(u8, t, "\"reachable\"") != null;
+            break :blk has_health and !is_reachable;
+        };
+        if (show_provider_hint) {
+            _ = SetTextColor(hdc, toColorRef(self.selected_theme.ansi[3]));
+            drawUtf8TextFitted(hdc, x, y, "No AI provider reachable.", max_width, self.char_width);
+            y += self.char_height + 2;
+            _ = SetTextColor(hdc, toColorRef(self.selected_theme.muted));
+            drawUtf8TextFitted(hdc, x, y, "  ollama pull qwen2.5-coder:1.5b", max_width, self.char_width);
+            y += self.char_height + 2;
+            drawUtf8TextFitted(hdc, x, y, "  set ZIGGYZAG_AGENT_PROVIDER=ollama", max_width, self.char_width);
+            y += self.char_height + 2;
+            drawUtf8TextFitted(hdc, x, y, "  or set ZIGGYZAG_AGENT_BASE_URL + ZIGGYZAG_AGENT_API_KEY", max_width, self.char_width);
+            y += self.char_height + 6;
+        }
 
         if (pending_len > 0) {
             // Make pending write visually prominent — this is a security-relevant action
@@ -2729,6 +2796,19 @@ fn handleKey(app: *App, hwnd: HWND, wparam: WPARAM) bool {
                 return true;
             },
             else => {},
+        }
+    }
+
+    if (app.overlay == .settings) {
+        if (wparam == VK_ESCAPE) {
+            app.closeOverlay();
+            _ = InvalidateRect(hwnd, null, 0);
+            return true;
+        }
+        if (keyDown(VK_CONTROL) and wparam == VK_S) {
+            app.saveDesktopConfig();
+            _ = InvalidateRect(hwnd, null, 0);
+            return true;
         }
     }
 
