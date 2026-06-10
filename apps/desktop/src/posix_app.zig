@@ -14,21 +14,8 @@ pub fn run(init_data: std.process.Init) !void {
     var stderr = std.Io.File.stderr().writer(init_data.io, &stderr_buffer);
     defer stderr.interface.flush() catch {};
 
-    // Opt-in Wave 3 native graphical host. When `ZIGGYZAG_NATIVE_WINDOW` is
-    // set in the environment, try the native window path first; on failure we
-    // log to stderr and fall through to the existing terminal-attached
-    // launcher below. The default path is unchanged.
-    if (init_data.environ_map.get("ZIGGYZAG_NATIVE_WINDOW")) |_| {
-        runNativeWindow(init_data) catch |native_err| {
-            stderr.interface.print(
-                \\ZiggyZag: native window host unavailable: {s}
-                \\Falling back to the terminal-attached launcher.
-                \\
-            , .{@errorName(native_err)}) catch {};
-            stderr.interface.flush() catch {};
-        };
-    }
-
+    // Resolve shell path up front so both the native window path and the
+    // terminal-attached launcher share the same resolved binary.
     const shell_path = resolveShellPath(allocator, init_data.io, init_data.environ_map) catch |err| {
         try stderr.interface.print(
             \\ZiggyZag Desktop ({s})
@@ -44,6 +31,23 @@ pub fn run(init_data: std.process.Init) !void {
         return err;
     };
     defer allocator.free(shell_path);
+
+    // Opt-in Wave 3 native graphical host.  When ZIGGYZAG_NATIVE_WINDOW is set,
+    // try to open a native window.  On success the user session has ended and we
+    // return; on failure we log to stderr and fall through to the terminal-attached
+    // launcher so the user still gets a working shell.
+    if (init_data.environ_map.get("ZIGGYZAG_NATIVE_WINDOW")) |_| {
+        if (runNativeWindow(init_data, shell_path)) |_| {
+            return; // native window session ended cleanly
+        } else |native_err| {
+            stderr.interface.print(
+                \\ZiggyZag: native window host unavailable: {s}
+                \\Falling back to the terminal-attached launcher.
+                \\
+            , .{@errorName(native_err)}) catch {};
+            stderr.interface.flush() catch {};
+        }
+    }
 
     try init_data.environ_map.put("ZIGGYZAG_APP", "1");
     try init_data.environ_map.put("ZIGGYZAG_INTEGRATION", "1");
@@ -461,25 +465,14 @@ test "term status maps exited code" {
 // Wave 3 scaffold: native window host
 // ---------------------------------------------------------------------------
 
-// Wave 3: native macOS / Linux graphical host.
-// Implementation paths:
-//   - Linux: X11 via Xlib extern declarations, or Wayland via libwayland-client
-//   - macOS: Cocoa via Objective-C bridging or NSWindow direct calls
-// Both need real Pty backend implementations in pty.zig first.
-//
-// Until those land this entry point returns error.NotImplemented so the
-// terminal-attached launcher in `run()` remains the only working path. The
-// opt-in env var (`ZIGGYZAG_NATIVE_WINDOW`) lets us prototype the host without
-// disturbing the default user experience: failure falls through to the
-// existing PTY path with a one-line stderr note.
-pub fn runNativeWindow(init_data: std.process.Init) !void {
-    _ = init_data;
+// Wave 3: native macOS graphical host (Linux X11/Wayland deferred).
+// On macOS delegates to macos_app.run which opens a Cocoa NSWindow backed
+// by the posix_pty PTY and renders via Core Text.  All other POSIX platforms
+// return error.NotImplemented and the caller falls through to the
+// terminal-attached launcher.
+fn runNativeWindow(init_data: std.process.Init, shell_path: []const u8) !void {
+    if (builtin.os.tag == .macos) {
+        return @import("macos_app.zig").run(init_data, shell_path);
+    }
     return error.NotImplemented;
-}
-
-test "runNativeWindow scaffold returns NotImplemented" {
-    // Build a minimal Init shape; the function ignores it today, so an
-    // undefined value is acceptable for the scaffold-shape test.
-    const init_data: std.process.Init = undefined;
-    try std.testing.expectError(error.NotImplemented, runNativeWindow(init_data));
 }

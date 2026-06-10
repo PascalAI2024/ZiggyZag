@@ -12,7 +12,7 @@ Navigation: use [task-system.md](../reference/task-system.md) for how task statu
 | --- | --- | --- |
 | Shell core | Alpha-ready | REPL, builtins, history, completions, prompt themes, aliases, abbreviations, redirection, background jobs, project tasks, and simple native pipelines are present. |
 | Windows desktop host | Alpha | Win32/ConPTY host, terminal grid, keyboard input, resize, bounded scrollback, search, quick select, command palette, settings overlay, themes, copy-visible, paste, alternate screen, mouse-wheel handling, split panes, AgentD panel, and OSC 777 parsing are present. I/O bridge and typed-command execution were broken at `alpha.3` and fixed 2026-05-17 (see `docs/reviews/2026-05-17-windows-debug.md`). |
-| macOS/Linux desktop host | Alpha launcher only | `ziggyzag-desktop` builds and launches ZiggyZag in the calling terminal, preferring the native POSIX PTY relay, then `script(1)`, then direct stdio. It is not a native graphical window yet. |
+| macOS/Linux desktop host | Alpha | `ziggyzag-desktop` builds and launches ZiggyZag in the calling terminal, preferring the native POSIX PTY relay, then `script(1)`, then direct stdio. On macOS, setting `ZIGGYZAG_NATIVE_WINDOW=1` opens a real Cocoa window backed by a POSIX PTY with a CoreText/CoreGraphics grid renderer. |
 | AgentD runtime | Alpha | `ziggyzag-agentd` exposes JSON-lines health, tool discovery, local read/search/git/build tools, approval metadata, host actions, and provider request shaping. |
 | AgentD desktop panel | Alpha | The Windows desktop host spawns AgentD, renders a bounded transcript, requests health/tools, previews `terminal.write`, and requires explicit approval before writing to the active PTY. |
 | Split panes | Alpha | The Windows host supports PTY-backed vertical/horizontal splits, next-pane focus, active-pane close, per-pane scrollback/status, and config-restored pane count/orientation. Tabs are still missing. |
@@ -70,7 +70,7 @@ Navigation: use [task-system.md](../reference/task-system.md) for how task statu
 
 ### P2: Platform, Packaging, And Product Polish
 
-- [ ] Build a native macOS/Linux graphical host on top of the shared PTY boundary instead of only the terminal-attached launcher.
+- [x] Build a native macOS/Linux graphical host on top of the shared PTY boundary instead of only the terminal-attached launcher. Done: `macos_app.zig` implements a full Cocoa NSWindow + NSView terminal with CoreText/CoreGraphics grid renderer, POSIX PTY, 60fps NSTimer, and keyboard input. Activated via `ZIGGYZAG_NATIVE_WINDOW=1`.
 - [ ] Decide whether the renderer remains GDI/CPU for the next alpha or moves toward a GPU-backed renderer; document the tradeoff before changing the rendering stack.
 - [ ] Add install/uninstall/rollback paths for friend testers, including config/history preservation and a documented way to remove ZiggyZag cleanly.
 - [ ] Add signed or notarized release packaging when the project is ready to distribute outside trusted testers.

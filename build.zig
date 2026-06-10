@@ -50,6 +50,16 @@ pub fn build(b: *std.Build) void {
         desktop_module.linkSystemLibrary("gdi32", .{});
         desktop_module.linkSystemLibrary("kernel32", .{});
     }
+    if (target.result.os.tag == .macos) {
+        // Wave 3: native Cocoa window host (macos_app.zig).
+        // Cocoa = AppKit + Foundation (includes NSApplication, NSWindow, NSView).
+        // CoreText + CoreGraphics power the terminal cell renderer.
+        // libobjc provides the ObjC runtime (objc_msgSend, class registration).
+        desktop_module.linkFramework("Cocoa", .{});
+        desktop_module.linkFramework("CoreText", .{});
+        desktop_module.linkFramework("CoreGraphics", .{});
+        desktop_module.linkSystemLibrary("objc", .{});
+    }
     b.installArtifact(desktop_exe);
 
     const agentd_exe = b.addExecutable(.{
@@ -74,11 +84,18 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
-    launcher_module.addImport("desktop", b.createModule(.{
+    const launcher_desktop_module = b.createModule(.{
         .root_source_file = b.path("apps/desktop/src/lib.zig"),
         .target = target,
         .optimize = optimize,
-    }));
+    });
+    if (target.result.os.tag == .macos) {
+        launcher_desktop_module.linkFramework("Cocoa", .{});
+        launcher_desktop_module.linkFramework("CoreText", .{});
+        launcher_desktop_module.linkFramework("CoreGraphics", .{});
+        launcher_desktop_module.linkSystemLibrary("objc", .{});
+    }
+    launcher_module.addImport("desktop", launcher_desktop_module);
     const launcher_exe = b.addExecutable(.{
         .name = "ziggyzag-launcher",
         .root_module = launcher_module,
@@ -134,13 +151,18 @@ pub fn build(b: *std.Build) void {
         .root_module = shell_test_module,
     });
     const run_shell_tests = b.addRunArtifact(shell_tests);
-    const desktop_tests = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("apps/desktop/src/lib.zig"),
-            .target = target,
-            .optimize = optimize,
-        }),
+    const desktop_test_module = b.createModule(.{
+        .root_source_file = b.path("apps/desktop/src/lib.zig"),
+        .target = target,
+        .optimize = optimize,
     });
+    if (target.result.os.tag == .macos) {
+        desktop_test_module.linkFramework("Cocoa", .{});
+        desktop_test_module.linkFramework("CoreText", .{});
+        desktop_test_module.linkFramework("CoreGraphics", .{});
+        desktop_test_module.linkSystemLibrary("objc", .{});
+    }
+    const desktop_tests = b.addTest(.{ .root_module = desktop_test_module });
     const run_desktop_tests = b.addRunArtifact(desktop_tests);
     const agentd_tests = b.addTest(.{
         .root_module = b.createModule(.{
@@ -157,11 +179,18 @@ pub fn build(b: *std.Build) void {
                 .target = target,
                 .optimize = optimize,
             });
-            module.addImport("desktop", b.createModule(.{
+            const launcher_test_desktop_module = b.createModule(.{
                 .root_source_file = b.path("apps/desktop/src/lib.zig"),
                 .target = target,
                 .optimize = optimize,
-            }));
+            });
+            if (target.result.os.tag == .macos) {
+                launcher_test_desktop_module.linkFramework("Cocoa", .{});
+                launcher_test_desktop_module.linkFramework("CoreText", .{});
+                launcher_test_desktop_module.linkFramework("CoreGraphics", .{});
+                launcher_test_desktop_module.linkSystemLibrary("objc", .{});
+            }
+            module.addImport("desktop", launcher_test_desktop_module);
             break :launcher_test_module module;
         },
     });
