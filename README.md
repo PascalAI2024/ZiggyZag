@@ -6,7 +6,7 @@
   <b>A readable Zig shell, a native Windows terminal host, and a local AI sidecar — sharing themes, events, and approval semantics.</b>
 </p>
 
-> **Platform status — read this first.** The native graphical desktop runs on **Windows only** right now (verified working as of 2026-05-17). On **macOS and Linux** you get the shell, AgentD, and a terminal-attached launcher — there is **no native window yet**; native macOS and Linux hosts are in active development (Wave 3). Every screenshot and feature below is Windows unless stated otherwise.
+> **Platform status — read this first.** The native graphical desktop runs on **Windows** and **macOS**. Windows (verified 2026-05-17): Win32/ConPTY host with split panes, search, AgentD panel. macOS (verified 2026-06-09): native Cocoa window via `ZIGGYZAG_NATIVE_WINDOW=1` — CoreText grid renderer, dynamic resize, mouse-wheel scrollback, Cmd+V paste, application-cursor, Ctrl+Space AgentD overlay. Linux: shell + launcher only for now.
 
 <p align="center">
   <a href="https://github.com/PascalAI2024/ZiggyZag/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/PascalAI2024/ZiggyZag/actions/workflows/ci.yml/badge.svg"></a>
@@ -70,8 +70,9 @@ Pick a theme in the desktop with `Ctrl+Shift+T`. The terminal palette AND the sh
 
 ## Status — honestly
 
-- **Windows desktop**: alpha. Native Win32 + ConPTY host. The I/O bridge and typed-command execution were structurally broken at the `alpha.3` tag and were fixed 2026-05-17 (four bugs — see [CHANGELOG](CHANGELOG.md) and [`docs/reviews/2026-05-17-windows-debug.md`](docs/reviews/2026-05-17-windows-debug.md)); the host is now empirically drivable. Split panes, palette (`Ctrl+Shift+P`), search (`Ctrl+Shift+F`), quick-select (`Ctrl+Shift+O`), AgentD panel (`Ctrl+Shift+A`), live theme cycle via OSC 7777 (`Ctrl+Shift+T`), settings overlay (`Ctrl+,`).
-- **macOS / Linux desktop**: launcher only. Builds the shell, AgentD, and a terminal-attached launcher that prefers the native POSIX PTY relay. Native graphical hosts arrive in Wave 3 — see [`docs/vision/waves.md`](docs/vision/waves.md).
+- **Windows desktop**: alpha. Native Win32 + ConPTY host. Split panes, palette (`Ctrl+Shift+P`), search (`Ctrl+Shift+F`), quick-select (`Ctrl+Shift+O`), AgentD panel (`Ctrl+Shift+A`), live theme cycle (`Ctrl+Shift+T`), settings overlay (`Ctrl+,`). I/O bridge bugs fixed 2026-05-17 — host is empirically drivable.
+- **macOS desktop**: alpha. Native Cocoa window (NSWindow + NSView + CoreText/CoreGraphics). Activate with `ZIGGYZAG_NATIVE_WINDOW=1 ./zig-out/bin/ziggyzag-desktop`. Features: CoreText grid renderer, dynamic resize, mouse-wheel scrollback, Cmd+V paste, application-cursor arrows, Ctrl+Space AgentD overlay with [H]health / [T]tools / [Esc]close.
+- **Linux desktop**: launcher only. POSIX PTY relay; native window in the next wave.
 - **Shell**: alpha-ready. 40+ builtins, native simple pipelines (`/bin/sh` fallback for complex), prompt themes (`classic`, `smart`, `compact`, `dev`, `dashboard`), abbreviations, autosuggestions, fuzzy Ctrl-R, history with metadata, project-aware tasks.
 - **AgentD**: alpha. Local-only by default. Tool list with approval policies, sandboxed reads, redacted output. Falls back gracefully when no provider is configured.
 
@@ -100,7 +101,7 @@ App-specific docs: [shell](apps/shell/README.md) · [desktop](apps/desktop/READM
 
 ```mermaid
 flowchart LR
-    user["You"] --> term["ziggyzag-desktop\n(Win32 + ConPTY)"]
+    user["You"] --> term["ziggyzag-desktop\n(Win32+ConPTY · Cocoa/CoreText)"]
     term -- "PTY bytes" --> shell["ziggyzag\n(parser + builtins + jobs)"]
     shell -- "OSC 7777 events" --> term
     term -- "stdio JSON-lines" --> agent["ziggyzag-agentd\n(tools + sandbox)"]
@@ -110,7 +111,7 @@ flowchart LR
     approval --> term
 ```
 
-Three processes, one product. The shell does parsing/execution. The desktop owns the window/grid/palette. The agent suggests and asks. Nothing in the diagram is mocked or aspirational — every arrow runs today. The term↔shell PTY arrow was silently dead until 2026-05-17 (four Windows ConPTY bugs, now fixed — see [CHANGELOG](CHANGELOG.md)); it carries bytes bidirectionally now.
+Three processes, one product. The shell does parsing/execution. The desktop owns the window/grid/palette. The agent suggests and asks. Nothing in the diagram is mocked or aspirational — every arrow runs today on both Windows and macOS.
 
 ## Roadmap (waves, not dates)
 
