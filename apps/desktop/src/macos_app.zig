@@ -1409,7 +1409,7 @@ fn viewKeyDown(_: ID, _: SEL, event_obj: ID) callconv(.c) void {
                         state.mutex.lock();
                         overlayBackspace(state);
                         state.mutex.unlock();
-                        updateSearchMatch(state) catch {};
+                        updateSearchMatch(state);
                         state.dirty.store(true, .monotonic);
                         return;
                     },
@@ -1423,7 +1423,7 @@ fn viewKeyDown(_: ID, _: SEL, event_obj: ID) callconv(.c) void {
                                 state.mutex.lock();
                                 overlayAppendChar(state, bytes[0]);
                                 state.mutex.unlock();
-                                updateSearchMatch(state) catch {};
+                                updateSearchMatch(state);
                                 state.dirty.store(true, .monotonic);
                             }
                         }
@@ -2132,7 +2132,12 @@ fn copyTextToClipboard(text: []const u8) void {
 
 // ── Search ────────────────────────────────────────────────────────────────
 
-fn updateSearchMatch(state: *AppState) !void {
+// Recompute the search-match label for the current query. Never returns an
+// error: every fallible step (text alloc, label format) is handled inline by
+// leaving the label cleared, which is the correct UX for a transient failure
+// in a search box — no error dialog. So the signature is plain `void` and
+// callers need no `catch`.
+fn updateSearchMatch(state: *AppState) void {
     state.search_match_label_len = 0;
     state.search_match_line = 0;
     const query = state.search_query[0..state.search_query_len];
