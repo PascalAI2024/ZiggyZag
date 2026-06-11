@@ -1122,7 +1122,14 @@ const Shell = struct {
         while (index > 0) {
             index -= 1;
             const entry = self.history.items[index];
-            if (entry.len > prefix.len and std.mem.startsWith(u8, entry, prefix)) return entry;
+            if (entry.len <= prefix.len) continue;
+            if (!std.mem.startsWith(u8, entry, prefix)) continue;
+            // Skip "ghost" suggestions whose only delta from the prefix is
+            // trailing whitespace — a greyed run of blanks is noise, not a
+            // useful completion. A real suggestion adds at least one
+            // non-whitespace byte.
+            if (!hasNonWhitespace(entry[prefix.len..])) continue;
+            return entry;
         }
         return null;
     }
@@ -5620,6 +5627,13 @@ fn isShellWhitespace(c: u8) bool {
     return c == ' ' or c == '\t' or c == '\n' or c == '\r';
 }
 
+fn hasNonWhitespace(text: []const u8) bool {
+    for (text) |c| {
+        if (!isShellWhitespace(c)) return true;
+    }
+    return false;
+}
+
 fn childHasExited(child: *std.process.Child, io: std.Io) bool {
     if (child.id == null) return true;
 
@@ -7086,6 +7100,39 @@ test "writeHighlightedLine emits nothing extra when highlighting is off" {
     // With highlighting off the line is passed through verbatim — no ESC.
     try std.testing.expectEqualStrings("git status", w.buffered());
     try std.testing.expect(std.mem.indexOfScalar(u8, w.buffered(), 0x1b) == null);
+}
+
+test "autosuggestion picks most recent prefix match and skips whitespace ghosts" {
+    const allocator = std.testing.allocator;
+    var env = std.process.Environ.Map.init(allocator);
+    defer env.deinit();
+
+    var shell = Shell.init(allocator, undefined, &env);
+    defer shell.deinit();
+
+    const seed = [_][]const u8{
+        "git status",
+        "git commit -m wip",
+        "git push origin main",
+    };
+    for (seed) |cmd| {
+        try shell.history.append(allocator, try allocator.dupe(u8, cmd));
+    }
+
+    // Most-recent match for "git p" is the push command.
+    try std.testing.expectEqualStrings("git push origin main", shell.findHistorySuggestion("git p").?);
+    // "git c" matches the commit (the only c-prefixed entry).
+    try std.testing.expectEqualStrings("git commit -m wip", shell.findHistorySuggestion("git c").?);
+    // No prefix match -> no suggestion.
+    try std.testing.expect(shell.findHistorySuggestion("zig build") == null);
+
+    // A history entry that is only the prefix plus trailing whitespace must not
+    // produce a ghost suggestion of blanks.
+    try shell.history.append(allocator, try allocator.dupe(u8, "ls   "));
+    try std.testing.expect(shell.findHistorySuggestion("ls") == null);
+    // But a real continuation after "ls" still suggests.
+    try shell.history.append(allocator, try allocator.dupe(u8, "ls -la"));
+    try std.testing.expectEqualStrings("ls -la", shell.findHistorySuggestion("ls").?);
 }
 
 test "backslash-newline line continuation outside quotes" {
