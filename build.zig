@@ -237,4 +237,24 @@ pub fn build(b: *std.Build) void {
         );
         smoke_desktop_step.dependOn(&smoke_desktop_cmd.step);
     }
+
+    // macOS application bundle: wraps the launcher/desktop/agentd/shell
+    // binaries into zig-out/ZiggyZag.app with a real CFBundleIdentifier and
+    // icon, so the native window has a stable identity that screen-recording
+    // and automation tools (and computer-use request_access) can target by
+    // name. The script builds ReleaseSafe itself; this step just invokes it.
+    if (target.result.os.tag == .macos) {
+        const bundle_cmd = b.addSystemCommand(&.{
+            "sh", "scripts/make-macos-bundle.sh",
+        });
+        bundle_cmd.step.dependOn(&desktop_exe.step);
+        bundle_cmd.step.dependOn(&launcher_exe.step);
+        bundle_cmd.step.dependOn(&agentd_exe.step);
+        bundle_cmd.step.dependOn(&exe.step);
+        const bundle_step = b.step(
+            "bundle",
+            "Package ZiggyZag.app (Info.plist + bundle id + icon) into zig-out/",
+        );
+        bundle_step.dependOn(&bundle_cmd.step);
+    }
 }
