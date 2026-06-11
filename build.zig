@@ -201,6 +201,27 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_agentd_tests.step);
     test_step.dependOn(&run_launcher_tests.step);
 
+    // VT conformance harness: feeds a fixed CSI/OSC/erase/scroll-region/
+    // alt-screen corpus into a fresh terminal.Grid and asserts grid state,
+    // printing a readable diff on any mismatch. Pure logic — no Cocoa/PTY —
+    // so it runs identically on every target and is safe to gate CI on.
+    const vt_conformance_exe = b.addExecutable(.{
+        .name = "vt-conformance",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("apps/desktop/src/vt_conformance.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const run_vt_conformance = b.addRunArtifact(vt_conformance_exe);
+    const vt_conformance_step = b.step(
+        "vt-conformance",
+        "Run the VT escape-sequence conformance corpus against the terminal grid",
+    );
+    vt_conformance_step.dependOn(&run_vt_conformance.step);
+    // Fold it into the default test gate so regressions fail `zig build test`.
+    test_step.dependOn(&run_vt_conformance.step);
+
     // Headless smoke test for the POSIX desktop launcher (macOS and Linux).
     // Compiles the desktop binary then runs scripts/smoke-desktop-posix.sh,
     // which spawns the launcher with ZIGGYZAG_DESKTOP_NO_PTY=1 (no TTY needed)
