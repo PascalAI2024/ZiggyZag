@@ -1,6 +1,7 @@
 const builtin = @import("builtin");
 const std = @import("std");
 const theme = @import("theme");
+const history_backend = @import("history_backend.zig");
 
 const Allocator = std.mem.Allocator;
 
@@ -319,7 +320,14 @@ const Shell = struct {
         defer self.manual_echo = false;
 
         const histfile = self.env.get("HISTFILE");
-        const history_meta_file = self.env.get("ZIGGYZAG_HISTORY_DB");
+        // Durable metadata history is on by default (S6): resolve a path even
+        // when ZIGGYZAG_HISTORY_DB is unset, falling back to
+        // `$HOME/.ziggyzag_history.tsv`. When this resolves, command history —
+        // including timing, exit status, and cwd — survives restarts without
+        // any configuration. Owned slice freed at scope exit.
+        const history_meta_path = if (self.history_enabled) try self.historyDbPathAlloc() else null;
+        defer if (history_meta_path) |path| self.allocator.free(path);
+
         if (self.history_enabled) if (histfile) |path| {
             self.readHistoryFile(path) catch |err| switch (err) {
                 error.FileNotFound => {},
@@ -331,10 +339,12 @@ const Shell = struct {
             };
             self.history_append_index = self.history.items.len;
         };
-        // Restore command metadata from the previous session so `history --stats`,
-        // `--slow`, `--cwd`, and `--failed` can see history across restarts. The
-        // file is written at shell exit via the matching defer below.
-        if (self.history_enabled) if (history_meta_file) |path| {
+        // Restore command metadata from the previous session so `history`,
+        // `--stats`, `--slow`, `--cwd`, and `--failed` see history across
+        // restarts. Each command now appends a row durably as it finishes (see
+        // appendHistoryMetaDurable), so there is no exit-time rewrite — that
+        // would clobber rows written by a concurrently running shell.
+        if (self.history_enabled) if (history_meta_path) |path| {
             self.readHistoryMetaFile(path) catch |err| switch (err) {
                 error.FileNotFound => {},
                 error.HistoryFileTooLarge => {
@@ -343,12 +353,14 @@ const Shell = struct {
                 },
                 else => |e| return e,
             };
+            // When no plain HISTFILE is configured, the metadata file is the
+            // only source of prior-session commands. Seed the interactive
+            // `history` list (used by `history`, Up-arrow recall, and
+            // autosuggestions) from it so prior sessions are visible by default.
+            if (histfile == null) self.seedHistoryFromMeta();
         };
         defer if (histfile) |path| {
             if (self.history_enabled) self.writeHistoryFile(path, false, 0) catch {};
-        };
-        defer if (history_meta_file) |path| {
-            if (self.history_enabled) self.writeHistoryMetaFile(path) catch {};
         };
 
         try self.writeIntegrationSessionReady(&stdout.interface);
@@ -374,7 +386,13 @@ const Shell = struct {
             const keep_running = try self.execute(submitted_line);
             self.last_duration_ms = std.Io.Clock.real.now(self.io).toMilliseconds() - started_at;
             if (self.history_enabled) {
-                try self.recordHistoryMeta(submitted_line, started_at, self.last_duration_ms, self.last_status);
+                const meta = try self.recordHistoryMeta(submitted_line, started_at, self.last_duration_ms, self.last_status);
+                // Persist immediately so a crash loses at most the command in
+                // flight. Skip commands that likely carry secrets — they stay
+                // in this session's in-memory history but never touch disk.
+                if (!shouldRedactHistory(submitted_line)) {
+                    self.appendHistoryMetaDurable(meta) catch {};
+                }
             }
             try self.writeIntegrationCommandFinished(&stdout.interface, command_id, self.last_status, self.last_duration_ms);
             if (!keep_running) break;
@@ -2410,7 +2428,7 @@ const Shell = struct {
             \\  env [NAME]         Show environment variables
             \\  export NAME=VALUE  Store an environment variable
             \\  forward [N]        Move forward in directory history
-            \\  history [N]        View, clear, export, or disable command history
+            \\  history [N]        View, clear, import, export, or disable command history
             \\  inspect COMMAND    Explain how ZiggyZag would parse a command
             \\  jump QUERY         Fuzzy-jump to a visited directory
             \\  jobs               List background jobs
@@ -2550,6 +2568,11 @@ const Shell = struct {
             return;
         }
 
+        if (argv.len >= 3 and std.mem.eql(u8, argv[1], "import")) {
+            try self.importHistoryMeta(argv[2], stdout_buffer);
+            return;
+        }
+
         if (argv.len >= 3 and std.mem.eql(u8, argv[1], "-r")) {
             try self.readHistoryFile(argv[2]);
             return;
@@ -2642,6 +2665,37 @@ const Shell = struct {
         try self.writeFilePath(path, output.items);
     }
 
+    /// Import history rows from a TSV file (the same format HISTFILE-meta and
+    /// `history export --meta` produce) into the durable history store, then
+    /// refresh the in-memory metadata so the imported rows are queryable this
+    /// session. Backed by `TsvBackend.import_tsv`, which appends rows; the
+    /// in-memory reload de-duplicates by reloading the merged file from scratch.
+    fn importHistoryMeta(self: *Shell, src_path: []const u8, stdout_buffer: *std.ArrayList(u8)) !void {
+        const dest = (try self.historyDbPathAlloc()) orelse {
+            try stdout_buffer.appendSlice(self.allocator, "history: no history file configured (set HOME or ZIGGYZAG_HISTORY_DB)\n");
+            return;
+        };
+        defer self.allocator.free(dest);
+
+        var tsv = try history_backend.TsvBackend.init(self.allocator, self.io, dest);
+        defer tsv.deinit();
+        const imported = try tsv.backend().import_tsv(src_path);
+
+        // Reload the merged metadata into memory so `history --stats`/`--meta`
+        // and recall reflect the import without a restart.
+        for (self.history_meta.items) |entry| {
+            self.allocator.free(entry.command);
+            self.allocator.free(entry.cwd);
+        }
+        self.history_meta.clearRetainingCapacity();
+        self.readHistoryMetaFile(dest) catch |err| switch (err) {
+            error.FileNotFound => {},
+            else => |e| return e,
+        };
+
+        try appendFmt(self.allocator, stdout_buffer, "history: imported {d} rows from {s}\n", .{ imported, src_path });
+    }
+
     fn printHistory(self: *Shell, argv: []const []const u8, stdout_buffer: *std.ArrayList(u8)) !void {
         const limit = if (argv.len >= 2) std.fmt.parseInt(usize, argv[1], 10) catch self.history.items.len else self.history.items.len;
         const start = if (limit < self.history.items.len) self.history.items.len - limit else 0;
@@ -2671,6 +2725,22 @@ const Shell = struct {
         if (self.env.get("ZIGGYZAG_CONFIG")) |path| return try self.allocator.dupe(u8, path);
         const home = self.env.get("HOME") orelse self.env.get("USERPROFILE") orelse ".";
         return try std.fs.path.join(self.allocator, &.{ home, ".ziggyzagrc" });
+    }
+
+    /// Resolve the durable history metadata path. Honors `ZIGGYZAG_HISTORY_DB`
+    /// when set; otherwise falls back to `$HOME/.ziggyzag_history.tsv` so that
+    /// command history persists across restarts *by default* (Wave 4 / S6). The
+    /// returned slice is always owned by the caller. Returns null only when no
+    /// home directory can be determined and no explicit override is set, in
+    /// which case the shell runs without durable history rather than writing to
+    /// a surprising relative path.
+    fn historyDbPathAlloc(self: *Shell) !?[]u8 {
+        if (self.env.get("ZIGGYZAG_HISTORY_DB")) |path| {
+            if (path.len == 0) return null;
+            return try self.allocator.dupe(u8, path);
+        }
+        const home = self.env.get("HOME") orelse self.env.get("USERPROFILE") orelse return null;
+        return try std.fs.path.join(self.allocator, &.{ home, ".ziggyzag_history.tsv" });
     }
 
     fn loadConfigFile(self: *Shell, path: []const u8) !void {
@@ -2830,7 +2900,11 @@ const Shell = struct {
         }
     }
 
-    fn recordHistoryMeta(self: *Shell, command: []const u8, timestamp: i64, duration_ms: i64, status: u8) !void {
+    /// Append one command's metadata to the in-memory `history_meta` list and
+    /// return a copy of the stored row so the caller can persist it durably
+    /// (see `appendHistoryMetaDurable`). The returned slices borrow the list's
+    /// owned memory and stay valid until `clearHistory`/`deinit`.
+    fn recordHistoryMeta(self: *Shell, command: []const u8, timestamp: i64, duration_ms: i64, status: u8) !HistoryMeta {
         const cwd_raw = std.process.currentPathAlloc(self.io, self.allocator) catch null;
         defer if (cwd_raw) |raw| self.allocator.free(raw);
         const cwd = if (cwd_raw) |raw| try self.allocator.dupe(u8, raw) else try self.allocator.dupe(u8, "");
@@ -2838,13 +2912,33 @@ const Shell = struct {
         const owned_command = try self.allocator.dupe(u8, command);
         errdefer self.allocator.free(owned_command);
 
-        try self.history_meta.append(self.allocator, .{
+        const entry: HistoryMeta = .{
             .command = owned_command,
             .cwd = cwd,
             .status = status,
             .duration_ms = duration_ms,
             .timestamp = timestamp,
-        });
+        };
+        try self.history_meta.append(self.allocator, entry);
+        return entry;
+    }
+
+    /// Populate the interactive `history` command list from the metadata loaded
+    /// at startup. Called only when no plain HISTFILE is set, so the durable
+    /// metadata file becomes the single source of prior-session commands for
+    /// `history`, Up-arrow recall, and history-based autosuggestions. Each
+    /// command string is duped so `history`'s cleanup contract (free every
+    /// element) holds. `history_append_index` is advanced past the seeded rows
+    /// so a later `history -a` does not re-append them.
+    fn seedHistoryFromMeta(self: *Shell) void {
+        for (self.history_meta.items) |entry| {
+            const owned = self.allocator.dupe(u8, entry.command) catch return;
+            self.history.append(self.allocator, owned) catch {
+                self.allocator.free(owned);
+                return;
+            };
+        }
+        self.history_append_index = self.history.items.len;
     }
 
     fn printHistorySearch(self: *Shell, query: []const u8, stdout_buffer: *std.ArrayList(u8)) !void {
@@ -2981,6 +3075,32 @@ const Shell = struct {
         }
 
         try self.writeFilePath(path, output.items);
+    }
+
+    /// Persist a single metadata row to the durable history file immediately
+    /// after the command finishes, rather than only at shell exit. This is the
+    /// crash-survival guarantee for S6: a `kill -9` (or a panic) loses at most
+    /// the in-flight command, and two shells writing concurrently interleave
+    /// rows instead of clobbering each other's whole file.
+    ///
+    /// Reuses the tested `TsvBackend.append` from `history_backend.zig`, whose
+    /// on-disk format is byte-identical to `writeHistoryMetaFile`. The append is
+    /// read-modify-write (O(file)); acceptable given the 8 MB history cap and a
+    /// once-per-command cadence. Best-effort: a write failure is swallowed by
+    /// the caller so a read-only `$HOME` never breaks the prompt.
+    fn appendHistoryMetaDurable(self: *Shell, meta: HistoryMeta) !void {
+        const path = (try self.historyDbPathAlloc()) orelse return;
+        defer self.allocator.free(path);
+
+        var tsv = try history_backend.TsvBackend.init(self.allocator, self.io, path);
+        defer tsv.deinit();
+        try tsv.backend().append(.{
+            .command = meta.command,
+            .cwd = meta.cwd,
+            .exit_status = meta.status,
+            .duration_ms = meta.duration_ms,
+            .timestamp = meta.timestamp,
+        });
     }
 
     /// Load persisted command metadata from `path` on startup. The previous
@@ -3375,7 +3495,9 @@ const Shell = struct {
                 \\abbr gco='git checkout'
                 \\complete -c zig -a 'build fmt test' -d 'common Zig command'
                 \\prompt dev
-                \\export ZIGGYZAG_HISTORY_DB=~/.ziggyzag-history.tsv
+                \\# History persists to ~/.ziggyzag_history.tsv by default;
+                \\# uncomment to store it elsewhere:
+                \\# export ZIGGYZAG_HISTORY_DB=~/.ziggyzag-history.tsv
                 \\
             );
             return;
@@ -3404,7 +3526,12 @@ const Shell = struct {
         const branch = try self.gitBranch();
         defer if (branch) |name| self.allocator.free(name);
         const histfile = self.env.get("HISTFILE") orelse "";
-        const metadata_path = self.env.get("ZIGGYZAG_HISTORY_DB") orelse "";
+        // Durable history is on by default, so report the effective path (the
+        // resolved `$HOME/.ziggyzag_history.tsv` fallback) rather than the raw
+        // env var, which is normally unset.
+        const metadata_path_owned = try self.historyDbPathAlloc();
+        defer if (metadata_path_owned) |p| self.allocator.free(p);
+        const metadata_path = metadata_path_owned orelse "";
         const json_mode = hasArg(argv, "--json");
 
         // ── Diagnostic checks ────────────────────────────────────────────────
@@ -5829,6 +5956,61 @@ fn hasWindowsExecutableExtension(path: []const u8) bool {
         std.ascii.eqlIgnoreCase(ext, ".cmd");
 }
 
+/// Whether a command line should be kept out of persisted history because it
+/// is likely to carry a secret. Conservative on purpose: false positives only
+/// cost a missing history line, false negatives leak a credential to disk. We
+/// match on substrings that almost always precede secret material — auth flags
+/// (`--password`, `--token`), assignments to secret-named variables, and a few
+/// well-known credential-bearing commands. Case-insensitive so `--Token` and
+/// `API_KEY=` both match. The in-memory `history` list is unaffected; only the
+/// on-disk metadata write consults this.
+fn shouldRedactHistory(line: []const u8) bool {
+    const needles = [_][]const u8{
+        "--password",
+        "--token",
+        "--api-key",
+        "--apikey",
+        "--secret",
+        "--bearer",
+        "password=",
+        "passwd=",
+        "token=",
+        "api_key=",
+        "apikey=",
+        "secret=",
+        "access_key=",
+        "private_key=",
+        "client_secret=",
+        "aws_secret_access_key",
+        "authorization:",
+    };
+    for (needles) |needle| {
+        if (asciiIndexOfIgnoreCase(line, needle) != null) return true;
+    }
+    return false;
+}
+
+/// Case-insensitive substring search. Returns the index of the first match of
+/// `needle` in `haystack`, or null. `needle` is expected to already be
+/// lowercase (all call sites pass lowercase literals), so only `haystack` is
+/// folded.
+fn asciiIndexOfIgnoreCase(haystack: []const u8, needle: []const u8) ?usize {
+    if (needle.len == 0) return 0;
+    if (needle.len > haystack.len) return null;
+    var i: usize = 0;
+    while (i + needle.len <= haystack.len) : (i += 1) {
+        var matched = true;
+        for (needle, 0..) |nc, j| {
+            if (std.ascii.toLower(haystack[i + j]) != nc) {
+                matched = false;
+                break;
+            }
+        }
+        if (matched) return i;
+    }
+    return null;
+}
+
 fn fuzzyScore(query: []const u8, candidate: []const u8) ?usize {
     if (query.len == 0) return 0;
     var score: usize = 0;
@@ -6295,6 +6477,122 @@ test "history privacy commands toggle and clear state" {
     try std.testing.expect(std.mem.indexOf(u8, output.items, "enabled") != null);
 }
 
+test "shouldRedactHistory keeps secrets out of persisted history" {
+    // Commands that almost certainly carry credentials are redacted (kept off
+    // disk) regardless of flag casing.
+    try std.testing.expect(shouldRedactHistory("mysql --password=hunter2"));
+    try std.testing.expect(shouldRedactHistory("gh auth login --token abc"));
+    try std.testing.expect(shouldRedactHistory("curl -H 'Authorization: Bearer xyz' url"));
+    try std.testing.expect(shouldRedactHistory("export AWS_SECRET_ACCESS_KEY=zzz"));
+    try std.testing.expect(shouldRedactHistory("deploy --API-KEY foo")); // case-insensitive
+    // Ordinary commands are never redacted.
+    try std.testing.expect(!shouldRedactHistory("git status"));
+    try std.testing.expect(!shouldRedactHistory("ls -la /tmp"));
+    try std.testing.expect(!shouldRedactHistory("echo hello world"));
+}
+
+test "historyDbPathAlloc defaults to home and honors override" {
+    const allocator = std.testing.allocator;
+
+    var env = std.process.Environ.Map.init(allocator);
+    defer env.deinit();
+    try env.put("HOME", "/home/zaphod");
+
+    var shell = Shell.init(allocator, undefined, &env);
+    defer shell.deinit();
+
+    // Unset ZIGGYZAG_HISTORY_DB => default under $HOME (durable by default).
+    const default_path = (try shell.historyDbPathAlloc()).?;
+    defer allocator.free(default_path);
+    try std.testing.expect(std.mem.endsWith(u8, default_path, ".ziggyzag_history.tsv"));
+    try std.testing.expect(std.mem.startsWith(u8, default_path, "/home/zaphod"));
+
+    // Explicit override wins.
+    try env.put("ZIGGYZAG_HISTORY_DB", "/custom/hist.tsv");
+    const override_path = (try shell.historyDbPathAlloc()).?;
+    defer allocator.free(override_path);
+    try std.testing.expectEqualStrings("/custom/hist.tsv", override_path);
+
+    // Empty override disables durable history (returns null).
+    try env.put("ZIGGYZAG_HISTORY_DB", "");
+    try std.testing.expect((try shell.historyDbPathAlloc()) == null);
+}
+
+test "seedHistoryFromMeta populates recall list from prior-session metadata" {
+    const allocator = std.testing.allocator;
+
+    var env = std.process.Environ.Map.init(allocator);
+    defer env.deinit();
+
+    var shell = Shell.init(allocator, undefined, &env);
+    defer shell.deinit();
+
+    // Two metadata rows as if loaded from a durable file at startup.
+    try shell.history_meta.append(allocator, .{
+        .command = try allocator.dupe(u8, "git status"),
+        .cwd = try allocator.dupe(u8, "/proj"),
+        .status = 0,
+        .duration_ms = 3,
+        .timestamp = 100,
+    });
+    try shell.history_meta.append(allocator, .{
+        .command = try allocator.dupe(u8, "zig build"),
+        .cwd = try allocator.dupe(u8, "/proj"),
+        .status = 0,
+        .duration_ms = 900,
+        .timestamp = 200,
+    });
+
+    shell.seedHistoryFromMeta();
+
+    try std.testing.expectEqual(@as(usize, 2), shell.history.items.len);
+    try std.testing.expectEqualStrings("git status", shell.history.items[0]);
+    try std.testing.expectEqualStrings("zig build", shell.history.items[1]);
+    // Seeded rows are not re-appended by a later `history -a`.
+    try std.testing.expectEqual(@as(usize, 2), shell.history_append_index);
+}
+
+test "durable history append survives a simulated restart" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const db_path = try std.fs.path.join(allocator, &.{ ".zig-cache", "tmp", &tmp.sub_path, "hist.tsv" });
+    defer allocator.free(db_path);
+
+    // Session 1: record + durably append a command, then drop the shell.
+    {
+        var env = std.process.Environ.Map.init(allocator);
+        defer env.deinit();
+        try env.put("ZIGGYZAG_HISTORY_DB", db_path);
+
+        var shell = Shell.init(allocator, io, &env);
+        defer shell.deinit();
+
+        const meta = try shell.recordHistoryMeta("echo persisted", 1000, 7, 0);
+        try shell.appendHistoryMetaDurable(meta);
+    }
+
+    // Session 2: a fresh shell reads the file and seeds its recall list.
+    {
+        var env = std.process.Environ.Map.init(allocator);
+        defer env.deinit();
+        try env.put("ZIGGYZAG_HISTORY_DB", db_path);
+
+        var shell = Shell.init(allocator, io, &env);
+        defer shell.deinit();
+
+        try shell.readHistoryMetaFile(db_path);
+        try std.testing.expectEqual(@as(usize, 1), shell.history_meta.items.len);
+        try std.testing.expectEqualStrings("echo persisted", shell.history_meta.items[0].command);
+
+        shell.seedHistoryFromMeta();
+        try std.testing.expectEqual(@as(usize, 1), shell.history.items.len);
+        try std.testing.expectEqualStrings("echo persisted", shell.history.items[0]);
+    }
+}
+
 test "backslash-newline line continuation outside quotes" {
     // A backslash immediately before a newline is a POSIX line continuation:
     // both characters are consumed and nothing is emitted.
@@ -6395,9 +6693,10 @@ test "completer output line count is bounded" {
 }
 
 test {
-    // Force compilation + test discovery for sibling modules that aren't
-    // otherwise imported by runtime code paths.
-    _ = @import("history_backend.zig");
+    // Force compilation + test discovery for the durable history backend.
+    // Now imported by runtime code (`history import`/`export`); this keeps its
+    // unit tests in the shell test run.
+    _ = history_backend;
 }
 
 test "OSC 7777 applies a known theme id and clears the prompt snapshot" {

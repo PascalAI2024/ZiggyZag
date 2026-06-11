@@ -28,3 +28,7 @@ jobs:
         if: runner.os != 'Windows'
         shell: sh
         run: sh ./scripts/smoke.sh
+      - name: Desktop launcher smoke test (macOS / Linux)
+        if: runner.os != 'Windows'
+        shell: sh
+        run: zig build smoke-desktop
