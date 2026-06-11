@@ -200,4 +200,20 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_desktop_tests.step);
     test_step.dependOn(&run_agentd_tests.step);
     test_step.dependOn(&run_launcher_tests.step);
+
+    // Headless smoke test for the POSIX desktop launcher (macOS and Linux).
+    // Compiles the desktop binary then runs scripts/smoke-desktop-posix.sh,
+    // which spawns the launcher with ZIGGYZAG_DESKTOP_NO_PTY=1 (no TTY needed)
+    // and verifies a clean exit and env injection.  Safe to run in CI.
+    if (target.result.os.tag == .macos or target.result.os.tag == .linux) {
+        const smoke_desktop_cmd = b.addSystemCommand(&.{
+            "sh", "scripts/smoke-desktop-posix.sh",
+        });
+        smoke_desktop_cmd.step.dependOn(&desktop_exe.step);
+        const smoke_desktop_step = b.step(
+            "smoke-desktop",
+            "Headless POSIX smoke test: launch desktop, feed exit, verify clean shutdown",
+        );
+        smoke_desktop_step.dependOn(&smoke_desktop_cmd.step);
+    }
 }
