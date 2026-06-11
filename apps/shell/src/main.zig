@@ -1288,20 +1288,18 @@ const Shell = struct {
     }
 
     fn completeCommand(self: *Shell, line: *std.ArrayList(u8), cursor: *usize, stdout: *std.Io.Writer) !void {
-        if (cursor.* != line.items.len) {
-            self.clearCompletionState();
-            if (self.manual_echo) try stdout.writeByte(0x07);
-            return;
-        }
-
-        const token_start = completionTokenStart(line.items);
+        // Complete the token under the cursor, not the end of the line. Scan
+        // only the text up to the cursor so mid-line Tab works; the tail is
+        // preserved by `insertCompletion`.
+        const before = line.items[0..cursor.*];
+        const token_start = completionTokenStart(before);
         if (token_start > 0) {
             if (try self.completeRegisteredCommand(line, cursor, stdout, token_start)) return;
             try self.completePathArgument(line, cursor, stdout, token_start);
             return;
         }
 
-        const prefix = line.items;
+        const prefix = before;
         var matches: std.ArrayList([]u8) = .empty;
         defer {
             for (matches.items) |item| self.allocator.free(item);
@@ -1323,10 +1321,7 @@ const Shell = struct {
             sortCompletionMatches(matches.items);
             const common_prefix = longestCommonPrefix(matches.items);
             if (common_prefix.len > prefix.len) {
-                const suffix = common_prefix[prefix.len..];
-                try line.appendSlice(self.allocator, suffix);
-                cursor.* = line.items.len;
-                try stdout.writeAll(suffix);
+                try self.insertCompletion(line, cursor, stdout, common_prefix[prefix.len..]);
                 self.clearCompletionState();
                 return;
             }
@@ -1347,23 +1342,20 @@ const Shell = struct {
         self.clearCompletionState();
         const completion = matches.items[0];
         if (completion.len > prefix.len) {
-            const suffix = completion[prefix.len..];
-            try line.appendSlice(self.allocator, suffix);
-            cursor.* = line.items.len;
-            try stdout.writeAll(suffix);
+            try self.insertCompletion(line, cursor, stdout, completion[prefix.len..]);
         }
-
-        try line.append(self.allocator, ' ');
-        cursor.* = line.items.len;
-        try stdout.writeByte(' ');
+        try self.insertSeparatorSpace(line, cursor, stdout);
     }
 
     fn completeRegisteredCommand(self: *Shell, line: *std.ArrayList(u8), cursor: *usize, stdout: *std.Io.Writer, token_start: usize) !bool {
-        const command = commandNameForCompletion(line.items) orelse return false;
+        // Operate on the text up to the cursor so the completed token is the one
+        // the caret is in, not whatever trails it.
+        const before = line.items[0..cursor.*];
+        const command = commandNameForCompletion(before) orelse return false;
         const spec = self.findCompletionSpec(command);
         if (spec == null and !self.hasDeclarativeCompletions(command)) return false;
-        const prefix = line.items[token_start..];
-        const previous_word = previousCompletionWord(line.items, token_start);
+        const prefix = before[token_start..];
+        const previous_word = previousCompletionWord(before, token_start);
 
         var matches: std.ArrayList([]u8) = .empty;
         defer {
@@ -1390,10 +1382,7 @@ const Shell = struct {
         if (matches.items.len > 1) {
             const common_prefix = longestCommonPrefix(matches.items);
             if (common_prefix.len > prefix.len) {
-                const suffix = common_prefix[prefix.len..];
-                try line.appendSlice(self.allocator, suffix);
-                cursor.* = line.items.len;
-                try stdout.writeAll(suffix);
+                try self.insertCompletion(line, cursor, stdout, common_prefix[prefix.len..]);
                 self.clearCompletionState();
                 return true;
             }
@@ -1414,27 +1403,36 @@ const Shell = struct {
         self.clearCompletionState();
         const completion = matches.items[0];
         if (completion.len > prefix.len) {
-            const suffix = completion[prefix.len..];
-            try line.appendSlice(self.allocator, suffix);
-            cursor.* = line.items.len;
-            try stdout.writeAll(suffix);
+            try self.insertCompletion(line, cursor, stdout, completion[prefix.len..]);
         }
-
-        try line.append(self.allocator, ' ');
-        cursor.* = line.items.len;
-        try stdout.writeByte(' ');
+        try self.insertSeparatorSpace(line, cursor, stdout);
         return true;
     }
 
+    /// Replace the token `[token_start..cursor]` with `replacement` and reposition
+    /// the cursor at the end of the replacement, redrawing the line. Used by path
+    /// completion, where quoting can rewrite the leading bytes of the token (e.g.
+    /// adding an opening quote), so a plain suffix-append is not enough.
+    fn replaceTokenWithCompletion(self: *Shell, line: *std.ArrayList(u8), cursor: *usize, stdout: *std.Io.Writer, token_start: usize, replacement: []const u8) !void {
+        try line.replaceRange(self.allocator, token_start, cursor.* - token_start, replacement);
+        cursor.* = token_start + replacement.len;
+        if (self.manual_echo) try self.redrawPromptLine(stdout, line.items, cursor.*);
+    }
+
     fn completePathArgument(self: *Shell, line: *std.ArrayList(u8), cursor: *usize, stdout: *std.Io.Writer, token_start: usize) !void {
-        const prefix = line.items[token_start..];
+        // The raw token may be quoted/escaped (`"my fi`, `my\ fi`); decode it to
+        // the literal filesystem prefix we actually match against.
+        const raw_token = line.items[0..cursor.*][token_start..];
+        const decoded = try decodeCompletionToken(self.allocator, raw_token);
+        defer self.allocator.free(decoded);
+
         var matches: std.ArrayList(CompletionEntry) = .empty;
         defer {
             for (matches.items) |item| self.allocator.free(item.text);
             matches.deinit(self.allocator);
         }
 
-        try self.addPathCompletions(&matches, prefix);
+        try self.addPathCompletions(&matches, decoded);
 
         if (matches.items.len == 0) {
             self.clearCompletionState();
@@ -1445,46 +1443,44 @@ const Shell = struct {
         sortCompletionEntries(matches.items);
         if (matches.items.len > 1) {
             const common_prefix = longestCommonPrefixEntries(matches.items);
-            if (common_prefix.len > prefix.len) {
-                const suffix = common_prefix[prefix.len..];
-                try line.appendSlice(self.allocator, suffix);
-                cursor.* = line.items.len;
-                try stdout.writeAll(suffix);
+            if (common_prefix.len > decoded.len) {
+                // Re-encode the (literal) common prefix with quoting and replace
+                // the whole token so spaces survive as a single argument.
+                const encoded = try encodeCompletionPath(self.allocator, common_prefix);
+                defer self.allocator.free(encoded);
+                try self.replaceTokenWithCompletion(line, cursor, stdout, token_start, encoded);
                 self.clearCompletionState();
                 return;
             }
 
+            // Pager key is the decoded prefix so repeated Tab is detected even
+            // when quoting differs.
             if (self.last_completion_prefix) |last_prefix| {
-                if (std.mem.eql(u8, last_prefix, prefix)) {
+                if (std.mem.eql(u8, last_prefix, decoded)) {
                     try self.printPathCompletionPager(stdout, matches.items, line.items);
                     self.clearCompletionState();
                     return;
                 }
             }
 
-            try self.rememberCompletionPrefix(prefix);
+            try self.rememberCompletionPrefix(decoded);
             try stdout.writeByte(0x07);
             return;
         }
 
         self.clearCompletionState();
         const completion = matches.items[0];
-        if (completion.text.len > prefix.len) {
-            const suffix = completion.text[prefix.len..];
-            try line.appendSlice(self.allocator, suffix);
-            cursor.* = line.items.len;
-            try stdout.writeAll(suffix);
-        }
+        // Encode the literal match (quote if it contains spaces/specials), then
+        // append the directory slash or argument-separating space.
+        const encoded = try encodeCompletionPath(self.allocator, completion.text);
+        defer self.allocator.free(encoded);
 
-        if (completion.is_directory) {
-            try line.append(self.allocator, '/');
-            cursor.* = line.items.len;
-            try stdout.writeByte('/');
-        } else {
-            try line.append(self.allocator, ' ');
-            cursor.* = line.items.len;
-            try stdout.writeByte(' ');
-        }
+        var replacement: std.ArrayList(u8) = .empty;
+        defer replacement.deinit(self.allocator);
+        try replacement.appendSlice(self.allocator, encoded);
+        try replacement.append(self.allocator, if (completion.is_directory) '/' else ' ');
+
+        try self.replaceTokenWithCompletion(line, cursor, stdout, token_start, replacement.items);
     }
 
     fn printCommandCompletionPager(self: *Shell, stdout: *std.Io.Writer, matches: []const []u8, line: []const u8) !void {
@@ -1516,6 +1512,46 @@ const Shell = struct {
         }
         try self.writePrompt(stdout);
         try stdout.writeAll(line);
+    }
+
+    /// Splice `text` into `line` at the cursor, preserving whatever follows the
+    /// cursor, and advance the cursor past the inserted bytes. This is the
+    /// single place completion mutates the buffer, so completing mid-line
+    /// (cursor not at end) keeps the suffix intact instead of dropping it.
+    ///
+    /// When the cursor is at end-of-line this is an ordinary append. When it is
+    /// in the middle, the tail is redrawn after the inserted text and the
+    /// terminal cursor is walked back to the logical insertion point so the
+    /// on-screen caret matches `cursor.*`.
+    fn insertCompletion(self: *Shell, line: *std.ArrayList(u8), cursor: *usize, stdout: *std.Io.Writer, text: []const u8) !void {
+        if (text.len == 0) return;
+        const at = cursor.*;
+        const at_end = at == line.items.len;
+        try line.insertSlice(self.allocator, at, text);
+        cursor.* = at + text.len;
+
+        if (!self.manual_echo) return;
+        if (at_end) {
+            // Fast path for the common end-of-line case: just echo the bytes.
+            try stdout.writeAll(text);
+        } else {
+            // Mid-line: the tail moved, so redraw the whole line and reposition
+            // the caret at the logical cursor.
+            try self.redrawPromptLine(stdout, line.items, cursor.*);
+        }
+    }
+
+    /// Insert a completion separator (a space after a command/argument). If the
+    /// cursor is already followed by a space, step over it instead of inserting
+    /// a second one — completing a token mid-line shouldn't introduce a double
+    /// space before the rest of the line.
+    fn insertSeparatorSpace(self: *Shell, line: *std.ArrayList(u8), cursor: *usize, stdout: *std.Io.Writer) !void {
+        if (cursor.* < line.items.len and line.items[cursor.*] == ' ') {
+            cursor.* += 1;
+            if (self.manual_echo) try self.redrawPromptLine(stdout, line.items, cursor.*);
+            return;
+        }
+        try self.insertCompletion(line, cursor, stdout, " ");
     }
 
     fn rememberCompletionPrefix(self: *Shell, prefix: []const u8) !void {
@@ -6098,12 +6134,113 @@ fn isCompletionWhitespace(c: u8) bool {
     return c == ' ' or c == '\t';
 }
 
+/// Index where the token under completion begins, scanning `line` left to
+/// right while honoring shell quoting. A word break is an *unquoted,
+/// unescaped* space/tab; whitespace inside `'...'` or `"..."` or after a
+/// backslash stays part of the current token. This is what lets a path with
+/// spaces complete as a single argument: with `cat "my fi` the token starts at
+/// the opening quote, not at the space. `line` is the slice up to the cursor,
+/// so the returned index is always a token start relative to the cursor.
 fn completionTokenStart(line: []const u8) usize {
     var start: usize = 0;
-    for (line, 0..) |c, index| {
-        if (isCompletionWhitespace(c)) start = index + 1;
+    var i: usize = 0;
+    var quote: u8 = 0; // 0 = none, else the active quote char
+    while (i < line.len) : (i += 1) {
+        const c = line[i];
+        if (quote != 0) {
+            // Inside double quotes a backslash escapes the next byte; inside
+            // single quotes nothing is special. The closing quote ends the
+            // quoted run.
+            if (quote == '"' and c == '\\' and i + 1 < line.len) {
+                i += 1;
+                continue;
+            }
+            if (c == quote) quote = 0;
+            continue;
+        }
+        switch (c) {
+            '\\' => {
+                // Backslash escapes the next byte (e.g. `my\ file`); skip it so
+                // an escaped space does not break the token.
+                if (i + 1 < line.len) i += 1;
+            },
+            '\'', '"' => quote = c,
+            else => if (isCompletionWhitespace(c)) {
+                start = i + 1;
+            },
+        }
     }
     return start;
+}
+
+/// Decode a possibly-quoted/escaped token into the literal path it denotes, so
+/// it can be matched against real filenames. `"my file"`, `'my file'`, and
+/// `my\ file` all decode to `my file`. Caller owns the returned slice.
+fn decodeCompletionToken(allocator: Allocator, token: []const u8) ![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(allocator);
+    var i: usize = 0;
+    var quote: u8 = 0;
+    while (i < token.len) : (i += 1) {
+        const c = token[i];
+        if (quote != 0) {
+            if (quote == '"' and c == '\\' and i + 1 < token.len) {
+                try out.append(allocator, token[i + 1]);
+                i += 1;
+                continue;
+            }
+            if (c == quote) {
+                quote = 0;
+                continue;
+            }
+            try out.append(allocator, c);
+            continue;
+        }
+        switch (c) {
+            '\\' => {
+                if (i + 1 < token.len) {
+                    try out.append(allocator, token[i + 1]);
+                    i += 1;
+                }
+            },
+            '\'', '"' => quote = c,
+            else => try out.append(allocator, c),
+        }
+    }
+    return out.toOwnedSlice(allocator);
+}
+
+/// Whether `path` contains a byte that would need quoting/escaping to survive
+/// the parser as a single argument.
+fn pathNeedsQuoting(path: []const u8) bool {
+    for (path) |c| {
+        switch (c) {
+            ' ', '\t', '\'', '"', '\\', '$', '`', '(', ')', '|', '&', ';', '<', '>', '*', '?', '[', ']', '{', '}', '#', '~' => return true,
+            else => {},
+        }
+    }
+    return false;
+}
+
+/// Encode a literal path for insertion at the prompt, quoting only when needed.
+/// Uses single quotes (the simplest shell quoting — nothing inside is special)
+/// and falls back to backslash-escaping the embedded single quote via the
+/// `'\''` idiom. Caller owns the returned slice.
+fn encodeCompletionPath(allocator: Allocator, path: []const u8) ![]u8 {
+    if (!pathNeedsQuoting(path)) return allocator.dupe(u8, path);
+
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(allocator);
+    try out.append(allocator, '\'');
+    for (path) |c| {
+        if (c == '\'') {
+            try out.appendSlice(allocator, "'\\''");
+        } else {
+            try out.append(allocator, c);
+        }
+    }
+    try out.append(allocator, '\'');
+    return out.toOwnedSlice(allocator);
 }
 
 fn commandNameForCompletion(line: []const u8) ?[]const u8 {
@@ -6591,6 +6728,123 @@ test "durable history append survives a simulated restart" {
         try std.testing.expectEqual(@as(usize, 1), shell.history.items.len);
         try std.testing.expectEqualStrings("echo persisted", shell.history.items[0]);
     }
+}
+
+test "completionTokenStart is cursor-bounded and quote-aware" {
+    // Plain word break: token starts after the last unquoted space.
+    try std.testing.expectEqual(@as(usize, 4), completionTokenStart("git che"));
+    // Double-quoted span keeps its internal space inside the token.
+    try std.testing.expectEqual(@as(usize, 4), completionTokenStart("cat \"my fi"));
+    // Single-quoted span likewise.
+    try std.testing.expectEqual(@as(usize, 4), completionTokenStart("cat 'my fi"));
+    // Backslash-escaped space does not break the token.
+    try std.testing.expectEqual(@as(usize, 4), completionTokenStart("cat my\\ fi"));
+    // First token (the command itself) starts at 0.
+    try std.testing.expectEqual(@as(usize, 0), completionTokenStart("git"));
+}
+
+test "decode and encode completion tokens round-trip with quoting" {
+    const allocator = std.testing.allocator;
+
+    // Decode strips quotes/escapes to the literal path.
+    const d1 = try decodeCompletionToken(allocator, "\"my file\"");
+    defer allocator.free(d1);
+    try std.testing.expectEqualStrings("my file", d1);
+
+    const d2 = try decodeCompletionToken(allocator, "my\\ file");
+    defer allocator.free(d2);
+    try std.testing.expectEqualStrings("my file", d2);
+
+    const d3 = try decodeCompletionToken(allocator, "'a/b c'");
+    defer allocator.free(d3);
+    try std.testing.expectEqualStrings("a/b c", d3);
+
+    // Encode quotes only when needed.
+    try std.testing.expect(!pathNeedsQuoting("plain.txt"));
+    try std.testing.expect(pathNeedsQuoting("my file.txt"));
+
+    const e1 = try encodeCompletionPath(allocator, "plain.txt");
+    defer allocator.free(e1);
+    try std.testing.expectEqualStrings("plain.txt", e1);
+
+    const e2 = try encodeCompletionPath(allocator, "my file.txt");
+    defer allocator.free(e2);
+    try std.testing.expectEqualStrings("'my file.txt'", e2);
+
+    // Embedded single quote uses the '\'' idiom.
+    const e3 = try encodeCompletionPath(allocator, "a'b");
+    defer allocator.free(e3);
+    try std.testing.expectEqualStrings("'a'\\''b'", e3);
+}
+
+test "Tab completes the token under the cursor, not the end of line" {
+    const allocator = std.testing.allocator;
+
+    var env = std.process.Environ.Map.init(allocator);
+    defer env.deinit();
+
+    var shell = Shell.init(allocator, undefined, &env);
+    defer shell.deinit();
+    // manual_echo off => no line redraw; a discarding writer absorbs any BEL.
+    var sink_buf: [64]u8 = undefined;
+    var discarding: std.Io.Writer.Discarding = .init(&sink_buf);
+    const sink = &discarding.writer;
+
+    // Register a declarative completion so the result is deterministic.
+    try shell.putCompletionCandidate("git", "checkout", "git subcommand");
+
+    // Line: "git c| --foo" with the cursor right after "c". Completion must act
+    // on the "c" token and leave " --foo" intact.
+    var line: std.ArrayList(u8) = .empty;
+    defer line.deinit(allocator);
+    try line.appendSlice(allocator, "git c --foo");
+    var cursor: usize = 5; // just after "git c"
+
+    try shell.completeCommand(&line, &cursor, sink);
+
+    try std.testing.expectEqualStrings("git checkout --foo", line.items);
+    // Cursor sits after the inserted completion and its trailing space.
+    try std.testing.expectEqual(@as(usize, "git checkout ".len), cursor);
+}
+
+test "path completion quotes a filename with spaces" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var env = std.process.Environ.Map.init(allocator);
+    defer env.deinit();
+
+    var shell = Shell.init(allocator, io, &env);
+    defer shell.deinit();
+    var sink_buf: [64]u8 = undefined;
+    var discarding: std.Io.Writer.Discarding = .init(&sink_buf);
+    const sink = &discarding.writer;
+
+    // Create a tmp dir with a spaced filename and an absolute path to it.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io, .{ .sub_path = "my report.txt", .data = "x" });
+
+    const rel_dir = try std.fs.path.join(allocator, &.{ ".zig-cache", "tmp", &tmp.sub_path });
+    defer allocator.free(rel_dir);
+    const abs_dir = try std.Io.Dir.cwd().realPathFileAlloc(io, rel_dir, allocator);
+    defer allocator.free(abs_dir);
+
+    // Type: `cat <abs_dir>/my ` and Tab — the unique match is "my report.txt".
+    const typed = try std.fmt.allocPrint(allocator, "cat {s}/my", .{abs_dir});
+    defer allocator.free(typed);
+
+    var line: std.ArrayList(u8) = .empty;
+    defer line.deinit(allocator);
+    try line.appendSlice(allocator, typed);
+    var cursor: usize = line.items.len;
+
+    try shell.completeCommand(&line, &cursor, sink);
+
+    // The spaced path must be inserted quoted so it parses as one argument.
+    const expected = try std.fmt.allocPrint(allocator, "cat '{s}/my report.txt' ", .{abs_dir});
+    defer allocator.free(expected);
+    try std.testing.expectEqualStrings(expected, line.items);
 }
 
 test "backslash-newline line continuation outside quotes" {
