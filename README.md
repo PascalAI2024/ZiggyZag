@@ -3,10 +3,10 @@
 </p>
 
 <p align="center">
-  <b>A readable Zig shell, a native Windows terminal host, and a local AI sidecar — sharing themes, events, and approval semantics.</b>
+  <b>A readable Zig shell, a native terminal host for Windows and macOS, and a local AI sidecar — sharing themes, events, and approval semantics.</b>
 </p>
 
-> **Platform status — read this first.** The native graphical desktop runs on **Windows** and **macOS**. Windows (verified 2026-05-17): Win32/ConPTY host with split panes, search, AgentD panel. macOS (verified 2026-06-09): native Cocoa window via `ZIGGYZAG_NATIVE_WINDOW=1` — CoreText grid renderer, dynamic resize, mouse-wheel scrollback, Cmd+V paste, application-cursor, Ctrl+Space AgentD overlay. Linux: shell + launcher only for now.
+> **Platform status — read this first.** The native graphical desktop runs on **Windows** and **macOS**. Windows (verified 2026-05-17): Win32/ConPTY host with split panes, search, AgentD panel. macOS (verified 2026-06-10): native Cocoa window via `ZIGGYZAG_NATIVE_WINDOW=1` — CoreText grid renderer, dynamic resize, mouse-wheel scrollback, command palette (`Ctrl+Shift+P`), scrollback search (`Ctrl+Shift+F`), quick select (`Ctrl+Shift+O`), settings overlay (`Ctrl+,`), theme cycling with live OSC 7777 broadcast (`Ctrl+Shift+T`), copy visible text (`Cmd+Shift+C`), Cmd+V paste, application-cursor arrows, and AgentD universal input (`Ctrl+Space` — type natural language, preview the suggested command, insert into prompt). Linux: shell + launcher only for now.
 
 <p align="center">
   <a href="https://github.com/PascalAI2024/ZiggyZag/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/PascalAI2024/ZiggyZag/actions/workflows/ci.yml/badge.svg"></a>
@@ -40,7 +40,7 @@ A live landing page is at [**docs/index.html**](docs/index.html) (open it locall
 ZiggyZag is one workspace and four binaries that act like a single product:
 
 - **[`apps/shell`](apps/shell/)** — the shell itself. REPL, parser, completion, history, jobs, prompt themes. About 5,600 lines of Zig you can step through.
-- **[`apps/desktop`](apps/desktop/README.md)** — the native terminal host. Windows-native Win32/ConPTY with split panes, search, palette, mouse-wheel scrollback, themes, AgentD panel.
+- **[`apps/desktop`](apps/desktop/README.md)** — the native terminal host. Windows Win32/ConPTY and macOS Cocoa/CoreText with command palette, search, quick select, theme cycling, AgentD universal input, split panes (Windows), mouse-wheel scrollback, themes.
 - **[`apps/agentd`](apps/agentd/README.md)** — a slim JSON-lines AI sidecar. Approval-aware for any mutation. Sandboxed file reads with realpath containment. Ollama and OpenAI-compatible providers.
 - **[`apps/launcher`](apps/launcher/)** — the cross-platform entry point used by release zips.
 
@@ -60,8 +60,8 @@ Pick a theme in the desktop with `Ctrl+Shift+T`. The terminal palette AND the sh
 
 | | |
 | --- | --- |
-| Zig lines | 18,850 |
-| Unit tests | 213 (some skip on non-target platforms) |
+| Zig lines | 21,884 |
+| Unit tests | 207 (some skip on non-target platforms) |
 | Binaries | 4 |
 | Cross-built targets | 5 (windows-x86_64, linux-x86_64, linux-aarch64, macos-x86_64, macos-aarch64) |
 | Third-party deps | 0 |
@@ -71,7 +71,7 @@ Pick a theme in the desktop with `Ctrl+Shift+T`. The terminal palette AND the sh
 ## Status — honestly
 
 - **Windows desktop**: alpha. Native Win32 + ConPTY host. Split panes, palette (`Ctrl+Shift+P`), search (`Ctrl+Shift+F`), quick-select (`Ctrl+Shift+O`), AgentD panel (`Ctrl+Shift+A`), live theme cycle (`Ctrl+Shift+T`), settings overlay (`Ctrl+,`). I/O bridge bugs fixed 2026-05-17 — host is empirically drivable.
-- **macOS desktop**: alpha. Native Cocoa window (NSWindow + NSView + CoreText/CoreGraphics). Activate with `ZIGGYZAG_NATIVE_WINDOW=1 ./zig-out/bin/ziggyzag-desktop`. Features: CoreText grid renderer, dynamic resize, mouse-wheel scrollback, Cmd+V paste, application-cursor arrows, Ctrl+Space AgentD overlay with [H]health / [T]tools / [Esc]close.
+- **macOS desktop**: alpha. Native Cocoa window (NSWindow + NSView + CoreText/CoreGraphics). Activate with `ZIGGYZAG_NATIVE_WINDOW=1 ./zig-out/bin/ziggyzag-desktop`. Features: CoreText grid renderer, dynamic resize, mouse-wheel scrollback, command palette (`Ctrl+Shift+P`), scrollback search (`Ctrl+Shift+F`), quick select (`Ctrl+Shift+O`), settings overlay (`Ctrl+,`), 20-theme cycle with live OSC 7777 broadcast (`Ctrl+Shift+T`), copy visible text (`Cmd+Shift+C`), Cmd+V paste (bracketed-paste aware), application-cursor arrows, and AgentD universal input (`Ctrl+Space` — type natural language, preview suggested shell command, insert into prompt).
 - **Linux desktop**: launcher only. POSIX PTY relay; native window in the next wave.
 - **Shell**: alpha-ready. 40+ builtins, native simple pipelines (`/bin/sh` fallback for complex), prompt themes (`classic`, `smart`, `compact`, `dev`, `dashboard`), abbreviations, autosuggestions, fuzzy Ctrl-R, history with metadata, project-aware tasks.
 - **AgentD**: alpha. Local-only by default. Tool list with approval policies, sandboxed reads, redacted output. Falls back gracefully when no provider is configured.
