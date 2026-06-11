@@ -17,7 +17,7 @@ For navigation across the documentation system, start with [README.md](../README
 | History | Listing, limits, Up/Down navigation, command recall, fuzzy search, failed/slow/cwd/stats queries, metadata capture, read/write/append/export/clear, enable/disable/private controls, startup and exit persistence. |
 | Jobs | Background execution, `jobs`, job number reuse, reaping, and practical `wait`/`kill`/`disown`/`fg`/`bg` builtins. |
 | Variables | `declare`, validation, `$VAR`, `${VAR}`, and unset expansion behavior. |
-| Modern UX | Startup config, abbreviations, cursor editing, autosuggestion hooks, Ctrl-F accept, Ctrl-R fuzzy recall, syntax highlighting in smart prompt mode, visual prompt themes, and smart prompt modules. |
+| Modern UX | Startup config, abbreviations, cursor-aware tab completion (quoted/escaped paths), durable cross-session history, autosuggestion hooks, Ctrl-F accept, Ctrl-R fuzzy recall, syntax highlighting on by default, visual prompt themes, and smart prompt modules. |
 | Introspection | `about`, `doctor`, `inspect`, `which`, `path`, `project`, slash shortcuts, JSON output for history/jobs/prompt/env/doctor/project/dirs, and config validation/reload. |
 | Convenience commands | `mkcd`, `up`, `back`, `forward`, `jump`, `repeat`, `timeit`, `source`, `env`, `vars`, and project-aware `run` make ZiggyZag more useful as a daily shell lab. |
 | Pipelines | Native simple pipelines for straightforward stdout chains, concurrent stdout/stderr draining per stage, temp-file handoff for large stage output, and fallback for complex shell syntax. |

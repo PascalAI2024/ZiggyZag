@@ -41,6 +41,26 @@ prompt compact # cwd only
 ```
 Run `prompt` without arguments to cycle themes.
 
+**Syntax highlighting** — `highlight on|off|toggle`
+```
+highlight on      # colorize the prompt as you type (default)
+highlight off     # plain prompt
+```
+The prompt colors command heads by validity (builtin/executable/unknown),
+quoted strings, operators, and `$` variables. It only affects the interactive
+line — command output is never colored. Disable for a whole session with
+`ZIGGYZAG_HIGHLIGHT=0`.
+
+**History** — durable by default
+```
+history                  # list commands (including prior sessions)
+history --stats          # totals, failures, slowest command
+history import FILE.tsv  # merge another machine's history (deduped)
+history export FILE.tsv  # write history out
+```
+Command metadata persists to `~/.ziggyzag_history.tsv` automatically; see
+[`QUICK_START.md`](../QUICK_START.md) for the storage path and privacy rules.
+
 **Config commands**
 ```
 config path              # print config file path
@@ -157,8 +177,11 @@ Linux builds the shell and AgentD and runs a terminal-attached launcher (`ziggyz
 | Variable | Purpose | Default |
 | --- | --- | --- |
 | `ZIGGYZAG_CONFIG` | Shell config path | `~/.ziggyzagrc` |
-| `HISTFILE` | Shell history file | `~/.ziggyzag_history` |
-| `ZIGGYZAG_HISTORY_DB` | Metadata history SQLite DB | `""` |
+| `HISTFILE` | Plain command history file | `~/.ziggyzag_history` |
+| `ZIGGYZAG_HISTORY_DB` | Durable metadata history file (TSV) | `~/.ziggyzag_history.tsv` |
+| `ZIGGYZAG_HISTORY` | Set falsey to disable history for the session | `1` |
+| `ZIGGYZAG_HISTORY_PRIVATE` | Set truthy for a no-history session | `""` |
+| `ZIGGYZAG_HIGHLIGHT` | Set falsey to disable prompt syntax highlighting | `1` |
 | `ZIGGYZAG_AGENT_PROVIDER` | AgentD provider (`ollama`, `openai-compatible`) | `ollama` |
 | `ZIGGYZAG_AGENT_BASE_URL` | Provider base URL | `http://127.0.0.1:11434` |
 | `ZIGGYZAG_AGENT_MODEL` | Model name | `qwen2.5-coder:1.5b` |
