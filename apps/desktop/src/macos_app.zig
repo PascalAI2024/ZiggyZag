@@ -171,6 +171,15 @@ fn msgCGRect(recv: ID, s: SEL) CGRect {
 fn msgSize(recv: ID, s: SEL, size: CGSize) void {
     (@as(*const fn (ID, SEL, CGSize) callconv(.c) void, @ptrCast(&objc.objc_msgSend)))(recv, s, size);
 }
+fn msgPoint(recv: ID, s: SEL) CGPoint {
+    return (@as(*const fn (ID, SEL) callconv(.c) CGPoint, @ptrCast(&objc.objc_msgSend)))(recv, s);
+}
+fn msgConvertPoint(recv: ID, s: SEL, pt: CGPoint, from: ID) CGPoint {
+    return (@as(*const fn (ID, SEL, CGPoint, ID) callconv(.c) CGPoint, @ptrCast(&objc.objc_msgSend)))(recv, s, pt, from);
+}
+fn msgLong(recv: ID, s: SEL) c_long {
+    return (@as(*const fn (ID, SEL) callconv(.c) c_long, @ptrCast(&objc.objc_msgSend)))(recv, s);
+}
 fn msgInitWindow(recv: ID, s: SEL, r: CGRect, style: c_ulong, backing: c_ulong, defer_: u8) ID {
     return (@as(*const fn (ID, SEL, CGRect, c_ulong, c_ulong, u8) callconv(.c) ID, @ptrCast(&objc.objc_msgSend)))(recv, s, r, style, backing, defer_);
 }
@@ -423,6 +432,14 @@ const AppState = struct {
     last_error_code_len: usize = 0,
     last_error_msg: [128]u8 = undefined,
     last_error_msg_len: usize = 0,
+    // Provider readiness from the most recent agent/health response.
+    // Stays false until a health reply with "ready":true arrives; used by the
+    // overlay to show setup instructions instead of a silent blank state.
+    provider_ready: bool = false,
+    provider_model: [64]u8 = undefined,
+    provider_model_len: usize = 0,
+    // Set while an agent/run is in flight so the overlay can show a busy hint.
+    agent_run_pending: bool = false,
 };
 
 var g_state: ?*AppState = null;
@@ -942,19 +959,48 @@ fn drawAgentOverlay(ctx: CGContextRef, state: *AppState, font: CTFontRef, W: f64
     }
 
     // ── Provider hint (shown when health response has no reachable provider) ─
-    const show_hint = blk: {
-        if (state.transcript_len == 0) break :blk false;
-        const t = state.transcript[0..state.transcript_len];
-        break :blk std.mem.indexOf(u8, t, "provider_status") != null and
-            std.mem.indexOf(u8, t, "\"reachable\"") == null;
-    };
-    if (show_hint) {
+    // ── Provider status block ─────────────────────────────────────────────
+    // Show model name when ready, or actionable setup instructions when not.
+    // Uses structured state set by processAgentResponse (not a transcript scan).
+    if (connected and state.provider_ready) {
+        if (state.provider_model_len > 0) {
+            CGContextSetRGBFillColor(ctx, 0.40, 0.72, 0.40, 1.0);
+            var mbuf: [80]u8 = undefined;
+            const mtext = std.fmt.bufPrint(&mbuf, "provider: {s}", .{state.provider_model[0..state.provider_model_len]}) catch "provider: ready";
+            drawAsciiRange(font, ctx, x, y, cw, mtext);
+            y -= ch;
+        }
+        // Show pending indicator while a run is in flight.
+        if (state.agent_run_pending) {
+            CGContextSetRGBFillColor(ctx, 0.85, 0.85, 0.30, 1.0);
+            drawAsciiRange(font, ctx, x, y, cw, "thinking...");
+            y -= ch;
+        }
+    } else if (connected) {
+        // agentd is running but no health check yet — nudge the user.
+        CGContextSetRGBFillColor(ctx, 0.55, 0.55, 0.55, 1.0);
+        drawAsciiRange(font, ctx, x, y, cw, "Press H to check provider health.");
+        y -= ch;
+    } else {
+        // agentd process not running — show setup instructions prominently.
         CGContextSetRGBFillColor(ctx, 0.85, 0.85, 0.30, 1.0);
-        drawAsciiRange(font, ctx, x, y, cw, "No AI provider reachable.");
+        drawAsciiRange(font, ctx, x, y, cw, "AgentD not running. Build and start ziggyzag-agentd first.");
         y -= ch;
         CGContextSetRGBFillColor(ctx, 0.45, 0.45, 0.45, 1.0);
-        drawAsciiRange(font, ctx, x, y, cw, "  ollama pull qwen2.5-coder:1.5b  |  set ZIGGYZAG_AGENT_PROVIDER=ollama");
+        drawAsciiRange(font, ctx, x, y, cw, "  zig build  |  ./zig-out/bin/ziggyzag-agentd --stdio");
         y -= ch;
+    }
+    // Show no-provider instructions when agentd runs but provider is absent.
+    if (connected and !state.provider_ready and state.transcript_len > 0) {
+        const t = state.transcript[0..state.transcript_len];
+        if (std.mem.indexOf(u8, t, "provider_status") != null) {
+            CGContextSetRGBFillColor(ctx, 0.85, 0.85, 0.30, 1.0);
+            drawAsciiRange(font, ctx, x, y, cw, "No AI provider reachable.");
+            y -= ch;
+            CGContextSetRGBFillColor(ctx, 0.45, 0.45, 0.45, 1.0);
+            drawAsciiRange(font, ctx, x, y, cw, "  ollama pull qwen2.5-coder:1.5b  |  ZIGGYZAG_AGENT_PROVIDER=openai-compatible");
+            y -= ch;
+        }
     }
 
     // ── Transcript (newest lines first) ───────────────────────────────────
@@ -1303,6 +1349,9 @@ fn viewKeyDown(_: ID, _: SEL, event_obj: ID) callconv(.c) void {
         else => {},
     }
 
+    // Any key that reaches the terminal clears the mouse selection highlight.
+    clearSelection(state);
+
     const special: ?[]const u8 = switch (kc) {
         kVK_Escape => "\x1b",
         kVK_Delete => "\x7f",
@@ -1368,12 +1417,31 @@ fn handleAgentInputKey(state: *AppState, kc: u16, event_obj: ID) void {
 
     switch (kc) {
         kVK_Return, kVK_NumEnter => {
-            // Send the universal input to AgentD via agent/run
-            if (state.agent_input_len > 0) {
+            if (state.agent_input_len == 0) {
+                // Empty input — dismiss the input bar, nothing to do.
+                state.agent_input_active = false;
+            } else if (!state.agentd_running.load(.monotonic)) {
+                // AgentD process is not running — do NOT silently drop the prompt.
+                // Show a clear error so the user knows why nothing happened.
+                const msg = "[error] AgentD is not running. Build ziggyzag-agentd first.\n";
+                appendTranscript(state, msg);
+                // Keep input active so the user can see the message and try again
+                // once they start agentd, rather than losing their typed prompt.
+            } else if (state.agent_run_pending) {
+                // A request is already in flight — queue guard. Show a hint.
+                const msg = "[busy] AgentD is processing a request. Wait for it to finish.\n";
+                appendTranscript(state, msg);
+            } else if (!state.provider_ready) {
+                // Provider not reachable — send anyway (agentd will return a
+                // structured error with setup hints), but warn upfront.
                 requestAgentRun(state, state.agent_input[0..state.agent_input_len]);
+                state.agent_input_len = 0;
+                state.agent_input_active = false;
+            } else {
+                requestAgentRun(state, state.agent_input[0..state.agent_input_len]);
+                state.agent_input_len = 0;
+                state.agent_input_active = false;
             }
-            state.agent_input_len = 0;
-            state.agent_input_active = false;
         },
         kVK_Delete => {
             if (state.agent_input_len > 0) state.agent_input_len -= 1;
@@ -2377,6 +2445,7 @@ fn requestAgentRun(state: *AppState, prompt: []const u8) void {
     const log_msg = std.fmt.bufPrint(&log_buf, "> {s}\n", .{prompt}) catch return;
     state.mutex.lock();
     appendTranscript(state, log_msg);
+    state.agent_run_pending = true;
     state.mutex.unlock();
 }
 
@@ -2403,6 +2472,31 @@ fn processAgentResponse(state: *AppState, line: []const u8) void {
         @memcpy(state.last_error_code[0..state.last_error_code_len], code[0..state.last_error_code_len]);
         state.last_error_msg_len = @min(msg.len, state.last_error_msg.len);
         @memcpy(state.last_error_msg[0..state.last_error_msg_len], msg[0..state.last_error_msg_len]);
+        state.agent_run_pending = false;
+        return;
+    }
+
+    // agent/health ok response -- update provider readiness so the overlay can
+    // show setup instructions when no provider is reachable instead of silence.
+    // Shape: {"id":...,"ok":true,"result":{"ready":true,"model":"...","provider_status":"reachable",...}}
+    if (jsonContains(line, "\"ok\":true") and jsonContains(line, "\"provider_status\"")) {
+        state.provider_ready = jsonContains(line, "\"ready\":true");
+        if (jsonStringField(line, "model")) |model| {
+            state.provider_model_len = @min(model.len, state.provider_model.len);
+            @memcpy(state.provider_model[0..state.provider_model_len], model[0..state.provider_model_len]);
+        } else {
+            state.provider_model_len = 0;
+        }
+        return;
+    }
+
+    // agent/run ok response -- clear the in-flight pending flag.
+    if (jsonContains(line, "\"ok\":true") and
+        (jsonContains(line, "\"status\":\"ok\"") or
+            jsonContains(line, "\"status\":\"provider_error\"") or
+            jsonContains(line, "\"stream\":true")))
+    {
+        state.agent_run_pending = false;
         return;
     }
 
@@ -2584,6 +2678,9 @@ pub fn run(init_data: std.process.Init, shell_path: []const u8) !void {
         addClass(view_cls, sel("drawRect:"), &viewDrawRect, "v@:{CGRect={CGPoint=dd}{CGSize=dd}}");
         addClass(view_cls, sel("keyDown:"), &viewKeyDown, "v@:@");
         addClass(view_cls, sel("scrollWheel:"), &viewScrollWheel, "v@:@");
+        addClass(view_cls, sel("mouseDown:"), &viewMouseDown, "v@:@");
+        addClass(view_cls, sel("mouseDragged:"), &viewMouseDragged, "v@:@");
+        addClass(view_cls, sel("mouseUp:"), &viewMouseUp, "v@:@");
         registerClass(view_cls);
     }
 
