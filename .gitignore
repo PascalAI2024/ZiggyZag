@@ -7,6 +7,13 @@ dist/
 # Compiled binary output
 bin/
 
+# Root-level build binaries (correct location is zig-out/bin/, not the repo root)
+/ziggyzag
+/ziggyzag-desktop
+/ziggyzag-agentd
+/ziggyzag-launcher
+/vt-conformance
+
 # Ignore any .o or .h files generated during build
 *.o
 *.h
