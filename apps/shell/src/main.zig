@@ -28,6 +28,29 @@ const CompletionEntry = struct {
     is_directory: bool,
 };
 
+/// Syntax-highlight classification for a single byte of the command line.
+/// `writeHighlightedLine` maps each kind to an ANSI color; the pure classifier
+/// `classifyHighlight` produces these so the coloring logic is testable without
+/// a terminal.
+const HighlightKind = enum {
+    /// The command head, resolved to a builtin.
+    command_builtin,
+    /// The command head, resolved to an executable on PATH.
+    command_valid,
+    /// The command head, not found as a builtin or on PATH.
+    command_invalid,
+    /// A byte inside a single- or double-quoted string (quotes included).
+    string,
+    /// A shell operator: `|`, `<`, `>`, `&`, `;`.
+    operator,
+    /// A `$` variable sigil outside quotes.
+    variable,
+    /// Anything else (arguments, whitespace).
+    plain,
+};
+
+const CommandHeadKind = enum { builtin, valid, invalid };
+
 const CompletionSpec = struct {
     command: []u8,
     completer: []u8,
@@ -180,6 +203,12 @@ const Shell = struct {
     prompt_snapshot_valid: bool,
     last_status: u8,
     last_duration_ms: i64,
+    /// Whether the interactive prompt colorizes the line as you type (valid
+    /// command heads green/cyan, unknown ones red, quoted strings and operators
+    /// distinct). On by default; toggle with `highlight on|off` or the
+    /// `ZIGGYZAG_HIGHLIGHT` env var. Independent of `prompt_mode` so the default
+    /// classic prompt still gets highlighting.
+    highlight_enabled: bool,
     /// Active terminal theme. Read on startup from the ZIGGYZAG_THEME env var,
     /// which the desktop host sets when spawning the shell child. Falls back
     /// to the `ziggy` theme when unset or unknown. See docs/THEME_PROTOCOL.md.
@@ -217,6 +246,7 @@ const Shell = struct {
             .prompt_snapshot_valid = false,
             .last_status = 0,
             .last_duration_ms = 0,
+            .highlight_enabled = true,
             .current_theme = initial_theme,
         };
     }
@@ -1034,8 +1064,20 @@ const Shell = struct {
         return status;
     }
 
+    /// Resolve the highlight class of the command head: builtin, a real
+    /// executable on PATH, or unknown. Pulled out of the renderer so the
+    /// classification can be asserted in tests.
+    fn classifyCommandHead(self: *Shell, command: []const u8) CommandHeadKind {
+        if (isShellBuiltin(command)) return .builtin;
+        if (self.findExecutable(command) catch null) |path| {
+            self.allocator.free(path);
+            return .valid;
+        }
+        return .invalid;
+    }
+
     fn writeHighlightedLine(self: *Shell, stdout: *std.Io.Writer, line: []const u8) !void {
-        if (self.prompt_mode == .classic or line.len == 0) {
+        if (!self.highlight_enabled or line.len == 0) {
             try stdout.writeAll(line);
             return;
         }
@@ -1047,33 +1089,30 @@ const Shell = struct {
             return;
         }
 
-        try stdout.writeAll(line[0..start]);
-        const command = line[start..end];
-        if (isShellBuiltin(command)) {
-            try stdout.writeAll("\x1b[32m");
-        } else if (try self.findExecutable(command)) |path| {
-            self.allocator.free(path);
-            try stdout.writeAll("\x1b[36m");
-        } else {
-            try stdout.writeAll("\x1b[31m");
-        }
-        try stdout.writeAll(command);
-        try stdout.writeAll("\x1b[0m");
+        const head_kind = self.classifyCommandHead(line[start..end]);
 
-        var index = end;
-        while (index < line.len) : (index += 1) {
-            const c = line[index];
-            if (c == '|' or c == '>' or c == '<') {
-                try stdout.writeAll("\x1b[35m");
-                try stdout.writeByte(c);
-                try stdout.writeAll("\x1b[0m");
-            } else if (c == '$') {
-                try stdout.writeAll("\x1b[33m");
-                try stdout.writeByte(c);
-                try stdout.writeAll("\x1b[0m");
-            } else {
-                try stdout.writeByte(c);
-            }
+        // Classify every byte once, then emit runs of a single color so we don't
+        // reset/reopen ANSI per character. `kinds` is stack-bounded to the
+        // interactive line cap.
+        var kind_buf: [4096]HighlightKind = undefined;
+        if (line.len > kind_buf.len) {
+            // Pathologically long line: skip highlighting rather than truncate.
+            try stdout.writeAll(line);
+            return;
+        }
+        const kinds = kind_buf[0..line.len];
+        classifyHighlight(line, start, end, head_kind, kinds);
+
+        var i: usize = 0;
+        while (i < line.len) {
+            const kind = kinds[i];
+            var j = i + 1;
+            while (j < line.len and kinds[j] == kind) : (j += 1) {}
+            const code = highlightAnsiCode(kind);
+            if (code.len > 0) try stdout.writeAll(code);
+            try stdout.writeAll(line[i..j]);
+            if (code.len > 0) try stdout.writeAll("\x1b[0m");
+            i = j;
         }
     }
 
@@ -2045,6 +2084,14 @@ const Shell = struct {
             return true;
         }
 
+        if (std.mem.eql(u8, command, "highlight")) {
+            var stdout_buffer: std.ArrayList(u8) = .empty;
+            defer stdout_buffer.deinit(self.allocator);
+            try self.highlightCommand(parsed.argv.items, &stdout_buffer);
+            try self.emitCommandOutput(&parsed, stdout_buffer.items, &.{});
+            return true;
+        }
+
         if (std.mem.eql(u8, command, "theme")) {
             var stdout_buffer: std.ArrayList(u8) = .empty;
             defer stdout_buffer.deinit(self.allocator);
@@ -2748,6 +2795,9 @@ const Shell = struct {
         if (isFalseyEnv(self.env.get("ZIGGYZAG_HISTORY")) or isTruthyEnv(self.env.get("ZIGGYZAG_HISTORY_PRIVATE"))) {
             self.history_enabled = false;
         }
+        if (isFalseyEnv(self.env.get("ZIGGYZAG_HIGHLIGHT"))) {
+            self.highlight_enabled = false;
+        }
 
         const path = try self.configPathAlloc();
         defer self.allocator.free(path);
@@ -2820,6 +2870,8 @@ const Shell = struct {
             try self.completeBuiltin(parsed.argv.items, &output);
         } else if (std.mem.eql(u8, command, "prompt")) {
             try self.promptCommand(parsed.argv.items, &output);
+        } else if (std.mem.eql(u8, command, "highlight")) {
+            try self.highlightCommand(parsed.argv.items, &output);
         } else if (std.mem.eql(u8, command, "theme")) {
             try self.themeCommand(parsed.argv.items, &output);
         } else if (std.mem.eql(u8, command, "history")) {
@@ -3368,6 +3420,27 @@ const Shell = struct {
         }
     }
 
+    /// `highlight [on|off|toggle|status]` — control interactive syntax
+    /// highlighting. No argument prints the current state.
+    fn highlightCommand(self: *Shell, argv: []const []const u8, stdout_buffer: *std.ArrayList(u8)) !void {
+        if (argv.len >= 2) {
+            const arg = argv[1];
+            if (std.mem.eql(u8, arg, "on") or std.mem.eql(u8, arg, "enable")) {
+                self.highlight_enabled = true;
+            } else if (std.mem.eql(u8, arg, "off") or std.mem.eql(u8, arg, "disable")) {
+                self.highlight_enabled = false;
+            } else if (std.mem.eql(u8, arg, "toggle")) {
+                self.highlight_enabled = !self.highlight_enabled;
+            } else if (!std.mem.eql(u8, arg, "status")) {
+                try appendFmt(self.allocator, stdout_buffer, "highlight: {s}: expected on, off, toggle, or status\n", .{arg});
+                return;
+            }
+        }
+        try appendFmt(self.allocator, stdout_buffer, "highlight: {s}\n", .{
+            if (self.highlight_enabled) "on" else "off",
+        });
+    }
+
     fn promptCommand(self: *Shell, argv: []const []const u8, stdout_buffer: *std.ArrayList(u8)) !void {
         if (hasArg(argv, "-h") or hasArg(argv, "--help")) {
             try stdout_buffer.appendSlice(self.allocator,
@@ -3531,6 +3604,7 @@ const Shell = struct {
                 \\abbr gco='git checkout'
                 \\complete -c zig -a 'build fmt test' -d 'common Zig command'
                 \\prompt dev
+                \\highlight on
                 \\# History persists to ~/.ziggyzag_history.tsv by default;
                 \\# uncomment to store it elsewhere:
                 \\# export ZIGGYZAG_HISTORY_DB=~/.ziggyzag-history.tsv
@@ -5821,6 +5895,7 @@ fn isConfigDirective(command: []const u8) bool {
         std.mem.eql(u8, command, "export") or
         std.mem.eql(u8, command, "complete") or
         std.mem.eql(u8, command, "prompt") or
+        std.mem.eql(u8, command, "highlight") or
         std.mem.eql(u8, command, "theme") or
         std.mem.eql(u8, command, "history");
 }
@@ -5950,6 +6025,7 @@ fn builtinDescription(name: []const u8) ?[]const u8 {
     if (std.mem.eql(u8, name, "path")) return "show PATH entries";
     if (std.mem.eql(u8, name, "project")) return "detect project tasks";
     if (std.mem.eql(u8, name, "prompt")) return "configure prompt modules";
+    if (std.mem.eql(u8, name, "highlight")) return "toggle syntax highlighting";
     if (std.mem.eql(u8, name, "pwd")) return "print current directory";
     if (std.mem.eql(u8, name, "repeat")) return "run a command multiple times";
     if (std.mem.eql(u8, name, "run")) return "run a project-aware task";
@@ -6128,6 +6204,82 @@ fn simpleCommandWordEnd(line: []const u8, start: usize) usize {
         if (isShellWhitespace(c) or c == '|' or c == '&' or c == '<' or c == '>') break;
     }
     return index;
+}
+
+/// Fill `out` (one entry per byte of `line`) with the highlight class of each
+/// byte. The command head spans `[head_start, head_end)` and is tagged with
+/// `head_kind`; everything else is classified by a single left-to-right pass
+/// that tracks quote state so operators and `$` inside a string are treated as
+/// plain string content. Pure and allocation-free for easy testing.
+fn classifyHighlight(
+    line: []const u8,
+    head_start: usize,
+    head_end: usize,
+    head_kind: CommandHeadKind,
+    out: []HighlightKind,
+) void {
+    std.debug.assert(out.len == line.len);
+    var quote: u8 = 0; // 0 = none, else the active quote char
+    var i: usize = 0;
+    while (i < line.len) : (i += 1) {
+        const c = line[i];
+
+        if (quote != 0) {
+            out[i] = .string;
+            // A backslash inside double quotes escapes the next byte; mark it
+            // as string too so the run stays contiguous.
+            if (quote == '"' and c == '\\' and i + 1 < line.len) {
+                i += 1;
+                if (i < line.len) out[i] = .string;
+                continue;
+            }
+            if (c == quote) quote = 0;
+            continue;
+        }
+
+        // Outside quotes. The command head wins over operator/variable tagging
+        // so a head like `ls>` still colors the `ls` part by validity.
+        if (i >= head_start and i < head_end) {
+            out[i] = switch (head_kind) {
+                .builtin => .command_builtin,
+                .valid => .command_valid,
+                .invalid => .command_invalid,
+            };
+            continue;
+        }
+
+        switch (c) {
+            '\'', '"' => {
+                quote = c;
+                out[i] = .string;
+            },
+            '|', '<', '>', '&', ';' => out[i] = .operator,
+            '$' => out[i] = .variable,
+            '\\' => {
+                // Escape outside quotes: the backslash and the escaped byte are
+                // plain so a `\$` does not read as a variable.
+                out[i] = .plain;
+                if (i + 1 < line.len) {
+                    i += 1;
+                    out[i] = .plain;
+                }
+            },
+            else => out[i] = .plain,
+        }
+    }
+}
+
+/// ANSI SGR sequence for a highlight class, or "" for `.plain` (no coloring).
+fn highlightAnsiCode(kind: HighlightKind) []const u8 {
+    return switch (kind) {
+        .command_builtin => "\x1b[32m", // green
+        .command_valid => "\x1b[36m", // cyan
+        .command_invalid => "\x1b[31m", // red
+        .string => "\x1b[33m", // yellow
+        .operator => "\x1b[35m", // magenta
+        .variable => "\x1b[34m", // blue
+        .plain => "",
+    };
 }
 
 fn isCompletionWhitespace(c: u8) bool {
@@ -6399,6 +6551,7 @@ const shell_builtin_names = [_][]const u8{
     "path",
     "project",
     "prompt",
+    "highlight",
     "repeat",
     "run",
     "source",
@@ -6845,6 +6998,94 @@ test "path completion quotes a filename with spaces" {
     const expected = try std.fmt.allocPrint(allocator, "cat '{s}/my report.txt' ", .{abs_dir});
     defer allocator.free(expected);
     try std.testing.expectEqualStrings(expected, line.items);
+}
+
+test "classifyHighlight tags command head, operators, and variables" {
+    const allocator = std.testing.allocator;
+    const line = "git status | grep $X";
+    const kinds = try allocator.alloc(HighlightKind, line.len);
+    defer allocator.free(kinds);
+
+    // Head "git" spans [0,3); say it resolved as a valid executable.
+    classifyHighlight(line, 0, 3, .valid, kinds);
+
+    // Command head is colored by validity.
+    try std.testing.expectEqual(HighlightKind.command_valid, kinds[0]); // g
+    try std.testing.expectEqual(HighlightKind.command_valid, kinds[2]); // t
+    // "status" is a plain argument.
+    try std.testing.expectEqual(HighlightKind.plain, kinds[4]); // s
+    // The pipe is an operator.
+    try std.testing.expectEqual(HighlightKind.operator, kinds[std.mem.indexOfScalar(u8, line, '|').?]);
+    // The `$` is a variable sigil.
+    try std.testing.expectEqual(HighlightKind.variable, kinds[std.mem.indexOfScalar(u8, line, '$').?]);
+}
+
+test "classifyHighlight treats quoted spans as strings, suppressing operators inside" {
+    const allocator = std.testing.allocator;
+    const line = "echo \"a | b $c\" tail";
+    const kinds = try allocator.alloc(HighlightKind, line.len);
+    defer allocator.free(kinds);
+
+    classifyHighlight(line, 0, 4, .builtin, kinds);
+
+    // Everything from the opening quote to the closing quote is a string,
+    // including the `|` and `$` that would otherwise be operator/variable.
+    const open = std.mem.indexOfScalar(u8, line, '"').?;
+    const close = std.mem.lastIndexOfScalar(u8, line, '"').?;
+    var i = open;
+    while (i <= close) : (i += 1) {
+        try std.testing.expectEqual(HighlightKind.string, kinds[i]);
+    }
+    // The word after the closing quote is plain again.
+    try std.testing.expectEqual(HighlightKind.plain, kinds[close + 2]); // 't' of "tail"
+    // A backslash outside quotes keeps `$` from reading as a variable.
+    const esc_line = "x \\$y";
+    const esc_kinds = try allocator.alloc(HighlightKind, esc_line.len);
+    defer allocator.free(esc_kinds);
+    classifyHighlight(esc_line, 0, 1, .invalid, esc_kinds);
+    try std.testing.expectEqual(HighlightKind.plain, esc_kinds[std.mem.indexOfScalar(u8, esc_line, '$').?]);
+}
+
+test "highlight builtin toggles the enabled flag" {
+    const allocator = std.testing.allocator;
+    var env = std.process.Environ.Map.init(allocator);
+    defer env.deinit();
+
+    var shell = Shell.init(allocator, undefined, &env);
+    defer shell.deinit();
+    try std.testing.expect(shell.highlight_enabled); // default on
+
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(allocator);
+
+    try shell.highlightCommand(&.{ "highlight", "off" }, &out);
+    try std.testing.expect(!shell.highlight_enabled);
+    try std.testing.expect(std.mem.indexOf(u8, out.items, "off") != null);
+
+    out.clearRetainingCapacity();
+    try shell.highlightCommand(&.{ "highlight", "toggle" }, &out);
+    try std.testing.expect(shell.highlight_enabled);
+    try std.testing.expect(std.mem.indexOf(u8, out.items, "on") != null);
+}
+
+test "writeHighlightedLine emits nothing extra when highlighting is off" {
+    const allocator = std.testing.allocator;
+    var env = std.process.Environ.Map.init(allocator);
+    defer env.deinit();
+
+    var shell = Shell.init(allocator, undefined, &env);
+    defer shell.deinit();
+    shell.highlight_enabled = false;
+    shell.manual_echo = true; // so writeHighlightedLine would normally color
+
+    // Fixed writer so we can inspect exact bytes.
+    var out_buf: [128]u8 = undefined;
+    var w = std.Io.Writer.fixed(&out_buf);
+
+    try shell.writeHighlightedLine(&w, "git status");
+    // With highlighting off the line is passed through verbatim — no ESC.
+    try std.testing.expectEqualStrings("git status", w.buffered());
+    try std.testing.expect(std.mem.indexOfScalar(u8, w.buffered(), 0x1b) == null);
 }
 
 test "backslash-newline line continuation outside quotes" {
