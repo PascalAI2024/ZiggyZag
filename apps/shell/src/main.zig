@@ -10,6 +10,11 @@ const max_source_file_bytes = 512 * 1024;
 const max_history_file_bytes = 8 * 1024 * 1024;
 const max_pipeline_capture_bytes = 8 * 1024 * 1024;
 const max_pipeline_stage_input_bytes = 64 * 1024;
+/// Upper bound on stages handled by the streaming (real-OS-pipe) path. Each
+/// stage holds a child plus pipe fds; the cap keeps fd use and the spawned-child
+/// array bounded. Longer chains fall back to the buffered handoff, which has no
+/// such ceiling.
+const max_streaming_stages = 16;
 const max_prompt_git_output_bytes = 256 * 1024;
 /// Maximum number of candidates a programmable completer may contribute per
 /// invocation.  Protects against runaway or malicious completers flooding the
@@ -4848,10 +4853,30 @@ const Shell = struct {
         // in `rm f | grep x > out`). Command substitution can't reach here
         // (isComplexPipelineSyntax rejects `$(`/backticks) and variable
         // expansion is side-effect-free, so this extra parse is pure.
+        var all_external = true;
         for (segments.items) |segment| {
             var probe = try parseCommandExpanded(self.allocator, segment, self);
             defer probe.deinit();
             if (probe.argv.items.len == 0 or probe.hasRedirection()) return false;
+            if (isShellBuiltin(probe.argv.items[0])) all_external = false;
+        }
+
+        // Streaming fast path: when every stage is an external command we wire
+        // real OS pipes stage-to-stage and let them run concurrently, so no
+        // stage's full output is ever materialised in memory (S13). Mixed
+        // pipelines containing an in-process builtin (e.g. `echo x | grep y`)
+        // fall through to the buffered handoff below, which can synthesise the
+        // builtin's output. A streaming setup failure (rare: fd exhaustion)
+        // also falls through rather than erroring the prompt.
+        if (all_external and segments.items.len >= 2 and segments.items.len <= max_streaming_stages) {
+            if (self.runStreamingPipeline(segments.items)) |ran| {
+                if (ran) return true;
+            } else |err| switch (err) {
+                // A missing command in a streaming chain is reported by the
+                // chain itself; only genuinely unexpected setup errors fall back.
+                error.StreamingPipelineUnsupported => {},
+                else => |e| return e,
+            }
         }
 
         var input = try self.allocator.dupe(u8, "");
@@ -4897,6 +4922,138 @@ const Shell = struct {
         try stdout.interface.writeAll(input);
         var stderr = std.Io.File.stderr().writerStreaming(self.io, &.{});
         try stderr.interface.writeAll(stderr_output.items);
+        self.last_status = status;
+        return true;
+    }
+
+    /// Run an all-external pipeline as a real concurrent OS pipe chain (S13).
+    ///
+    /// Every stage runs at once. Stage N's stdout pipe is handed directly to
+    /// stage N+1's stdin (`StdIo.file` -> `dup2` in the child), so no stage's
+    /// output is ever buffered in the shell — a `seq 1 10000000 | head -1`
+    /// finishes immediately and uses constant memory. Only the LAST stage's
+    /// stdout is captured here, drained incrementally with a bounded cap; every
+    /// stage's stderr is inherited straight to the terminal, matching real-shell
+    /// semantics and removing the classic "intermediate stderr pipe fills and
+    /// blocks the whole chain" deadlock (there is no intermediate stderr pipe to
+    /// fill — see docs/reference/pipelines.md).
+    ///
+    /// The deadlock that a naive chain *would* hit — writing all of stage 0's
+    /// output before reading stage 1 — cannot happen because the kernel moves
+    /// bytes between the children directly; the shell only reads the tail.
+    ///
+    /// fd discipline: after a child is spawned with the previous child's stdout
+    /// as its stdin, the parent closes its own copy of that stdout fd. Otherwise
+    /// the read end stays open in the shell and the downstream stage never sees
+    /// EOF when its producer exits — a hang. Returns `true` when it ran the
+    /// pipeline (status set), or errors with `StreamingPipelineUnsupported` to
+    /// request the caller's buffered fallback.
+    fn runStreamingPipeline(self: *Shell, segments: []const []u8) !bool {
+        var children: std.ArrayList(std.process.Child) = .empty;
+        defer {
+            // Reap/kill anything still tracked (errors after partial spawn).
+            for (children.items) |*child| child.kill(self.io);
+            children.deinit(self.allocator);
+        }
+
+        var prev_stdout: ?std.Io.File = null;
+        // If we bail mid-setup, make sure a dangling upstream pipe end is closed.
+        errdefer if (prev_stdout) |f| f.close(self.io);
+
+        for (segments, 0..) |segment, index| {
+            var parsed = try parseCommandExpanded(self.allocator, segment, self);
+            defer parsed.deinit();
+            // Pre-validation in the caller guarantees argv is non-empty, has no
+            // redirection, and is not a builtin — but re-check defensively.
+            if (parsed.argv.items.len == 0 or parsed.hasRedirection() or isShellBuiltin(parsed.argv.items[0])) {
+                return error.StreamingPipelineUnsupported;
+            }
+
+            var argv: std.ArrayList([]const u8) = .empty;
+            defer argv.deinit(self.allocator);
+            for (parsed.argv.items) |arg| try argv.append(self.allocator, arg);
+
+            const is_last = index == segments.len - 1;
+            const stdin_cfg: std.process.SpawnOptions.StdIo = if (prev_stdout) |f|
+                .{ .file = f }
+            else
+                .ignore;
+
+            const child = std.process.spawn(self.io, .{
+                .argv = argv.items,
+                .environ_map = self.env,
+                .stdin = stdin_cfg,
+                // Only the tail is captured; inner stages stream to the next
+                // stage, the last stage to us.
+                .stdout = .pipe,
+                // Inherit stderr to the terminal for every stage — no capture,
+                // no pipe to deadlock on.
+                .stderr = .inherit,
+            }) catch |err| {
+                // A missing command (or any spawn failure) on the FIRST stage
+                // can safely fall back to the buffered path, which reports the
+                // error in shell-consistent form. After the first stage has
+                // spawned we must not fall back (it would re-run stage 0), so we
+                // surface the error.
+                if (index == 0) return error.StreamingPipelineUnsupported;
+                return err;
+            };
+
+            // The parent no longer needs the previous stage's stdout: it now
+            // lives as the new child's stdin. Close our copy so EOF propagates.
+            if (prev_stdout) |f| {
+                f.close(self.io);
+                prev_stdout = null;
+            }
+
+            try children.append(self.allocator, child);
+            if (!is_last) {
+                prev_stdout = children.items[children.items.len - 1].stdout.?;
+                // Detach from the Child so its own bookkeeping doesn't double
+                // close the fd we now own and hand to the next stage.
+                children.items[children.items.len - 1].stdout = null;
+            }
+        }
+
+        // Drain the last stage's stdout incrementally, bounded. `readSliceShort`
+        // returns whatever is available (a short count at EOF), so we stream the
+        // tail in fixed-size chunks without ever holding the whole output.
+        const last = &children.items[children.items.len - 1];
+        const out_file = last.stdout.?;
+        var read_buf: [16 * 1024]u8 = undefined;
+        var copy_buf: [16 * 1024]u8 = undefined;
+        var reader = out_file.readerStreaming(self.io, &read_buf);
+        var stdout = std.Io.File.stdout().writerStreaming(self.io, &.{});
+
+        var total: usize = 0;
+        var capped = false;
+        while (true) {
+            // readSliceShort signals EOF by returning fewer bytes than asked
+            // (including 0); it only *errors* on a read failure.
+            const n = try reader.interface.readSliceShort(&copy_buf);
+            if (n > 0) {
+                total += n;
+                if (total > max_pipeline_capture_bytes) {
+                    capped = true;
+                    break;
+                }
+                try stdout.interface.writeAll(copy_buf[0..n]);
+            }
+            if (n < copy_buf.len) break; // short read => stream drained
+        }
+        if (capped) {
+            var stderr = std.Io.File.stderr().writerStreaming(self.io, &.{});
+            try stderr.interface.print("pipeline output exceeded {d} bytes\n", .{max_pipeline_capture_bytes});
+        }
+
+        // Wait for every child; the pipeline's status is the last stage's.
+        var status: u8 = 0;
+        for (children.items, 0..) |*child, i| {
+            const term = child.wait(self.io) catch std.process.Child.Term{ .exited = 1 };
+            if (i == children.items.len - 1) status = termExitCode(term);
+        }
+        children.clearRetainingCapacity(); // all reaped; skip the defer kill
+
         self.last_status = status;
         return true;
     }
@@ -7490,6 +7647,39 @@ test "theme builtin list marks the current selection" {
     try std.testing.expect(std.mem.indexOf(u8, output.items, "* gruvbox-dark") != null);
     try std.testing.expect(std.mem.indexOf(u8, output.items, "  ziggy") != null);
     try std.testing.expect(std.mem.indexOf(u8, output.items, "Tokyo Night") != null);
+}
+
+test "streaming pipeline does not deadlock on a fast producer + early-exit consumer" {
+    // Regression guard for S13. `yes` is an *infinite* producer; `head -c`
+    // reads a fixed, large volume (well past the OS pipe buffer) then exits,
+    // closing its read end. A correct concurrent pipe chain finishes the moment
+    // `head` has its bytes — `yes` dies on SIGPIPE — and the shell only drains
+    // the tail. A broken chain (e.g. one that buffered a whole stage, or held a
+    // pipe fd open so EOF never arrived) would hang here; the CI test timeout
+    // turns that hang into a failure. POSIX-only: these tools aren't on Windows.
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var env = std.process.Environ.Map.init(allocator);
+    defer env.deinit();
+
+    var shell = Shell.init(allocator, io, &env);
+    defer shell.deinit();
+
+    // 200_000 bytes is ~3x the 64 KiB macOS pipe buffer, so a non-streaming or
+    // single-drain-order implementation would block partway through.
+    var segments = [_][]u8{
+        @constCast("yes"),
+        @constCast("head -c 200000"),
+        @constCast("wc -c"),
+    };
+
+    const ran = try shell.runStreamingPipeline(&segments);
+    try std.testing.expect(ran);
+    // `wc -c` exits 0 having counted exactly the bytes `head` emitted.
+    try std.testing.expectEqual(@as(u8, 0), shell.last_status);
 }
 
 pub fn main(init_data: std.process.Init) !void {
