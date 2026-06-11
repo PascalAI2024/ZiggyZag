@@ -384,6 +384,8 @@ const AppState = struct {
     sel: Selection = .{},
     view_obj: ID = null,
     font: ?CTFontRef = null,
+    // Italic variant for SGR 3; falls back to the regular font if unavailable.
+    font_italic: ?CTFontRef = null,
     cell_w: f64 = 8,
     cell_h: f64 = 16,
     cell_ascent: f64 = 12,
@@ -484,6 +486,53 @@ fn namedColor(color: terminal.Color, is_fg: bool) [3]f64 {
     };
 }
 
+fn rgbToFloat(r: u8, g: u8, b: u8) [3]f64 {
+    return .{
+        @as(f64, @floatFromInt(r)) / 255.0,
+        @as(f64, @floatFromInt(g)) / 255.0,
+        @as(f64, @floatFromInt(b)) / 255.0,
+    };
+}
+
+// xterm 256-color → RGB. 0..15 are the named ANSI colors, 16..231 a 6×6×6
+// cube, 232..255 a 24-step grayscale ramp. Mirrors the Windows renderer's
+// indexedTerminalColor so the two hosts agree.
+fn indexedColor(index: u8, is_fg: bool) [3]f64 {
+    if (index < 16) return namedColor(@enumFromInt(index + 1), is_fg);
+    if (index >= 232) {
+        const level: u8 = @intCast(8 + @as(u16, index - 232) * 10);
+        return rgbToFloat(level, level, level);
+    }
+    const cube = index - 16;
+    return rgbToFloat(
+        cubeComponent(cube / 36),
+        cubeComponent((cube / 6) % 6),
+        cubeComponent(cube % 6),
+    );
+}
+
+fn cubeComponent(value: u8) u8 {
+    return if (value == 0) 0 else @intCast(55 + @as(u16, value) * 40);
+}
+
+// Resolve a cell's foreground/background to normalized RGB, honoring extended
+// (256-indexed / truecolor) colors when present.
+fn resolveColor(ext: terminal.ExtendedColor, is_fg: bool) [3]f64 {
+    return switch (ext) {
+        .named => |c| namedColor(c, is_fg),
+        .indexed => |i| indexedColor(i, is_fg),
+        .rgb => |c| rgbToFloat(c.r, c.g, c.b),
+    };
+}
+
+fn brighten(c: [3]f64) [3]f64 {
+    return .{ @min(c[0] + 0.12, 1.0), @min(c[1] + 0.12, 1.0), @min(c[2] + 0.12, 1.0) };
+}
+
+fn dimColor(c: [3]f64) [3]f64 {
+    return .{ c[0] * 0.6, c[1] * 0.6, c[2] * 0.6 };
+}
+
 // ── Glyph drawing ─────────────────────────────────────────────────────────
 
 fn drawGlyph(font: CTFontRef, ctx: CGContextRef, x: f64, baseline_y: f64, cp: u21) void {
@@ -526,6 +575,7 @@ fn drawAsciiRange(font: CTFontRef, ctx: CGContextRef, x0: f64, baseline_y: f64, 
 fn renderCells(
     ctx: CGContextRef,
     font: CTFontRef,
+    italic_font: ?CTFontRef,
     cells: []const terminal.Cell,
     width: usize,
     visual_row: usize,
@@ -543,23 +593,63 @@ fn renderCells(
         if (cell.isContinuation()) continue;
 
         const px = cw * @as(f64, @floatFromInt(col));
+        // A wide cell's background and decorations span both columns.
+        const cell_cols: f64 = if (cell.width == .wide) 2.0 else 1.0;
+        const cell_w = cw * cell_cols;
+        const style = cell.style;
 
-        if (cell.style.bg != .default) {
-            const bg = namedColor(cell.style.bg, false);
+        // Resolve fg/bg, applying inverse (swap), bold (brighten), dim (scale).
+        var fg = resolveColor(style.foreground(), true);
+        var bg = resolveColor(style.background(), false);
+        const has_bg = style.bg != .default or style.bg_extended != null or style.inverse;
+        if (style.inverse) {
+            const tmp = fg;
+            fg = bg;
+            bg = tmp;
+        }
+        if (style.bold) fg = brighten(fg);
+        if (style.dim) fg = dimColor(fg);
+
+        if (has_bg) {
             CGContextSetRGBFillColor(ctx, bg[0], bg[1], bg[2], 1.0);
             CGContextFillRect(ctx, .{
                 .origin = .{ .x = px, .y = y_bot },
-                .size = .{ .width = cw, .height = ch },
+                .size = .{ .width = cell_w, .height = ch },
             });
         }
 
         const cp = cell.codepoint;
-        if (cp == 0 or cp == ' ') continue;
+        const blank = (cp == 0 or cp == ' ');
 
-        const fg = namedColor(cell.style.fg, true);
-        CGContextSetRGBFillColor(ctx, fg[0], fg[1], fg[2], 1.0);
-        drawGlyph(font, ctx, px, y_base, cp);
+        // Line decorations. underline_color overrides fg for the underline only.
+        const has_decoration = style.underline or style.double_underline or
+            style.strikethrough or style.overline;
+        if (!blank or has_decoration) {
+            if (!blank and !style.hidden) {
+                CGContextSetRGBFillColor(ctx, fg[0], fg[1], fg[2], 1.0);
+                const glyph_font = if (style.italic) (italic_font orelse font) else font;
+                drawGlyph(glyph_font, ctx, px, y_base, cp);
+            }
+            if (has_decoration) {
+                const uc = if (style.underline_color) |c| resolveColor(c, true) else fg;
+                const thick = @max(ch * 0.06, 1.0);
+                if (style.underline) fillLine(ctx, px, y_bot + thick, cell_w, thick, uc);
+                if (style.double_underline) {
+                    fillLine(ctx, px, y_bot + thick, cell_w, thick, uc);
+                    fillLine(ctx, px, y_bot + thick * 3, cell_w, thick, uc);
+                }
+                if (style.strikethrough) fillLine(ctx, px, y_bot + ch * 0.45, cell_w, thick, fg);
+                if (style.overline) fillLine(ctx, px, y_bot + ch - thick, cell_w, thick, fg);
+            }
+        }
     }
+}
+
+// Draw a horizontal decoration line as a thin filled rect (no CG stroke API
+// needed). y is the bottom edge of the line in CG (bottom-up) coordinates.
+fn fillLine(ctx: CGContextRef, x: f64, y: f64, w: f64, thickness: f64, color: [3]f64) void {
+    CGContextSetRGBFillColor(ctx, color[0], color[1], color[2], 1.0);
+    CGContextFillRect(ctx, .{ .origin = .{ .x = x, .y = y }, .size = .{ .width = w, .height = thickness } });
 }
 
 // ── View callbacks ────────────────────────────────────────────────────────
@@ -602,12 +692,12 @@ fn viewDrawRect(_: ID, _: SEL, _: CGRect) callconv(.c) void {
         const ul: usize = @intCast(tl);
         if (ul < hist_len) {
             const hline = grid.history.items[ul];
-            renderCells(ctx, font, hline.cells, grid.width, i, cw, ch, asc, H);
+            renderCells(ctx, font, state.font_italic, hline.cells, grid.width, i, cw, ch, asc, H);
         } else {
             const sr = ul - hist_len;
             if (sr >= grid.height) continue;
             const cells = grid.cells[sr * grid.width .. (sr + 1) * grid.width];
-            renderCells(ctx, font, cells, grid.width, i, cw, ch, asc, H);
+            renderCells(ctx, font, state.font_italic, cells, grid.width, i, cw, ch, asc, H);
         }
     }
 
@@ -2131,6 +2221,12 @@ fn delegateDidFinishLaunching(self_obj: ID, _: SEL, _: ID) callconv(.c) void {
     defer CFRelease(font_name_cf);
     state.font = CTFontCreateWithName(font_name_cf, 14.0, null);
 
+    // Italic variant for SGR 3. Same metrics as Menlo-Regular so the grid
+    // stays monospaced; renderCells uses it only for italic cells.
+    const italic_name_cf = cfString("Menlo-Italic");
+    defer CFRelease(italic_name_cf);
+    state.font_italic = CTFontCreateWithName(italic_name_cf, 14.0, null);
+
     if (state.font) |font| {
         state.cell_ascent = CTFontGetAscent(font);
         state.cell_h = state.cell_ascent + CTFontGetDescent(font) + CTFontGetLeading(font);
@@ -2726,6 +2822,7 @@ pub fn run(init_data: std.process.Init, shell_path: []const u8) !void {
 
     g_state = null;
     if (state.font) |f| CFRelease(f);
+    if (state.font_italic) |f| CFRelease(f);
     state.grid.deinit();
     allocator.destroy(state);
 }
