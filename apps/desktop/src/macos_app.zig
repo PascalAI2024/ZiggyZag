@@ -756,7 +756,7 @@ fn drawAgentOverlay(ctx: CGContextRef, state: *AppState, font: CTFontRef, W: f64
     const panel_w = @min(@max(W - 80, 420), 860);
     const left = (W - panel_w) / 2.0;
     const top: f64 = 42;
-    const bottom = @min(H - 24, top + ch * 22 + 56);
+    const bottom = @min(H - 24, top + ch * 24 + 56);
     if (bottom <= top + ch * 6) return;
 
     fillPanel(ctx, left, top, panel_w, bottom);
@@ -766,25 +766,108 @@ fn drawAgentOverlay(ctx: CGContextRef, state: *AppState, font: CTFontRef, W: f64
     const max_w = panel_w - 2 * cw;
     const max_cols: usize = @max(1, @as(usize, @intFromFloat(max_w / cw)));
 
-    // Header
+    // ── Header (context-sensitive) ────────────────────────────────────────
     CGContextSetRGBFillColor(ctx, 1.0, 1.0, 1.0, 1.0);
-    if (state.agent_input_active)
-        drawAscii(font, ctx, x, bottom - ch + asc, cw, "AgentD — type your request, Enter to send, Esc to cancel")
+    if (state.approval.active)
+        drawAscii(font, ctx, x, bottom - ch + asc, cw, "AgentD — Approval required  [Y]yes  [N]no")
+    else if (state.tools_browse_active)
+        drawAscii(font, ctx, x, bottom - ch + asc, cw, "AgentD — Tools  Up/Down browse  [Esc]back")
+    else if (state.agent_input_active)
+        drawAscii(font, ctx, x, bottom - ch + asc, cw, "AgentD — type request, Enter to send, Esc to cancel")
     else
-        drawAscii(font, ctx, x, bottom - ch + asc, cw, "AgentD  [H]health [T]tools [I]command input [Esc]close");
+        drawAscii(font, ctx, x, bottom - ch + asc, cw, "AgentD  [H]health  [T]tools  [I]input  [Esc]close");
 
     var y = bottom - 2 * ch + asc;
 
-    // Status line
-    const status_text: []const u8 = if (state.agentd_running.load(.monotonic))
-        "status: connected"
-    else
-        "status: unavailable (build ziggyzag-agentd first)";
-    CGContextSetRGBFillColor(ctx, if (state.agentd_running.load(.monotonic)) 0.40 else 0.90, if (state.agentd_running.load(.monotonic)) 0.90 else 0.40, 0.40, 1.0);
-    drawAscii(font, ctx, x, y, cw, status_text);
+    // ── Status line ───────────────────────────────────────────────────────
+    const connected = state.agentd_running.load(.monotonic);
+    const status_text: []const u8 = if (connected) "connected" else "unavailable (build ziggyzag-agentd first)";
+    CGContextSetRGBFillColor(ctx, if (connected) 0.40 else 0.90, if (connected) 0.90 else 0.40, 0.40, 1.0);
+    var sbuf: [96]u8 = undefined;
+    const stext = std.fmt.bufPrint(&sbuf, "status: {s}", .{status_text}) catch "status: ?";
+    drawAsciiRange(font, ctx, x, y, cw, stext);
     y -= ch;
 
-    // AgentD universal input line
+    // ── Last error (if any) ───────────────────────────────────────────────
+    if (state.last_error_code_len > 0) {
+        CGContextSetRGBFillColor(ctx, 1.0, 0.40, 0.40, 1.0);
+        var ebuf: [200]u8 = undefined;
+        const etext = std.fmt.bufPrint(&ebuf, "error [{s}]: {s}", .{ state.last_error_code[0..state.last_error_code_len], state.last_error_msg[0..state.last_error_msg_len] }) catch "error";
+        const edisplay = if (etext.len > max_cols) etext[0..max_cols] else etext;
+        drawAsciiRange(font, ctx, x, y, cw, edisplay);
+        y -= ch;
+    }
+
+    // ── Approval gate (terminal.write / zig.build pending) ────────────────
+    if (state.approval.active) {
+        y -= ch * 0.3;
+        // Action label
+        CGContextSetRGBFillColor(ctx, 1.0, 0.80, 0.30, 1.0);
+        var abuf: [80]u8 = undefined;
+        const atext = std.fmt.bufPrint(&abuf, "Action: {s}", .{state.approval.actionSlice()}) catch "Action: ?";
+        drawAsciiRange(font, ctx, x, y, cw, atext);
+        y -= ch;
+
+        // Preview of text to be written
+        CGContextSetRGBFillColor(ctx, 0.85, 0.85, 0.85, 1.0);
+        drawAsciiRange(font, ctx, x, y, cw, "Preview:");
+        y -= ch;
+        const preview = state.approval.previewSlice();
+        const pdisplay = if (preview.len > max_cols) preview[0..max_cols] else preview;
+        CGContextSetRGBFillColor(ctx, 0.55, 0.90, 0.55, 1.0);
+        // Indent the preview so it's visually distinct from labels
+        const px = x + cw * 2;
+        drawAsciiRange(font, ctx, px, y, cw, pdisplay);
+        y -= ch;
+
+        // Confirmation prompt
+        CGContextSetRGBFillColor(ctx, 1.0, 1.0, 1.0, 1.0);
+        drawAsciiRange(font, ctx, x, y, cw, "Write this to the terminal?  [Y] yes   [N] no, discard");
+        y -= ch;
+
+        CGContextSetRGBFillColor(ctx, 0.40, 0.40, 0.40, 1.0);
+        drawAsciiRange(font, ctx, x, top + ch + asc, cw, "Y confirms PTY write. N discards. Esc closes overlay.");
+        return;
+    }
+
+    // ── Tools browse mode ─────────────────────────────────────────────────
+    if (state.tools_browse_active and state.tools_count > 0) {
+        CGContextSetRGBFillColor(ctx, 0.72, 0.72, 0.72, 1.0);
+        var tbuf: [32]u8 = undefined;
+        const tcount = std.fmt.bufPrint(&tbuf, "{d} tools:", .{state.tools_count}) catch "tools:";
+        drawAsciiRange(font, ctx, x, y, cw, tcount);
+        y -= ch + 2;
+
+        for (0..state.tools_count) |i| {
+            if (y - ch < top + 24) break;
+            const entry = &state.tools[i];
+            const selected = i == state.tools_selected;
+            if (selected) highlightRow(ctx, x, y, panel_w, ch + 2);
+
+            // Name in bright color, [!] marker if approval required
+            CGContextSetRGBFillColor(ctx, if (selected) 0.55 else 0.85, if (selected) 0.95 else 0.85, if (selected) 0.55 else 0.85, 1.0);
+            var nbuf: [64]u8 = undefined;
+            const marker: []const u8 = if (entry.needs_approval) " [!]" else "";
+            const ntext = std.fmt.bufPrint(&nbuf, "{s}{s}", .{ entry.nameSlice(), marker }) catch entry.nameSlice();
+            drawAsciiRange(font, ctx, x, y, cw, ntext);
+            y -= ch;
+
+            // Description in muted color
+            if (entry.desc_len > 0 and y - ch >= top + 24) {
+                CGContextSetRGBFillColor(ctx, 0.48, 0.48, 0.48, 1.0);
+                const desc = entry.descSlice();
+                const ddisplay = if (desc.len > max_cols -| 2) desc[0..max_cols -| 2] else desc;
+                drawAsciiRange(font, ctx, x + cw * 2, y, cw, ddisplay);
+                y -= ch + 1;
+            }
+        }
+
+        CGContextSetRGBFillColor(ctx, 0.40, 0.40, 0.40, 1.0);
+        drawAsciiRange(font, ctx, x, top + ch + asc, cw, "Up/Down: navigate. [!] = requires approval. Esc: back.");
+        return;
+    }
+
+    // ── Universal input line ──────────────────────────────────────────────
     if (state.agent_input_active) {
         y -= ch * 0.5;
         var ibuf: [260]u8 = undefined;
@@ -793,11 +876,11 @@ fn drawAgentOverlay(ctx: CGContextRef, state: *AppState, font: CTFontRef, W: f64
         drawAsciiRange(font, ctx, x, y, cw, itext);
         y -= ch;
         CGContextSetRGBFillColor(ctx, 0.40, 0.40, 0.40, 1.0);
-        drawAsciiRange(font, ctx, x, y, cw, "Enter: send to AgentD to generate shell command. Esc: cancel.");
+        drawAsciiRange(font, ctx, x, y, cw, "Enter sends to AgentD. Any terminal.write will need approval.");
         y -= ch;
     }
 
-    // Provider hint
+    // ── Provider hint (shown when health response has no reachable provider) ─
     const show_hint = blk: {
         if (state.transcript_len == 0) break :blk false;
         const t = state.transcript[0..state.transcript_len];
@@ -813,23 +896,23 @@ fn drawAgentOverlay(ctx: CGContextRef, state: *AppState, font: CTFontRef, W: f64
         y -= ch;
     }
 
-    // Transcript
+    // ── Transcript (newest lines first) ───────────────────────────────────
     y -= ch * 0.5;
     const transcript = state.transcript[0..state.transcript_len];
     var remaining = transcript;
     var lines_shown: usize = 0;
-    CGContextSetRGBFillColor(ctx, 0.72, 0.72, 0.72, 1.0);
-    // Walk backwards to show newest lines first
-    while (remaining.len > 0 and lines_shown < 16) : (lines_shown += 1) {
-        if (y - ch < top + 12) break;
-        // Find last line in remaining
+    while (remaining.len > 0 and lines_shown < 14) : (lines_shown += 1) {
+        if (y - ch < top + 24) break;
         var end = remaining.len;
         if (end > 0 and remaining[end - 1] == '\n') end -= 1;
         var start = end;
         while (start > 0 and remaining[start - 1] != '\n') start -= 1;
         if (start < end) {
-            const line = remaining[start..end];
-            const display = if (line.len > max_cols) line[0..max_cols] else line;
+            const line_text = remaining[start..end];
+            // Highlight error-shaped lines in the transcript
+            const is_error = std.mem.indexOf(u8, line_text, "\"ok\":false") != null;
+            CGContextSetRGBFillColor(ctx, if (is_error) 1.0 else 0.72, if (is_error) 0.45 else 0.72, if (is_error) 0.45 else 0.72, 1.0);
+            const display = if (line_text.len > max_cols) line_text[0..max_cols] else line_text;
             drawAsciiRange(font, ctx, x, y, cw, display);
             y -= ch + 1;
         }
@@ -839,11 +922,11 @@ fn drawAgentOverlay(ctx: CGContextRef, state: *AppState, font: CTFontRef, W: f64
 
     if (state.transcript_len == 0) {
         CGContextSetRGBFillColor(ctx, 0.45, 0.45, 0.45, 1.0);
-        drawAsciiRange(font, ctx, x, y, cw, "Press H for health, T for tools, I for command input.");
+        drawAsciiRange(font, ctx, x, y, cw, "Press H: health check, T: browse tools, I: send a request.");
     }
 
     CGContextSetRGBFillColor(ctx, 0.40, 0.40, 0.40, 1.0);
-    drawAsciiRange(font, ctx, x, top + ch + asc, cw, "Enter sends command preview. Esc closes.");
+    drawAsciiRange(font, ctx, x, top + ch + asc, cw, "H health  T tools  I input  Esc close");
 }
 
 // ── Key handling ──────────────────────────────────────────────────────────
@@ -908,10 +991,15 @@ fn viewKeyDown(_: ID, _: SEL, event_obj: ID) callconv(.c) void {
 
     // ── Overlay dispatch ─────────────────────────────────────────────
     if (state.overlay != .none) {
-        // Esc always closes overlay or cancels input
+        // Esc dismisses sub-modes from innermost outward:
+        //   approval → tools browse → input mode → overlay
         if (kc == kVK_Escape) {
             state.mutex.lock();
-            if (state.agent_input_active) {
+            if (state.approval.active) {
+                state.approval.active = false;
+            } else if (state.tools_browse_active) {
+                state.tools_browse_active = false;
+            } else if (state.agent_input_active) {
                 state.agent_input_active = false;
                 state.agent_input_len = 0;
             } else {
@@ -927,10 +1015,64 @@ fn viewKeyDown(_: ID, _: SEL, event_obj: ID) callconv(.c) void {
         state.mutex.unlock();
         switch (current_overlay) {
             .agent => {
-                // AgentD overlay key dispatch
+                // Approval gate: Y/N bindings are live whenever a host-action
+                // is pending. They take priority over all other agent keys.
+                if (state.approval.active) {
+                    const ns_chars = msg0(event_obj, sel("characters"));
+                    const ch_byte: u8 = if (ns_chars != null) blk: {
+                        if (msgCStr(ns_chars, sel("UTF8String"))) |ptr| {
+                            const bytes = std.mem.sliceTo(ptr, 0);
+                            break :blk if (bytes.len > 0) bytes[0] else 0;
+                        }
+                        break :blk 0;
+                    } else 0;
+
+                    if (ch_byte == 'y' or ch_byte == 'Y') {
+                        acceptApproval(state);
+                        return;
+                    }
+                    if (ch_byte == 'n' or ch_byte == 'N') {
+                        state.mutex.lock();
+                        state.approval.active = false;
+                        state.mutex.unlock();
+                        state.dirty.store(true, .monotonic);
+                        return;
+                    }
+                    // Any other key while approval is pending: ignore
+                    return;
+                }
+
+                // Tools browse mode: Up/Down navigation.
+                if (state.tools_browse_active) {
+                    switch (kc) {
+                        kVK_Up => {
+                            state.mutex.lock();
+                            if (state.tools_count > 0 and state.tools_selected > 0)
+                                state.tools_selected -= 1;
+                            state.mutex.unlock();
+                            state.dirty.store(true, .monotonic);
+                            return;
+                        },
+                        kVK_Down => {
+                            state.mutex.lock();
+                            if (state.tools_count > 0 and
+                                state.tools_selected + 1 < state.tools_count)
+                                state.tools_selected += 1;
+                            state.mutex.unlock();
+                            state.dirty.store(true, .monotonic);
+                            return;
+                        },
+                        else => {},
+                    }
+                }
+
+                // Normal agent overlay key dispatch.
                 if (!state.agent_input_active) {
                     switch (kc) {
                         kVK_H => {
+                            state.mutex.lock();
+                            state.tools_browse_active = false;
+                            state.mutex.unlock();
                             requestHealth(state);
                             return;
                         },
@@ -940,6 +1082,7 @@ fn viewKeyDown(_: ID, _: SEL, event_obj: ID) callconv(.c) void {
                         },
                         kVK_I => {
                             state.mutex.lock();
+                            state.tools_browse_active = false;
                             state.agent_input_active = true;
                             state.agent_input_len = 0;
                             state.mutex.unlock();
@@ -949,7 +1092,6 @@ fn viewKeyDown(_: ID, _: SEL, event_obj: ID) callconv(.c) void {
                         else => {},
                     }
                 } else {
-                    // AgentD universal input mode — capture all typed chars
                     handleAgentInputKey(state, kc, event_obj);
                     return;
                 }
@@ -1114,6 +1256,42 @@ fn viewKeyDown(_: ID, _: SEL, event_obj: ID) callconv(.c) void {
         const bytes = std.mem.sliceTo(ptr, 0);
         if (bytes.len > 0) posix_pty.writeAll(state.session.master_fd, bytes) catch {};
     }
+}
+
+// ── AgentD approval ───────────────────────────────────────────────────────
+
+// acceptApproval executes the pending host action after the user confirms
+// with Y. For terminal.write this is the ONLY path that writes to the PTY.
+// Must be called on the main thread (holds the PTY write fd, not the mutex).
+fn acceptApproval(state: *AppState) void {
+    state.mutex.lock();
+    if (!state.approval.active) {
+        state.mutex.unlock();
+        return;
+    }
+    const action = state.approval.actionSlice();
+    const is_terminal_write = std.mem.eql(u8, action, "terminal.write");
+    const is_zig_build = std.mem.eql(u8, action, "zig.build");
+    // Copy the text out before releasing the lock so the PTY write is lock-free.
+    var text_buf: [16384]u8 = undefined;
+    const text_len = state.approval.pending_text_len;
+    @memcpy(text_buf[0..text_len], state.approval.pending_text[0..text_len]);
+    state.approval.active = false;
+    state.mutex.unlock();
+
+    if (is_terminal_write) {
+        // Write approved text directly to the active PTY.
+        posix_pty.writeAll(state.session.master_fd, text_buf[0..text_len]) catch {};
+    } else if (is_zig_build) {
+        // For zig.build the approved command string is logged; actual build
+        // execution is out of scope for the panel (user must run it in the shell).
+        var log_buf: [128]u8 = undefined;
+        const log_msg = std.fmt.bufPrint(&log_buf, "[approved] zig build {s}\n", .{text_buf[0..text_len]}) catch return;
+        state.mutex.lock();
+        appendTranscript(state, log_msg);
+        state.mutex.unlock();
+    }
+    state.dirty.store(true, .monotonic);
 }
 
 // ── AgentD input handling ─────────────────────────────────────────────────
@@ -1834,15 +2012,40 @@ fn spawnAgentd(state: *AppState, envp: [*:null]const ?[*:0]const u8) void {
 }
 
 fn agentReaderLoop(state: *AppState) void {
+    // Line buffer for assembling complete JSON lines across read() calls.
+    // agentd emits one response per line; partial reads are held here until
+    // a newline arrives before being passed to processAgentResponse.
+    var line_buf: [8192]u8 = undefined;
+    var line_len: usize = 0;
     var buf: [4096]u8 = undefined;
+
     while (state.agentd_running.load(.monotonic)) {
         const fd: std.c.fd_t = @intCast(state.agentd_read_fd);
         const n_signed = std.c.read(fd, &buf, buf.len);
         if (n_signed <= 0) break;
         const n: usize = @intCast(n_signed);
+
+        // Append raw bytes to transcript and process complete lines.
         state.mutex.lock();
         appendTranscript(state, buf[0..n]);
         state.mutex.unlock();
+
+        // Feed bytes into line_buf; dispatch complete lines.
+        for (buf[0..n]) |byte| {
+            if (byte == '\n') {
+                if (line_len > 0) {
+                    state.mutex.lock();
+                    processAgentResponse(state, line_buf[0..line_len]);
+                    state.mutex.unlock();
+                }
+                line_len = 0;
+            } else {
+                if (line_len < line_buf.len - 1) {
+                    line_buf[line_len] = byte;
+                    line_len += 1;
+                }
+            }
+        }
         state.dirty.store(true, .monotonic);
     }
     state.agentd_running.store(false, .monotonic);
@@ -1874,41 +2077,156 @@ fn writeAgentLine(state: *AppState, line: []const u8) void {
     _ = std.c.write(fd, "\n", 1);
 }
 
+// Send flat-protocol requests to agentd. The wire format is NOT jsonrpc 2.0 --
+// agentd's parseRequestAlloc expects {"id":N,"method":"..."} without a
+// jsonrpc wrapper or params field.
 fn requestHealth(state: *AppState) void {
     if (!state.agentd_running.load(.monotonic)) return;
-    var buf: [128]u8 = undefined;
+    var buf: [64]u8 = undefined;
     const id = state.agent_next_id;
     state.agent_next_id +%= 1;
-    const line = std.fmt.bufPrint(&buf, "{{\"jsonrpc\":\"2.0\",\"id\":{d},\"method\":\"agent/health\",\"params\":{{}}}}", .{id}) catch return;
+    const line = std.fmt.bufPrint(&buf, "{{\"id\":{d},\"method\":\"agent/health\"}}", .{id}) catch return;
     writeAgentLine(state, line);
 }
 
 fn requestTools(state: *AppState) void {
     if (!state.agentd_running.load(.monotonic)) return;
-    var buf: [128]u8 = undefined;
+    var buf: [64]u8 = undefined;
     const id = state.agent_next_id;
     state.agent_next_id +%= 1;
-    const line = std.fmt.bufPrint(&buf, "{{\"jsonrpc\":\"2.0\",\"id\":{d},\"method\":\"tools/list\",\"params\":{{}}}}", .{id}) catch return;
+    const line = std.fmt.bufPrint(&buf, "{{\"id\":{d},\"method\":\"tools/list\"}}", .{id}) catch return;
     writeAgentLine(state, line);
 }
 
+// requestAgentRun sends an agent/run request. It does NOT write to the PTY --
+// any terminal.write response from agentd is routed through processAgentResponse,
+// which raises an approval gate before anything reaches the active shell.
 fn requestAgentRun(state: *AppState, prompt: []const u8) void {
     if (!state.agentd_running.load(.monotonic)) return;
     var esc_buf: [512]u8 = undefined;
     const escaped = escapeJsonPrompt(prompt, &esc_buf);
 
-    var buf: [1024]u8 = undefined;
+    var buf: [640]u8 = undefined;
     const id = state.agent_next_id;
     state.agent_next_id +%= 1;
-    const line = std.fmt.bufPrint(&buf, "{{\"jsonrpc\":\"2.0\",\"id\":{d},\"method\":\"agent/run\",\"params\":{{\"prompt\":\"{s}\"}}}}", .{ id, escaped }) catch return;
+    const line = std.fmt.bufPrint(
+        &buf,
+        "{{\"id\":{d},\"method\":\"agent/run\",\"prompt\":\"{s}\"}}",
+        .{ id, escaped },
+    ) catch return;
     writeAgentLine(state, line);
 
-    // Log a user-facing transcript message
     var log_buf: [320]u8 = undefined;
-    const log_msg = std.fmt.bufPrint(&log_buf, "> agent/run: {s}\n", .{prompt}) catch return;
+    const log_msg = std.fmt.bufPrint(&log_buf, "> {s}\n", .{prompt}) catch return;
+    state.mutex.lock();
     appendTranscript(state, log_msg);
+    state.mutex.unlock();
 }
 
+// processAgentResponse inspects one JSON line from agentd and updates overlay
+// state. This function NEVER writes to the PTY -- terminal.write responses
+// only raise an approval request; the PTY write happens only when the user
+// explicitly confirms with Y in the overlay.
+fn processAgentResponse(state: *AppState, line: []const u8) void {
+    // Error envelopes: {"id":...,"ok":false,"error":{"code":"...","message":"..."}}
+    if (jsonContains(line, "\"ok\":false")) {
+        const code = jsonStringField(line, "code") orelse "error";
+        const msg = jsonStringField(line, "message") orelse "agentd returned an error";
+        state.last_error_code_len = @min(code.len, state.last_error_code.len);
+        @memcpy(state.last_error_code[0..state.last_error_code_len], code[0..state.last_error_code_len]);
+        state.last_error_msg_len = @min(msg.len, state.last_error_msg.len);
+        @memcpy(state.last_error_msg[0..state.last_error_msg_len], msg[0..state.last_error_msg_len]);
+        return;
+    }
+
+    // terminal.write host-action -- requires explicit approval before PTY write.
+    // Shape from agentd: {"host_action":"terminal.write","text":"...","preview":"...",...}
+    if (jsonContains(line, "\"host_action\":\"terminal.write\"")) {
+        const text = jsonStringField(line, "text") orelse "";
+        const preview = jsonStringField(line, "preview") orelse text;
+        state.approval.setAction("terminal.write");
+        state.approval.setPreview(preview);
+        state.approval.setPendingText(text);
+        state.approval.active = true;
+        state.last_error_code_len = 0;
+        state.last_error_msg_len = 0;
+        return;
+    }
+
+    // zig.build host-action -- also requires explicit approval.
+    if (jsonContains(line, "\"host_action\":\"zig.build\"")) {
+        const cmd = jsonStringField(line, "command") orelse "build";
+        state.approval.setAction("zig.build");
+        state.approval.setPreview(cmd);
+        state.approval.setPendingText(cmd);
+        state.approval.active = true;
+        state.last_error_code_len = 0;
+        state.last_error_msg_len = 0;
+        return;
+    }
+
+    // tools/list response -- parse and populate the tools browse list.
+    if (jsonContains(line, "\"tools\":[")) {
+        parseToolsResponse(state, line);
+    }
+}
+
+// parseToolsResponse walks a tools/list response extracting name, description,
+// and requires_approval for up to MAX_TOOLS_DISPLAY entries.
+fn parseToolsResponse(state: *AppState, line: []const u8) void {
+    state.tools_count = 0;
+    state.tools_selected = 0;
+    state.tools_browse_active = true;
+
+    var pos: usize = 0;
+    while (state.tools_count < MAX_TOOLS_DISPLAY) {
+        const obj_start = std.mem.indexOfPos(u8, line, pos, "{\"name\"") orelse break;
+        const obj_end = std.mem.indexOfScalarPos(u8, line, obj_start + 1, '}') orelse break;
+        const obj = line[obj_start .. obj_end + 1];
+
+        var entry = ToolEntry{};
+        if (jsonStringField(obj, "name")) |n| {
+            entry.name_len = @min(n.len, MAX_TOOL_NAME_LEN);
+            @memcpy(entry.name[0..entry.name_len], n[0..entry.name_len]);
+        } else {
+            pos = obj_end + 1;
+            continue;
+        }
+        if (jsonStringField(obj, "description")) |d| {
+            entry.desc_len = @min(d.len, MAX_TOOL_DESC_LEN);
+            @memcpy(entry.desc[0..entry.desc_len], d[0..entry.desc_len]);
+        }
+        entry.needs_approval = jsonContains(obj, "\"requires_approval\":true");
+
+        state.tools[state.tools_count] = entry;
+        state.tools_count += 1;
+        pos = obj_end + 1;
+    }
+}
+
+// jsonStringField extracts the value of a JSON string field by key from a
+// JSON fragment, returning a slice into `line` without allocation.
+// Handles simple unescaped ASCII values -- sufficient for tool names,
+// descriptions, error codes, and short preview strings.
+fn jsonStringField(line: []const u8, key: []const u8) ?[]const u8 {
+    var search_buf: [68]u8 = undefined;
+    if (key.len + 4 > search_buf.len) return null;
+    search_buf[0] = '"';
+    @memcpy(search_buf[1 .. 1 + key.len], key);
+    search_buf[1 + key.len] = '"';
+    search_buf[2 + key.len] = ':';
+    search_buf[3 + key.len] = '"';
+    const needle = search_buf[0 .. 4 + key.len];
+    const start = std.mem.indexOf(u8, line, needle) orelse return null;
+    const value_start = start + needle.len;
+    var end = value_start;
+    while (end < line.len and line[end] != '"') : (end += 1) {}
+    return line[value_start..end];
+}
+
+fn jsonContains(line: []const u8, needle: []const u8) bool {
+    return std.mem.indexOf(u8, line, needle) != null;
+}
 /// Escape special JSON characters in-place into a stack buffer.
 /// Returns the escaped string (valid inside JSON double-quotes).
 fn escapeJsonPrompt(prompt: []const u8, dest: []u8) []const u8 {
