@@ -1324,12 +1324,23 @@ const Shell = struct {
     fn expandAbbreviationInEditor(self: *Shell, line: *std.ArrayList(u8), cursor: *usize) !void {
         if (cursor.* != line.items.len) return;
         if (line.items.len == 0 or line.items[line.items.len - 1] != ' ') return;
-        const command = std.mem.trim(u8, line.items, " \t");
-        if (std.mem.indexOfAny(u8, command, " \t|&<>") != null) return;
-        const abbr = self.findAbbreviation(command) orelse return;
-        line.clearRetainingCapacity();
-        try line.appendSlice(self.allocator, abbr.value);
-        try line.append(self.allocator, ' ');
+
+        // Expand the command word — the first token — when it is an
+        // abbreviation, leaving any arguments already typed in place. This
+        // matches the submit-time behaviour in `expandAbbreviationLine`: typing
+        // `gco main ` expands to `git checkout main ` inline, not only on Enter.
+        const start = firstNonWhitespace(line.items);
+        if (start >= line.items.len) return;
+        const end = simpleCommandWordEnd(line.items, start);
+        if (end <= start) return;
+        const name = line.items[start..end];
+        const abbr = self.findAbbreviation(name) orelse return;
+        if (std.mem.eql(u8, abbr.value, name)) return;
+
+        // Splice the expansion in place of the command word; the leading
+        // whitespace and the trailing remainder (args + the space just typed)
+        // are preserved.
+        try line.replaceRange(self.allocator, start, end - start, abbr.value);
         cursor.* = line.items.len;
     }
 
@@ -7133,6 +7144,49 @@ test "autosuggestion picks most recent prefix match and skips whitespace ghosts"
     // But a real continuation after "ls" still suggests.
     try shell.history.append(allocator, try allocator.dupe(u8, "ls -la"));
     try std.testing.expectEqualStrings("ls -la", shell.findHistorySuggestion("ls").?);
+}
+
+test "editor abbreviation expansion expands the command word, args preserved" {
+    const allocator = std.testing.allocator;
+    var env = std.process.Environ.Map.init(allocator);
+    defer env.deinit();
+
+    var shell = Shell.init(allocator, undefined, &env);
+    defer shell.deinit();
+    try shell.putAbbreviation("gco", "git checkout");
+
+    // Bare command word + the space that triggers expansion.
+    {
+        var line: std.ArrayList(u8) = .empty;
+        defer line.deinit(allocator);
+        try line.appendSlice(allocator, "gco ");
+        var cursor: usize = line.items.len;
+        try shell.expandAbbreviationInEditor(&line, &cursor);
+        try std.testing.expectEqualStrings("git checkout ", line.items);
+        try std.testing.expectEqual(line.items.len, cursor);
+    }
+
+    // Command word with arguments already typed — expands in place, keeping
+    // the args. This matches submit-time expansion; previously the editor
+    // refused to expand once a space was present.
+    {
+        var line: std.ArrayList(u8) = .empty;
+        defer line.deinit(allocator);
+        try line.appendSlice(allocator, "gco main ");
+        var cursor: usize = line.items.len;
+        try shell.expandAbbreviationInEditor(&line, &cursor);
+        try std.testing.expectEqualStrings("git checkout main ", line.items);
+    }
+
+    // A non-abbreviation first word is left untouched.
+    {
+        var line: std.ArrayList(u8) = .empty;
+        defer line.deinit(allocator);
+        try line.appendSlice(allocator, "ls -la ");
+        var cursor: usize = line.items.len;
+        try shell.expandAbbreviationInEditor(&line, &cursor);
+        try std.testing.expectEqualStrings("ls -la ", line.items);
+    }
 }
 
 test "backslash-newline line continuation outside quotes" {
