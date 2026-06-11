@@ -168,6 +168,9 @@ fn msgRect(recv: ID, s: SEL, r: CGRect) ID {
 fn msgCGRect(recv: ID, s: SEL) CGRect {
     return (@as(*const fn (ID, SEL) callconv(.c) CGRect, @ptrCast(&objc.objc_msgSend)))(recv, s);
 }
+fn msgSize(recv: ID, s: SEL, size: CGSize) void {
+    (@as(*const fn (ID, SEL, CGSize) callconv(.c) void, @ptrCast(&objc.objc_msgSend)))(recv, s, size);
+}
 fn msgInitWindow(recv: ID, s: SEL, r: CGRect, style: c_ulong, backing: c_ulong, defer_: u8) ID {
     return (@as(*const fn (ID, SEL, CGRect, c_ulong, c_ulong, u8) callconv(.c) ID, @ptrCast(&objc.objc_msgSend)))(recv, s, r, style, backing, defer_);
 }
@@ -262,6 +265,64 @@ const MAX_QUICK_ITEMS = 32;
 const TRANSCRIPT_CAP: usize = 8192;
 const MAX_PALETTE_QUERY: usize = 128;
 const MAX_SEARCH_QUERY: usize = 128;
+const MAX_TOOLS_DISPLAY: usize = 16;
+const MAX_TOOL_NAME_LEN: usize = 48;
+const MAX_TOOL_DESC_LEN: usize = 96;
+const APPROVAL_TEXT_CAP: usize = 256;
+
+// An approval request pending explicit user confirmation ([Y]es / [N]o).
+// Only terminal.write and zig.build require this gate — read-only tools pass
+// through automatically. Nothing is written to the PTY until approved.
+const AgentApproval = struct {
+    action: [64]u8 = undefined,
+    action_len: usize = 0,
+    // Short preview shown to the user before they decide
+    preview: [APPROVAL_TEXT_CAP]u8 = undefined,
+    preview_len: usize = 0,
+    // Full text to write once approved (capped at agentd's 16 KiB limit)
+    pending_text: [16384]u8 = undefined,
+    pending_text_len: usize = 0,
+    active: bool = false,
+
+    fn setAction(self: *AgentApproval, text: []const u8) void {
+        self.action_len = @min(text.len, self.action.len);
+        @memcpy(self.action[0..self.action_len], text[0..self.action_len]);
+    }
+    fn setPreview(self: *AgentApproval, text: []const u8) void {
+        self.preview_len = @min(text.len, self.preview.len);
+        @memcpy(self.preview[0..self.preview_len], text[0..self.preview_len]);
+    }
+    fn setPendingText(self: *AgentApproval, text: []const u8) void {
+        self.pending_text_len = @min(text.len, self.pending_text.len);
+        @memcpy(self.pending_text[0..self.pending_text_len], text[0..self.pending_text_len]);
+    }
+    fn actionSlice(self: *const AgentApproval) []const u8 {
+        return self.action[0..self.action_len];
+    }
+    fn previewSlice(self: *const AgentApproval) []const u8 {
+        return self.preview[0..self.preview_len];
+    }
+    fn pendingTextSlice(self: *const AgentApproval) []const u8 {
+        return self.pending_text[0..self.pending_text_len];
+    }
+};
+
+// A single parsed tool entry from a tools/list response.
+const ToolEntry = struct {
+    name: [MAX_TOOL_NAME_LEN]u8 = undefined,
+    name_len: usize = 0,
+    desc: [MAX_TOOL_DESC_LEN]u8 = undefined,
+    desc_len: usize = 0,
+    // true when this tool requires explicit approval before the host acts
+    needs_approval: bool = false,
+
+    fn nameSlice(self: *const ToolEntry) []const u8 {
+        return self.name[0..self.name_len];
+    }
+    fn descSlice(self: *const ToolEntry) []const u8 {
+        return self.desc[0..self.desc_len];
+    }
+};
 
 const AppState = struct {
     allocator: Allocator,
@@ -270,6 +331,9 @@ const AppState = struct {
     mutex: SpinLock = .{},
     dirty: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     running: std.atomic.Value(bool) = std.atomic.Value(bool).init(true),
+    // Headless smoke mode (ZIGGYZAG_SMOKE=1): render a few frames, then exit 0.
+    smoke_mode: bool = false,
+    smoke_ticks: u32 = 0,
     view_obj: ID = null,
     font: ?CTFontRef = null,
     cell_w: f64 = 8,
@@ -308,6 +372,18 @@ const AppState = struct {
     agent_input: [256]u8 = undefined,
     agent_input_len: usize = 0,
     agent_input_active: bool = false,
+    // terminal.write / zig.build approval gate
+    approval: AgentApproval = .{},
+    // Parsed tool list from most recent tools/list response
+    tools: [MAX_TOOLS_DISPLAY]ToolEntry = undefined,
+    tools_count: usize = 0,
+    tools_selected: usize = 0,
+    tools_browse_active: bool = false,
+    // Last error surfaced from agentd (code + human message)
+    last_error_code: [64]u8 = undefined,
+    last_error_code_len: usize = 0,
+    last_error_msg: [128]u8 = undefined,
+    last_error_msg_len: usize = 0,
 };
 
 var g_state: ?*AppState = null;
@@ -1610,6 +1686,27 @@ fn delegateRefreshTick(self_obj: ID, _: SEL, _: ID) callconv(.c) void {
         msg1v(app, sel("terminate:"), self_obj);
         return;
     }
+    if (state.smoke_mode) {
+        state.smoke_ticks += 1;
+        // Exercise a resize mid-run, then exit cleanly so CI can verify the
+        // window opens, renders, and tears down without a human watching.
+        if (state.smoke_ticks == 10) {
+            if (state.view_obj) |v| msg1bv(v, sel("setNeedsDisplay:"), 1);
+            const win = msg0(state.view_obj, sel("window"));
+            if (win != null) {
+                msgSize(win, sel("setContentSize:"), .{
+                    .width = state.win_w + 40,
+                    .height = state.win_h + 24,
+                });
+            }
+        }
+        if (state.smoke_ticks >= 30) {
+            state.running.store(false, .monotonic);
+            const app = msg0(cls("NSApplication"), sel("sharedApplication"));
+            msg1v(app, sel("terminate:"), self_obj);
+            return;
+        }
+    }
     if (state.dirty.swap(false, .monotonic)) {
         if (state.view_obj) |v| msg1bv(v, sel("setNeedsDisplay:"), 1);
     }
@@ -1889,6 +1986,7 @@ pub fn run(init_data: std.process.Init, shell_path: []const u8) !void {
         .allocator = allocator,
         .grid = grid,
         .session = session,
+        .smoke_mode = init_data.environ_map.get("ZIGGYZAG_SMOKE") != null,
     };
     g_state = state;
 
