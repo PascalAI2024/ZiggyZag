@@ -12,7 +12,7 @@ Companion documents: [`alpha-tasks.md`](alpha-tasks.md) is the line-by-line task
 | --- | --- | --- | --- | --- |
 | 1 | Dogfood | Pascal only | Pascal uses ZiggyZag every day | Complete |
 | 2 | Unified theme | Pascal + reviewer | One theme drives shell + desktop · brand · landing · ops | **Complete — tagged `v0.1.0-alpha.3`** |
-| 3 | Cross-platform | 3 friend testers | Native macOS & Linux desktop · AgentD universal input | Planned |
+| 3 | Cross-platform | 3 friend testers | Native macOS & Linux desktop · AgentD universal input | **Active — macOS window shipped** |
 | 4 | Durable state | 6 friend testers | SQLite history · streaming pipelines | Planned |
 | 5 | Tabs & session | Public alpha | Tabs · session restore · keybindings · theme/prompt sync | Planned |
 | 6 | 1.0 | Public | Signed releases · 5 testers × 2 weeks · cross-platform parity | Planned |
@@ -64,17 +64,22 @@ Companion documents: [`alpha-tasks.md`](alpha-tasks.md) is the line-by-line task
 
 **Tag at exit.** `v0.1.0-alpha.3`. Pre-tag readiness: [`../guides/alpha-3-readiness.md`](../guides/alpha-3-readiness.md). Pre-written release notes: [`../releases/v0.1.0-alpha.3.md`](../releases/v0.1.0-alpha.3.md).
 
-## Wave 3 — Cross-platform (planned)
+## Wave 3 — Cross-platform (active — macOS window shipped 2026-06-10)
 
-**Entry gate.** Wave 2 complete and stable for 7 days.
+**Entry gate.** ✓ Wave 2 complete and tagged `v0.1.0-alpha.3`.
 
 **Exit gate.**
-- Native macOS desktop host launches a window, hosts a PTY, renders the grid. Same for Linux.
+- ✓ Native macOS desktop host launches a window, hosts a PTY, renders the grid. Cocoa NSWindow + NSView + CoreText/CoreGraphics with full overlay system (command palette, scrollback search, quick select, settings, theme cycle). AgentD universal input (`Ctrl+Space` — type natural language, preview command, insert into prompt). Same for Linux.
 - The `Pty` abstraction in `apps/desktop/src/pty.zig` is no longer a stub; both Windows and POSIX hosts go through it.
-- AgentD universal input: `Ctrl+Space` opens an inline overlay above the prompt, inserts (not executes) the previewed command.
+- ✓ AgentD universal input: `Ctrl+Space` opens an inline overlay above the prompt, inserts (not executes) the previewed command.
+- ✓ Copy visible text (`Cmd+Shift+C` on macOS) to system clipboard via NSPasteboard.
+- ✓ Live theme cycling (`Ctrl+Shift+T`) broadcasts OSC 7777 to the shell PTY.
+- ✓ `docs/SHELL_INTEGRATION.md` documents the OSC 777 / WezTerm-compatible event protocol.
+- ✓ The "no provider configured" inline state is shipped (per `MASTERPLAN.md` risk mitigation).
 - 3 friend testers have run ZiggyZag for at least 3 sessions each on their primary platform (one Windows, one macOS, one Linux).
-- `docs/SHELL_INTEGRATION.md` documents the OSC 777 / WezTerm-compatible event protocol.
-- The "no provider configured" inline state is shipped (per `MASTERPLAN.md` risk mitigation).
+
+**Done this wave:** macOS native Cocoa window with full feature parity to Windows host.
+**Remaining:** Linux native window, friend tester cohort 1 onboarding, cross-platform PTY abstraction unification.
 
 **Audience.** 3 friend testers + Pascal.
 

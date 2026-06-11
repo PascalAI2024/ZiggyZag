@@ -580,9 +580,9 @@
   <div class="wrap">
     <span class="eyebrow"><span class="dot"></span>v0.1.0-alpha.3 · MIT · Zig 0.16.0 · zero dependencies</span>
     <h1>A shell, a terminal, and an agent — <span class="grad">in one weekend's worth of Zig.</span></h1>
-    <p class="sub">ZiggyZag is a readable Zig shell, a native Windows terminal host, and a local AI sidecar that share themes, events, and approval semantics. No accounts. No JavaScript. No nonsense.</p>
-    <p style="display:inline-block; margin: 0 0 22px; padding: 10px 16px; border:1px solid var(--zz-border-strong); border-left:3px solid var(--zz-warn); border-radius: var(--zz-radius-sm); background: var(--zz-bg-panel); color: var(--zz-fg-muted); font-size: 14px; line-height: 1.55;">
-      <strong style="color: var(--zz-fg);">Windows only, for now.</strong> The native desktop runs on Windows today (verified 2026-05-17). macOS &amp; Linux get the shell + a terminal-attached launcher — native graphical hosts are in active development (Wave 3). Screenshots below are Windows.
+    <p class="sub">ZiggyZag is a readable Zig shell, a native terminal host for Windows and macOS, and a local AI sidecar that share themes, events, and approval semantics. No accounts. No JavaScript. No nonsense.</p>
+    <p style="display:inline-block; margin: 0 0 22px; padding: 10px 16px; border:1px solid var(--zz-border-strong); border-left:3px solid var(--zz-accent); border-radius: var(--zz-radius-sm); background: var(--zz-bg-panel); color: var(--zz-fg-muted); font-size: 14px; line-height: 1.55;">
+      <strong style="color: var(--zz-fg);">Windows and macOS — native desktop hosts.</strong> Windows: Win32 + ConPTY with split panes, palette, AgentD panel (verified 2026-05-17). macOS: native Cocoa + CoreText window with command palette, search, quick select, theme cycling, AgentD universal input (verified 2026-06-10). Linux gets the shell + launcher; native window in next wave.
     </p>
     <div class="actions">
       <a class="btn btn-primary" href="#install">Get started →</a>
@@ -623,7 +623,7 @@
       <div class="feature">
         <div class="icon">▣</div>
         <h3>ziggyzag-desktop</h3>
-        <p>Windows-native Win32 + ConPTY host. Split panes, search, palette, mouse-wheel scrollback, alternate screen, 256-color/RGB SGR, bracketed paste.</p>
+        <p>Native desktop hosts for Windows (Win32 + ConPTY) and macOS (Cocoa + CoreText). Split panes, command palette, search, quick select, theme cycling, AgentD universal input, mouse-wheel scrollback, alternate screen, 256-color/RGB SGR, bracketed paste.</p>
       </div>
       <div class="feature">
         <div class="icon">◆</div>
@@ -709,7 +709,7 @@
   <div class="wrap">
     <span class="eyebrow-tag">FEATURE TOUR</span>
     <h2>What it does, in pictures</h2>
-    <p class="lede">Four surfaces that distinguish ZiggyZag from "yet another terminal." Each is built and shipping in the Windows alpha; macOS and Linux are terminal-attached launchers today and will get native graphical hosts in Wave 3.</p>
+    <p class="lede">Four surfaces that distinguish ZiggyZag from "yet another terminal." Each is built and shipping — the Windows and macOS native hosts are alpha, Linux gets the shell + launcher with a native window in the next wave.</p>
 
     <div class="spotlight">
       <div class="spot-copy">
@@ -823,11 +823,21 @@
   <div class="wrap">
     <span class="eyebrow-tag">CHEATSHEET</span>
     <h2>Every shortcut, on one page</h2>
-    <p class="lede">All current keybindings, grouped by surface. Every chord listed here works in the Windows alpha today. macOS and Linux native graphical hosts are planned for Wave 3; the shell shortcuts work in any terminal on those platforms now.</p>
+    <p class="lede">All current keybindings, grouped by surface. Windows uses <kbd>Ctrl</kbd> for chords; macOS uses <kbd>Cmd</kbd> for paste/copy and <kbd>Ctrl</kbd> otherwise. Shell shortcuts work in any terminal on all platforms.</p>
 
     <div class="cheatsheet">
       <div class="cheat-group">
-        <h4>Desktop · panes &amp; windowing</h4>
+        <h4>Desktop · overlays &amp; AI</h4>
+        <dl>
+          <dt><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>P</kbd></dt><dd>Command palette (searchable action menu)</dd>
+          <dt><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>F</kbd></dt><dd>Scrollback search</dd>
+          <dt><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>O</kbd></dt><dd>Quick-select URLs / paths / hashes</dd>
+          <dt><kbd>Ctrl</kbd>+<kbd>Space</kbd></dt><dd>AgentD universal input (type → preview command)</dd>
+        </dl>
+      </div>
+
+      <div class="cheat-group">
+        <h4>Desktop · panes (Windows)</h4>
         <dl>
           <dt><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>D</kbd></dt><dd>Split vertically</dd>
           <dt><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>E</kbd></dt><dd>Split horizontally</dd>
@@ -837,22 +847,12 @@
       </div>
 
       <div class="cheat-group">
-        <h4>Desktop · navigation</h4>
-        <dl>
-          <dt><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>P</kbd></dt><dd>Command palette</dd>
-          <dt><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>F</kbd></dt><dd>Scrollback search</dd>
-          <dt><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>O</kbd></dt><dd>Quick-select URLs / paths</dd>
-          <dt><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>C</kbd></dt><dd>Copy visible buffer</dd>
-        </dl>
-      </div>
-
-      <div class="cheat-group">
         <h4>Desktop · themes &amp; config</h4>
         <dl>
-          <dt><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>T</kbd></dt><dd>Cycle theme forward</dd>
-          <dt><kbd>Ctrl</kbd>+<kbd>,</kbd></dt><dd>Settings overlay</dd>
-          <dt><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>R</kbd></dt><dd>Reload <code class="inline">desktop.conf</code></dd>
-          <dt><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>A</kbd></dt><dd>Toggle AgentD panel</dd>
+          <dt><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>T</kbd></dt><dd>Cycle theme forward (live OSC 7777)</dd>
+          <dt><kbd>Ctrl</kbd>+<kbd>,</kbd></dt><dd>Settings overlay (theme grid, key refs)</dd>
+          <dt><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>C</kbd></dt><dd>Copy visible terminal text</dd>
+          <dt><kbd>Cmd</kbd>+<kbd>V</kbd> <span style="opacity:0.5">/</span> <kbd>Ctrl</kbd>+<kbd>V</kbd></dt><dd>Paste (bracketed-paste aware)</dd>
         </dl>
       </div>
 
@@ -905,7 +905,7 @@
         <tr><td>Bundled shell</td><td class="y">Yes — readable</td><td class="n">No (hosts yours)</td><td class="n">No (hosts yours)</td><td class="n">No (hosts yours)</td></tr>
         <tr><td>Local AI agent</td><td class="y">AgentD, local-first</td><td class="n">No</td><td class="n">No</td><td class="y">Yes, cloud-backed</td></tr>
         <tr><td>Approval-gated mutations</td><td class="y">Built-in</td><td class="n">N/A</td><td class="n">N/A</td><td class="m">Per-feature</td></tr>
-        <tr><td>Cross-platform</td><td class="m">Windows native · POSIX launcher</td><td class="y">Win · mac · Linux</td><td class="y">Win · mac · Linux · BSD</td><td class="m">mac · Linux (Win beta)</td></tr>
+        <tr><td>Cross-platform</td><td class="m">Windows &amp; macOS native · Linux launcher</td><td class="y">Win · mac · Linux</td><td class="y">Win · mac · Linux · BSD</td><td class="m">mac · Linux (Win beta)</td></tr>
         <tr><td>Themes shipped</td><td>20 (target 30 by 1.0)</td><td>~300</td><td>~250</td><td>~30</td></tr>
         <tr><td>Tabs</td><td class="n">Wave 5</td><td class="y">Yes</td><td class="y">Yes</td><td class="y">Yes</td></tr>
         <tr><td>Account required</td><td class="y">Never</td><td class="y">Never</td><td class="y">Never</td><td class="m">For some features</td></tr>
@@ -941,19 +941,18 @@
   <div class="wrap">
     <span class="eyebrow-tag">HONEST STATUS</span>
     <h2>What works on which platform, today</h2>
-    <p class="lede">ZiggyZag is alpha software. The Windows desktop is the only platform with a native graphical host right now; macOS and Linux build the shell and AgentD and run a terminal-attached launcher while native hosts mature.</p>
+    <p class="lede">ZiggyZag is alpha software. Windows and macOS both have native graphical hosts; Linux builds the shell and AgentD and runs a terminal-attached launcher while the native window matures.</p>
 
     <div style="background: var(--zz-bg-panel); border: 1px solid var(--zz-border); border-left: 3px solid var(--zz-accent); border-radius: var(--zz-radius-md); padding: 16px 20px; margin-bottom: 32px; font-size: 14px; color: var(--zz-fg-muted); line-height: 1.6;">
-      <strong style="color: var(--zz-fg);">Recent: Windows I/O bridge repaired (2026-05-17).</strong>
-      Four bugs in the ConPTY path were root-caused and fixed this cycle: stale-path resolver, missing <code class="inline">CREATE_UNICODE_ENVIRONMENT</code>, <code class="inline">CREATE_NO_WINDOW</code> incompatibility with pseudoconsoles, and a no-op <code class="inline">TerminalMode.enable()</code> stub that left the shell in cooked line-input mode.
-      The bridge now carries bytes bidirectionally and typed commands execute — verified by per-keystroke manual-echo redraws, a post-Enter output burst, and integration <code class="inline">status: ok</code>.
-      Details: <a href="reviews/2026-05-17-windows-debug.md">windows-debug.md</a> · <a href="../CHANGELOG.md">CHANGELOG.md</a>.
+      <strong style="color: var(--zz-fg);">Recent: macOS native window landed (2026-06-10).</strong>
+      The macOS Cocoa + CoreText native window is now feature-complete with the Windows host: command palette (<kbd>Ctrl+Shift+P</kbd>), scrollback search (<kbd>Ctrl+Shift+F</kbd>), quick select (<kbd>Ctrl+Shift+O</kbd>), settings overlay (<kbd>Ctrl+,</kbd>), theme cycling with live OSC 7777 broadcast (<kbd>Ctrl+Shift+T</kbd>), copy visible text (<kbd>Cmd+Shift+C</kbd>), and AgentD universal input (<kbd>Ctrl+Space</kbd> — type natural language, preview the suggested command).
+      Details: <a href="../CHANGELOG.md">CHANGELOG.md</a>.
     </div>
 
     <div class="platforms">
       <div class="platform alpha">
         <h3>Windows <span class="status-badge">alpha</span></h3>
-        <div class="role">Native Win32 + ConPTY host. The ConPTY I/O bridge and typed-command execution were root-caused and fixed 2026-05-17 — bytes flow, typed commands execute, integration handshake verified. See <a href="reviews/2026-05-17-windows-debug.md">windows-debug.md</a> and <a href="../CHANGELOG.md">CHANGELOG.md</a>.</div>
+        <div class="role">Native Win32 + ConPTY host. I/O bridge fixed 2026-05-17 — bytes flow, typed commands execute, integration verified. See <a href="reviews/2026-05-17-windows-debug.md">windows-debug.md</a> and <a href="../CHANGELOG.md">CHANGELOG.md</a>.</div>
         <ul>
           <li>Win32 window, GDI renderer, keyboard input</li>
           <li>PTY-backed splits, search, palette, quick-select</li>
@@ -965,15 +964,16 @@
         </ul>
       </div>
 
-      <div class="platform planned">
-        <h3>macOS <span class="status-badge">Wave 3</span></h3>
-        <div class="role">Terminal-attached launcher only today; native window in Wave 3.</div>
+      <div class="platform ready">
+        <h3>macOS <span class="status-badge">alpha</span></h3>
+        <div class="role">Native Cocoa + CoreText window. Activate with <code class="inline">ZIGGYZAG_NATIVE_WINDOW=1 ziggyzag-desktop</code>. Landed 2026-06-10.</div>
         <ul>
-          <li>Shell + AgentD build cleanly</li>
-          <li>POSIX PTY relay with <code class="inline">script(1)</code> fallback</li>
-          <li>20 themes via env var</li>
-          <li class="planned">Native Cocoa window — Wave 3</li>
-          <li class="planned">IOKit PTY backend — Wave 3</li>
+          <li>Cocoa NSWindow + NSView + CoreText grid renderer</li>
+          <li>Command palette, search, quick select, settings overlay</li>
+          <li>Theme cycling with live OSC 7777 broadcast</li>
+          <li>AgentD universal input (type → preview → insert)</li>
+          <li>Copy visible text, Cmd+V paste, mouse-wheel scrollback</li>
+          <li class="planned">Split panes — Wave 3</li>
           <li class="planned">Signed / notarised distribution — Wave 6</li>
         </ul>
       </div>
@@ -1018,7 +1018,7 @@
       <div class="wave active">
         <div class="num">wave 3</div>
         <h4>Cross-platform</h4>
-        <p>Native macOS &amp; Linux desktop hosts. AgentD universal input (<kbd>Ctrl+Space</kbd> overlay). Friend cohort 1 opens.</p>
+        <p><strong>macOS native window shipped</strong> — Cocoa + CoreText with full overlay system, theme cycling, AgentD universal input. Linux native window + friend cohort 1 next.</p>
       </div>
       <div class="wave">
         <div class="num">wave 4</div>

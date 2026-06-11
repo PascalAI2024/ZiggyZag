@@ -80,22 +80,22 @@ orientation = "vertical"
 
 ## Keyboard Shortcuts
 
-### Desktop Host (ZiggyZag Desktop)
+### Desktop Host (Windows)
 
 | Shortcut | Action |
 | --- | --- |
 | Ctrl+Shift+P | Open command palette |
-| Ctrl+Shift+A | Open AgentD panel |
 | Ctrl+Shift+F | Open search overlay |
+| Ctrl+Shift+O | Quick select (URLs, paths, hashes) |
 | Ctrl+Shift+D | Split pane right (vertical split) |
 | Ctrl+Shift+E | Split pane down (horizontal split) |
 | Ctrl+Shift+N | Focus next pane |
 | Ctrl+Shift+B | Focus previous pane |
 | Ctrl+Shift+W | Close active pane |
-| Ctrl+Shift+O | Quick select (URLs, paths, hashes) |
 | Ctrl+Shift+R | Reload config |
 | Ctrl+Shift+T | Cycle to next theme |
 | Ctrl+Shift+C | Copy visible text |
+| Ctrl+Shift+A | Toggle AgentD panel |
 | Ctrl+, | Toggle settings overlay |
 | Ctrl+C | Send SIGINT to shell |
 | Ctrl+V | Paste from clipboard |
@@ -109,6 +109,31 @@ orientation = "vertical"
 | Up/Down | Navigate history or palette |
 | Left/Right | Edit cursor |
 | Mouse wheel | Scroll |
+
+### Desktop Host (macOS)
+
+Activate with `ZIGGYZAG_NATIVE_WINDOW=1 ziggyzag-desktop`.
+
+| Shortcut | Action |
+| --- | --- |
+| Ctrl+Shift+P | Open command palette (searchable action menu) |
+| Ctrl+Shift+F | Scrollback search |
+| Ctrl+Shift+O | Quick select (URLs, paths, hashes) |
+| Ctrl+Shift+T | Cycle theme forward (live OSC 7777 broadcast) |
+| Ctrl+, | Toggle settings overlay (theme grid, info) |
+| Ctrl+Space | AgentD universal input (type → preview → insert) |
+| Cmd+Shift+C | Copy visible terminal text |
+| Cmd+V | Paste (bracketed-paste aware) |
+| Ctrl+C | Send SIGINT to shell |
+| Enter | Submit line / run palette action / send AgentD prompt |
+| Escape | Close overlay / cancel |
+| Up/Down | Navigate history or palette items |
+| Left/Right | Edit cursor / navigate search/quick-select items |
+| Mouse wheel | Scroll |
+
+### Desktop Host (Linux)
+
+Linux builds the shell and AgentD and runs a terminal-attached launcher (`ziggyzag`). No native graphical window yet — planned for a later wave. Shell shortcuts below apply on Linux.
 
 ### Shell (standalone)
 

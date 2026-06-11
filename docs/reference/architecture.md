@@ -2,7 +2,7 @@
 
 ZiggyZag is intentionally compact: the working shell lives in `apps/shell/src/main.zig`, with small structs for shell state, parsed commands, completion specs, aliases, abbreviations, history metadata, and background jobs. That makes the project easy to step through while still showing real shell concerns.
 
-The repository is organized as a workspace. `apps/shell` is the shell runtime, `apps/desktop` is the Windows-native terminal host MVP that launches the shell through a PTY, and `apps/agentd` is the slim JSON-lines agent sidecar.
+The repository is organized as a workspace. `apps/shell` is the shell runtime, `apps/desktop` is the native terminal host (Windows Win32 + ConPTY, macOS Cocoa + CoreText), and `apps/agentd` is the slim JSON-lines agent sidecar.
 
 Related docs: [README.md](../README.md) is the docs hub, [scope.md](../vision/scope.md) defines product boundaries, [terminal-app.md](terminal-app.md) covers the desktop host strategy, and [data-map.md](data-map.md) explains how research, QA, and release evidence feed tasks.
 
@@ -140,6 +140,8 @@ Simple pipelines now have a native Zig path. Complex syntax still uses `/bin/sh 
 ## Desktop Host Boundary
 
 The desktop terminal app should own windowing, tabs, settings, terminal rendering, PTY lifecycle, and app-level commands. The Zig shell should continue to own parsing, execution, history, completions, prompt behavior, and shell state.
+
+The macOS host (`macos_app.zig`) runs a Cocoa NSWindow + NSView with CoreText grid rendering and CoreGraphics draws, sharing the same POSIX PTY backend and AgentD protocol as the Windows host. Both platforms expose the same overlay system: command palette, scrollback search, quick select, settings, theme cycling, and AgentD universal input.
 
 Optional shell integration should be explicit and ignorable by other terminals. The first shape should be OSC-style events for session readiness, prompt context, command start, command finish, and job changes. Larger payloads can move to sidecar IPC later if the event stream becomes too cramped.
 

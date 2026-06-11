@@ -57,7 +57,8 @@ The remaining work is concentrated in four buckets:
 
 - [ ] 7. Shared POSIX native desktop host
   Turn the Windows ConPTY work and POSIX launcher into a shared PTY backend interface, then add real macOS/Linux graphical hosting instead of terminal-attached launcher-only behavior.
-  Primary paths: `apps/desktop/src/pty.zig`, `apps/desktop/src/posix_pty.zig`, `apps/desktop/src/main.zig`.
+  Progress: macOS native Cocoa window is shipped (`macos_app.zig` — CoreText grid, overlay system, AgentD universal input, theme cycling). Linux native window and shared PTY abstraction remain open.
+  Primary paths: `apps/desktop/src/pty.zig`, `apps/desktop/src/posix_pty.zig`, `apps/desktop/src/main.zig`, `apps/desktop/src/macos_app.zig`.
 
 - [ ] 8. Windows raw input for the shell
   Implement the Windows side of interactive raw mode so cursor editing, redraw, suggestions, tab UX, Ctrl-R, and manual echo are first-class when ZiggyZag runs directly in a Windows terminal.
