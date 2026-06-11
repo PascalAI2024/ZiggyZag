@@ -337,6 +337,8 @@ const PaletteActionKind = enum {
     agent_tools,
     agent_preview_write,
     agent_approve_write,
+    agent_run,
+    agent_cancel,
     toggle_settings,
     next_theme,
     reload_config,
@@ -369,6 +371,8 @@ const palette_actions = [_]PaletteAction{
     .{ .title = "AgentD tools", .detail = "List local tools, schemas, and approval policy", .kind = .agent_tools },
     .{ .title = "AgentD preview write", .detail = "Request a terminal.write host action preview", .kind = .agent_preview_write },
     .{ .title = "Approve AgentD write", .detail = "Write the pending AgentD preview into the active pane", .kind = .agent_approve_write },
+    .{ .title = "AgentD run", .detail = "Send a prompt to AgentD via agent/run (type in search box)", .kind = .agent_run },
+    .{ .title = "AgentD cancel", .detail = "Abort the in-flight agent/run streaming request", .kind = .agent_cancel },
     .{ .title = "Settings", .detail = "Toggle the settings and theme overlay", .kind = .toggle_settings },
     .{ .title = "Next theme", .detail = "Cycle through built-in terminal themes", .kind = .next_theme },
     .{ .title = "Reload config", .detail = "Reload desktop.conf and apply safe settings", .kind = .reload_config },
@@ -482,6 +486,12 @@ const App = struct {
     agent_next_id: u32 = 1,
     agent_pending_write: [AGENT_PENDING_WRITE_BYTES]u8 = undefined,
     agent_pending_write_len: usize = 0,
+    // Provider readiness from most recent agent/health response.
+    provider_ready: bool = false,
+    provider_model: [64]u8 = undefined,
+    provider_model_len: usize = 0,
+    // Set while an agent/run is in flight; cleared on completion or error.
+    agent_run_pending: bool = false,
     // Paste confirm overlay state (item 2)
     paste_pending: [MAX_PASTE_BYTES]u8 = undefined,
     paste_pending_len: usize = 0,
@@ -1026,6 +1036,106 @@ const App = struct {
         self.appendAgentTranscript("> approved pending terminal.write\n");
     }
 
+    // Send an agent/run request and mark a run in-flight.
+    // Does NOT write to the PTY — any terminal.write response requires
+    // explicit approval via approveAgentWrite, matching macOS behavior.
+    fn requestAgentRun(self: *App, prompt: []const u8) void {
+        if (self.agent_child == null) {
+            self.appendAgentTranscript("[error] AgentD is not running. Build ziggyzag-agentd first.\n");
+            return;
+        }
+        if (self.agent_run_pending) {
+            self.appendAgentTranscript("[busy] AgentD is processing a request. Wait for it to finish.\n");
+            return;
+        }
+        self.openAgentPanel();
+        const id = self.nextAgentId();
+        var esc_buf: [512]u8 = undefined;
+        const escaped = escapeJsonPromptWindows(prompt, &esc_buf);
+        var line: [640]u8 = undefined;
+        const request = std.fmt.bufPrint(
+            &line,
+            "{{\"id\":{d},\"method\":\"agent/run\",\"prompt\":\"{s}\"}}\n",
+            .{ id, escaped },
+        ) catch return;
+        var log_buf: [320]u8 = undefined;
+        const log_msg = std.fmt.bufPrint(&log_buf, "> {s}\n", .{prompt}) catch return;
+        self.appendAgentTranscript(log_msg);
+        self.mutex.lock();
+        self.agent_run_pending = true;
+        self.mutex.unlock();
+        self.writeAgentLine(request);
+    }
+
+    // Send agent/cancel to abort an in-flight streaming run.
+    fn requestAgentCancel(self: *App) void {
+        if (self.agent_child == null) return;
+        const id = self.nextAgentId();
+        var line: [64]u8 = undefined;
+        const request = std.fmt.bufPrint(&line, "{{\"id\":{d},\"method\":\"agent/cancel\"}}\n", .{id}) catch return;
+        self.appendAgentTranscript("> cancelling...\n");
+        self.writeAgentLine(request);
+    }
+
+    // Process one complete JSON line from agentd. Called from agentReadLoop
+    // under the mutex. Mirrors processAgentResponse in macos_app.zig.
+    // This function NEVER writes to the PTY.
+    fn processAgentResponse(self: *App, line: []const u8) void {
+        // Streaming delta: append directly to transcript so tokens appear live.
+        if (winJsonContains(line, "\"event\":\"agent/stream\"")) {
+            if (winJsonStringField(line, "delta")) |delta| {
+                self.appendAgentTranscriptLocked(delta);
+            }
+            return;
+        }
+
+        // Error envelopes: clear pending flag, surface in transcript.
+        if (winJsonContains(line, "\"ok\":false")) {
+            self.agent_run_pending = false;
+            // Error is already in the transcript via appendAgentTranscript in
+            // the read loop — no extra action needed here.
+            return;
+        }
+
+        // agent/health ok response: update provider readiness.
+        if (winJsonContains(line, "\"ok\":true") and winJsonContains(line, "\"provider_status\"")) {
+            self.provider_ready = winJsonContains(line, "\"ready\":true");
+            if (winJsonStringField(line, "model")) |model| {
+                self.provider_model_len = @min(model.len, self.provider_model.len);
+                @memcpy(self.provider_model[0..self.provider_model_len], model[0..self.provider_model_len]);
+            } else {
+                self.provider_model_len = 0;
+            }
+            return;
+        }
+
+        // agent/run or stream completion: clear pending flag.
+        if (winJsonContains(line, "\"ok\":true") and
+            (winJsonContains(line, "\"status\":\"ok\"") or
+                winJsonContains(line, "\"status\":\"provider_error\"") or
+                winJsonContains(line, "\"stream\":true")))
+        {
+            self.agent_run_pending = false;
+            return;
+        }
+
+        // agent/cancel acknowledged: clear pending flag.
+        if (winJsonContains(line, "\"cancelled\":true")) {
+            self.agent_run_pending = false;
+            return;
+        }
+
+        // terminal.write host-action: populate pending write for approval.
+        if (winJsonContains(line, "\"host_action\":\"terminal.write\"")) {
+            if (winJsonStringField(line, "text")) |text| {
+                const len = @min(text.len, self.agent_pending_write.len);
+                @memcpy(self.agent_pending_write[0..len], text[0..len]);
+                self.agent_pending_write_len = len;
+            }
+            return;
+        }
+    }
+
     fn visibleTextAlloc(self: *App) ![]u8 {
         const pane = self.activePane();
         if (pane.scroll_offset > 0) {
@@ -1321,6 +1431,10 @@ const App = struct {
             .agent_tools => self.requestAgentTools(),
             .agent_preview_write => self.requestAgentWritePreview(),
             .agent_approve_write => self.approveAgentWrite(),
+            // agent_run: use the current palette search query as the prompt.
+            // The user types their question in the palette filter box and hits Enter.
+            .agent_run => self.requestAgentRun(self.palette_query[0..self.palette_query_len]),
+            .agent_cancel => self.requestAgentCancel(),
             .toggle_settings => self.overlay = if (self.overlay == .settings) .none else .settings,
             .next_theme => self.cycleTheme(),
             .reload_config => self.reloadDesktopConfig(hwnd),
@@ -2291,38 +2405,60 @@ const App = struct {
         if (pending_len > 0) @memcpy(pending[0..pending_len], self.agent_pending_write[0..pending_len]);
         self.mutex.unlock();
 
+        // ── Status line (structured state, not transcript scan) ───────────────
         _ = SetTextColor(hdc, toColorRef(self.selected_theme.muted));
-        const status = if (self.agent_child != null) "running" else "stopped";
+        const running = self.agent_child != null;
         var status_line: [192]u8 = undefined;
-        const status_text = std.fmt.bufPrint(&status_line, "Sidecar: {s}  |  Palette: health, tools, preview write, approve write", .{status}) catch "Sidecar";
+        const status_text = std.fmt.bufPrint(&status_line, "Sidecar: {s}  |  Palette: health, tools, run, cancel", .{if (running) "running" else "stopped"}) catch "Sidecar";
         drawUtf8TextFitted(hdc, x, y, status_text, max_width, self.char_width);
-        y += self.char_height + 8;
+        y += self.char_height + 6;
 
-        // "No provider" inline hint — shown when a health response exists but
-        // no provider is reachable. Guides the user to install Ollama or set
-        // an OpenAI-compatible endpoint without leaving the panel.
-        const show_provider_hint = blk: {
-            if (transcript_len == 0) break :blk false;
-            const t = snapshot[0..transcript_len];
-            const has_health = std.mem.indexOf(u8, t, "provider_status") != null;
-            const is_reachable = std.mem.indexOf(u8, t, "\"reachable\"") != null;
-            break :blk has_health and !is_reachable;
-        };
-        if (show_provider_hint) {
+        // ── Provider block ────────────────────────────────────────────────────
+        if (running and self.provider_ready) {
+            _ = SetTextColor(hdc, toColorRef(self.selected_theme.ansi[2]));
+            if (self.provider_model_len > 0) {
+                var mbuf: [80]u8 = undefined;
+                const mtext = std.fmt.bufPrint(&mbuf, "provider: {s}", .{self.provider_model[0..self.provider_model_len]}) catch "provider: ready";
+                drawUtf8TextFitted(hdc, x, y, mtext, max_width, self.char_width);
+                y += self.char_height + 4;
+            }
+            if (self.agent_run_pending) {
+                _ = SetTextColor(hdc, toColorRef(self.selected_theme.ansi[3]));
+                drawUtf8TextFitted(hdc, x, y, "thinking... (palette: cancel to abort)", max_width, self.char_width);
+                y += self.char_height + 4;
+            }
+        } else if (running) {
+            _ = SetTextColor(hdc, toColorRef(self.selected_theme.muted));
+            drawUtf8TextFitted(hdc, x, y, "Run 'AgentD health' from palette to check provider.", max_width, self.char_width);
+            y += self.char_height + 4;
+        } else {
             _ = SetTextColor(hdc, toColorRef(self.selected_theme.ansi[3]));
-            drawUtf8TextFitted(hdc, x, y, "No AI provider reachable.", max_width, self.char_width);
+            drawUtf8TextFitted(hdc, x, y, "AgentD not running. Build ziggyzag-agentd first.", max_width, self.char_width);
             y += self.char_height + 2;
             _ = SetTextColor(hdc, toColorRef(self.selected_theme.muted));
-            drawUtf8TextFitted(hdc, x, y, "  ollama pull qwen2.5-coder:1.5b", max_width, self.char_width);
-            y += self.char_height + 2;
-            drawUtf8TextFitted(hdc, x, y, "  set ZIGGYZAG_AGENT_PROVIDER=ollama", max_width, self.char_width);
-            y += self.char_height + 2;
-            drawUtf8TextFitted(hdc, x, y, "  or set ZIGGYZAG_AGENT_BASE_URL + ZIGGYZAG_AGENT_API_KEY", max_width, self.char_width);
-            y += self.char_height + 6;
+            drawUtf8TextFitted(hdc, x, y, "  zig build  |  ziggyzag-agentd.exe --stdio", max_width, self.char_width);
+            y += self.char_height + 4;
         }
 
+        // Show no-provider setup hint when health returned unreachable.
+        if (running and !self.provider_ready and transcript_len > 0) {
+            const t = snapshot[0..transcript_len];
+            if (std.mem.indexOf(u8, t, "provider_status") != null) {
+                _ = SetTextColor(hdc, toColorRef(self.selected_theme.ansi[3]));
+                drawUtf8TextFitted(hdc, x, y, "No AI provider reachable.", max_width, self.char_width);
+                y += self.char_height + 2;
+                _ = SetTextColor(hdc, toColorRef(self.selected_theme.muted));
+                drawUtf8TextFitted(hdc, x, y, "  ollama pull qwen2.5-coder:1.5b", max_width, self.char_width);
+                y += self.char_height + 2;
+                drawUtf8TextFitted(hdc, x, y, "  set ZIGGYZAG_AGENT_PROVIDER=ollama", max_width, self.char_width);
+                y += self.char_height + 2;
+                drawUtf8TextFitted(hdc, x, y, "  or ZIGGYZAG_AGENT_BASE_URL + ZIGGYZAG_AGENT_API_KEY", max_width, self.char_width);
+                y += self.char_height + 4;
+            }
+        }
+
+        // ── Pending write approval ────────────────────────────────────────────
         if (pending_len > 0) {
-            // Make pending write visually prominent — this is a security-relevant action
             _ = SetTextColor(hdc, toColorRef(self.selected_theme.ansi[1]));
             var pending_line: [256]u8 = undefined;
             const preview = std.fmt.bufPrint(&pending_line, "⚠ PENDING APPROVAL — this will be typed into the shell:", .{}) catch "⚠ PENDING";
@@ -2335,14 +2471,23 @@ const App = struct {
             y += self.char_height + 6;
         }
 
+        // ── Transcript ────────────────────────────────────────────────────────
         _ = SetTextColor(hdc, toColorRef(self.selected_theme.foreground));
         if (transcript_len == 0) {
-            drawUtf8TextFitted(hdc, x, y, "Open the palette and run AgentD health or tools.", max_width, self.char_width);
+            drawUtf8TextFitted(hdc, x, y, "Open the palette and run AgentD health or run.", max_width, self.char_width);
         } else {
             var iter = std.mem.splitScalar(u8, snapshot[0..transcript_len], '\n');
             while (iter.next()) |line| {
                 if (line.len == 0) continue;
                 if (y + self.char_height >= bottom - self.char_height - 10) break;
+                // Highlight error lines in transcript
+                const is_error = winJsonContains(line, "\"ok\":false") or
+                    std.mem.startsWith(u8, line, "[error]");
+                if (is_error) {
+                    _ = SetTextColor(hdc, toColorRef(self.selected_theme.ansi[1]));
+                } else {
+                    _ = SetTextColor(hdc, toColorRef(self.selected_theme.foreground));
+                }
                 drawUtf8TextFitted(hdc, x, y, line, max_width, self.char_width);
                 y += self.char_height + 2;
             }
@@ -2595,15 +2740,112 @@ fn agentReadLoop(app: *App, stdout_file: std.Io.File) void {
     var file = stdout_file;
     defer file.close(app.io);
 
-    var buffer: [2048]u8 = undefined;
-    var reader = file.readerStreaming(app.io, &buffer);
+    // Line-buffer so we can dispatch complete JSON lines to processAgentResponse.
+    // Raw bytes still go to the transcript for debug visibility; structured
+    // state (provider_ready, agent_run_pending, streaming deltas) is updated
+    // by processAgentResponse once a full line is assembled.
+    var read_buf: [2048]u8 = undefined;
+    var reader = file.readerStreaming(app.io, &read_buf);
+    var line_buf: [8192]u8 = undefined;
+    var line_len: usize = 0;
+
     while (app.agent_running.load(.acquire)) {
         const chunk = reader.interface.take(1) catch break;
         if (chunk.len == 0) break;
-        app.appendAgentTranscript(chunk);
-        if (chunk[0] == '\n') app.requestUiRefresh();
+
+        const byte = chunk[0];
+
+        // Streaming deltas arrive as many small chunks — don't echo each raw
+        // chunk to the transcript; processAgentResponse handles display.
+        // For non-streaming lines (health, tools, errors) still append raw so
+        // the transcript shows the full JSON for debugging.
+        if (byte == '\n') {
+            if (line_len > 0) {
+                const completed = line_buf[0..line_len];
+                // Append raw line to transcript only for non-streaming lines.
+                if (!winJsonContains(completed, "\"event\":\"agent/stream\"")) {
+                    app.appendAgentTranscript(completed);
+                    app.appendAgentTranscript("\n");
+                }
+                app.mutex.lock();
+                app.processAgentResponse(completed);
+                app.mutex.unlock();
+                line_len = 0;
+            }
+            app.requestUiRefresh();
+        } else {
+            if (line_len < line_buf.len - 1) {
+                line_buf[line_len] = byte;
+                line_len += 1;
+            }
+        }
     }
     app.requestUiRefresh();
+}
+
+// ── AgentD JSON helpers ───────────────────────────────────────────────────────
+// Zero-allocation substring checks and field extraction for agentd JSON lines.
+// These mirror jsonContains/jsonStringField in macos_app.zig.
+
+fn winJsonContains(line: []const u8, needle: []const u8) bool {
+    return std.mem.indexOf(u8, line, needle) != null;
+}
+
+fn winJsonStringField(line: []const u8, key: []const u8) ?[]const u8 {
+    var search_buf: [68]u8 = undefined;
+    if (key.len + 4 > search_buf.len) return null;
+    search_buf[0] = '"';
+    @memcpy(search_buf[1 .. 1 + key.len], key);
+    search_buf[1 + key.len] = '"';
+    search_buf[2 + key.len] = ':';
+    search_buf[3 + key.len] = '"';
+    const needle = search_buf[0 .. 4 + key.len];
+    const start = std.mem.indexOf(u8, line, needle) orelse return null;
+    const value_start = start + needle.len;
+    var end = value_start;
+    while (end < line.len and line[end] != '"') : (end += 1) {}
+    return line[value_start..end];
+}
+
+/// Escape JSON special characters into a stack buffer.
+/// Returns the escaped slice (valid inside JSON double-quotes).
+fn escapeJsonPromptWindows(prompt: []const u8, dest: []u8) []const u8 {
+    var di: usize = 0;
+    for (prompt) |b| {
+        if (di + 2 >= dest.len) break;
+        switch (b) {
+            '"' => {
+                dest[di] = '\\';
+                dest[di + 1] = '"';
+                di += 2;
+            },
+            '\\' => {
+                dest[di] = '\\';
+                dest[di + 1] = '\\';
+                di += 2;
+            },
+            '\n' => {
+                dest[di] = '\\';
+                dest[di + 1] = 'n';
+                di += 2;
+            },
+            '\r' => {
+                dest[di] = '\\';
+                dest[di + 1] = 'r';
+                di += 2;
+            },
+            '\t' => {
+                dest[di] = '\\';
+                dest[di + 1] = 't';
+                di += 2;
+            },
+            else => {
+                dest[di] = b;
+                di += 1;
+            },
+        }
+    }
+    return dest[0..di];
 }
 
 fn windowProc(hwnd: HWND, msg: UINT, wparam: WPARAM, lparam: LPARAM) callconv(.winapi) LRESULT {

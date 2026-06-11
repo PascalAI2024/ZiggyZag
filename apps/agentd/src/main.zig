@@ -4,6 +4,15 @@ const agentd = @import("lib.zig");
 const Allocator = std.mem.Allocator;
 const max_agent_prompt_bytes = 64 * 1024;
 
+// Session-scoped cancel flag. Set by agent/cancel; cleared before each
+// agent/run. The streaming loop checks this flag on every chunk so the
+// host can abort a long generation without waiting for curl to finish.
+// Access is relaxed — the writer thread owns the run and reads the flag;
+// the reader loop (a separate OS thread) sets it. There is no ordering
+// dependency between setting the flag and any other memory operation, so
+// relaxed is correct and cheaper than acquire/release.
+var g_cancel: std.atomic.Value(bool) = std.atomic.Value(bool).init(false);
+
 pub fn main(init_data: std.process.Init) !void {
     const allocator = init_data.gpa;
     var stdout_buffer: [4096]u8 = undefined;
@@ -79,6 +88,7 @@ fn printHelp(writer: *std.Io.Writer) !void {
         \\  {"id":5,"method":"tools/call","tool":"terminal.write","text":"zig build\n"}  # approval-shaped host action
         \\  {"id":6,"method":"agent/run","prompt":"summarize the workspace"}
         \\  {"id":7,"method":"audit/policy"}                                # stateless tool-effect and redaction policy
+        \\  {"id":8,"method":"agent/cancel"}                                # abort an in-flight agent/run (streaming only)
         \\
     );
 }
@@ -183,7 +193,21 @@ fn handleRequest(
         return;
     }
 
+    // agent/cancel: signal any in-flight agent/run to stop after the current
+    // chunk. The acknowledgment is sent immediately; the cancellation effect
+    // is asynchronous (the streaming loop notices on its next iteration).
+    if (std.mem.eql(u8, request.method, "agent/cancel")) {
+        g_cancel.store(true, .monotonic);
+        const result = "{\"cancelled\":true}";
+        const envelope = try agentd.protocol.writeOkEnvelope(allocator, request.id, result);
+        defer allocator.free(envelope);
+        try writer.writeAll(envelope);
+        return;
+    }
+
     if (std.mem.eql(u8, request.method, "agent/run")) {
+        // Clear any stale cancel from a previous run before starting.
+        g_cancel.store(false, .monotonic);
         const prompt = request.prompt orelse "";
         validateAgentPrompt(prompt) catch |err| {
             const envelope = try agentd.protocol.writeErrorEnvelope(allocator, request.id, agentRunErrorCode(err), agentRunErrorMessage(err));
@@ -295,7 +319,16 @@ fn streamProviderAgentRun(
 
     // Read stdout line by line using the same takeDelimiter('\n') API used by
     // runStdio. Each line is one streaming chunk from the provider.
+    var cancelled = false;
     while (true) {
+        // Check the session-scoped cancel flag before each chunk. The host
+        // sets it via agent/cancel; we kill the curl child and break so the
+        // final envelope reports the cancellation.
+        if (g_cancel.load(.monotonic)) {
+            cancelled = true;
+            child.kill(io);
+            break;
+        }
         const maybe_line = stdout_reader.interface.takeDelimiter('\n') catch break;
         const raw_line = maybe_line orelse break;
         const line = std.mem.trim(u8, raw_line, " \t\r");
@@ -338,6 +371,17 @@ fn streamProviderAgentRun(
     stderr_thread.join();
     const term = try child.wait(io);
     const exit_status = termStatus(term);
+
+    // If cancelled, emit an error envelope instead of the normal ok envelope
+    // so the host knows the stream was cut short deliberately.
+    if (cancelled) {
+        if (drain.out) |buf| allocator.free(buf);
+        const envelope = try agentd.protocol.writeErrorEnvelope(allocator, request_id, "cancelled", "agent/run was cancelled by agent/cancel");
+        defer allocator.free(envelope);
+        try writer.writeAll(envelope);
+        try writer.flush();
+        return;
+    }
 
     // Redact the assembled full text one final time for the envelope.
     const full_redacted = try agentd.tools.redactSecretsAlloc(allocator, full_text.items);
