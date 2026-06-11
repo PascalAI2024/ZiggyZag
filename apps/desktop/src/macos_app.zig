@@ -487,13 +487,25 @@ fn namedColor(color: terminal.Color, is_fg: bool) [3]f64 {
 // ── Glyph drawing ─────────────────────────────────────────────────────────
 
 fn drawGlyph(font: CTFontRef, ctx: CGContextRef, x: f64, baseline_y: f64, cp: u21) void {
-    if (cp > 0xFFFF) return;
-    var uni: u16 = @intCast(cp);
-    var glyph: CGGlyph = 0;
-    if (!CTFontGetGlyphsForCharacters(font, &uni, &glyph, 1)) return;
-    if (glyph == 0) return;
+    // CoreText takes UTF-16. BMP codepoints are one unit; astral codepoints
+    // (emoji, CJK Ext-B, …) need a surrogate pair, so feed both units and let
+    // CTFontGetGlyphsForCharacters compose them into a single glyph.
+    var units: [2]u16 = undefined;
+    var glyphs: [2]CGGlyph = .{ 0, 0 };
+    const n: usize = if (cp <= 0xFFFF) blk: {
+        units[0] = @intCast(cp);
+        break :blk 1;
+    } else blk: {
+        const v = cp - 0x10000;
+        units[0] = @intCast(0xD800 + (v >> 10));
+        units[1] = @intCast(0xDC00 + (v & 0x3FF));
+        break :blk 2;
+    };
+    if (!CTFontGetGlyphsForCharacters(font, &units[0], &glyphs[0], @intCast(n))) return;
+    // For a surrogate pair CoreText reports the glyph in slot 0 and 0 in slot 1.
+    if (glyphs[0] == 0) return;
     const pt = CGPoint{ .x = x, .y = baseline_y };
-    CTFontDrawGlyphs(font, &glyph, &pt, 1, ctx);
+    CTFontDrawGlyphs(font, &glyphs[0], &pt, 1, ctx);
 }
 
 fn drawAscii(font: CTFontRef, ctx: CGContextRef, x0: f64, baseline_y: f64, cw: f64, text: []const u8) void {

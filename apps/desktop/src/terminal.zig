@@ -956,6 +956,14 @@ pub const Grid = struct {
         }
 
         var display_width = cellDisplayWidth(codepoint);
+
+        // Zero-width (combining mark / joiner / variation selector): it belongs
+        // to the preceding base character and takes no column. We keep the base
+        // cell as-is rather than corrupting layout. (A future grapheme buffer
+        // could stack the mark onto the base for exact rendering; for now the
+        // important property is that the mark never overwrites the next cell.)
+        if (display_width == 0) return;
+
         if (display_width == 2 and self.width == 1) display_width = 1;
         if (display_width == 2 and self.cursor_x + 1 >= self.width) {
             if (self.auto_wrap) {
@@ -1488,7 +1496,24 @@ fn legacyCellByte(codepoint: u21) u8 {
 }
 
 fn cellDisplayWidth(codepoint: u21) usize {
+    if (isZeroWidthCodepoint(codepoint)) return 0;
     return if (isWideCodepoint(codepoint)) 2 else 1;
+}
+
+// Combining marks, joiners, and variation selectors occupy no column of their
+// own; they modify the preceding base character. Returning 0 here keeps the
+// grid layout correct (the mark does not overwrite the next cell). The common
+// Unicode combining ranges plus ZWJ (U+200D) and the variation selectors.
+fn isZeroWidthCodepoint(codepoint: u21) bool {
+    return (codepoint >= 0x0300 and codepoint <= 0x036f) or // combining diacritics
+        (codepoint >= 0x0483 and codepoint <= 0x0489) or // Cyrillic combining
+        (codepoint >= 0x1ab0 and codepoint <= 0x1aff) or // combining ext
+        (codepoint >= 0x1dc0 and codepoint <= 0x1dff) or // combining supplement
+        (codepoint >= 0x20d0 and codepoint <= 0x20ff) or // combining symbols
+        (codepoint == 0x200d) or // zero-width joiner
+        (codepoint >= 0xfe00 and codepoint <= 0xfe0f) or // variation selectors
+        (codepoint >= 0xfe20 and codepoint <= 0xfe2f) or // combining half marks
+        (codepoint >= 0xe0100 and codepoint <= 0xe01ef); // variation selectors supplement
 }
 
 fn isWideCodepoint(codepoint: u21) bool {
@@ -1635,6 +1660,69 @@ test "tracks wide UTF-8 cell continuations" {
     const line = try grid.lineTextAlloc(std.testing.allocator, 0);
     defer std.testing.allocator.free(line);
     try std.testing.expectEqualStrings("A\xe4\xb8\xadB", line);
+}
+
+test "box-drawing run preserves codepoints across cells" {
+    var grid = try Grid.init(std.testing.allocator, 8, 1);
+    defer grid.deinit();
+    // ┌─┐ then ├┼┤ — common TUI border glyphs (U+250x / U+251x), each narrow.
+    grid.feed("\u{250c}\u{2500}\u{2510}\u{251c}\u{253c}\u{2524}");
+
+    try std.testing.expectEqual(@as(u21, 0x250c), grid.cells[0].codepoint);
+    try std.testing.expectEqual(@as(u21, 0x2500), grid.cells[1].codepoint);
+    try std.testing.expectEqual(@as(u21, 0x2510), grid.cells[2].codepoint);
+    try std.testing.expectEqual(@as(u21, 0x251c), grid.cells[3].codepoint);
+    try std.testing.expectEqual(@as(u21, 0x253c), grid.cells[4].codepoint);
+    try std.testing.expectEqual(@as(u21, 0x2524), grid.cells[5].codepoint);
+    // All narrow: each box glyph occupies exactly one cell.
+    for (0..6) |i| try std.testing.expectEqual(CellWidth.narrow, grid.cells[i].width);
+    try std.testing.expectEqual(@as(usize, 6), grid.cursor_x);
+
+    const line = try grid.lineTextAlloc(std.testing.allocator, 0);
+    defer std.testing.allocator.free(line);
+    try std.testing.expectEqualStrings("\u{250c}\u{2500}\u{2510}\u{251c}\u{253c}\u{2524}", line);
+}
+
+test "combining mark attaches to base without taking a cell" {
+    var grid = try Grid.init(std.testing.allocator, 8, 1);
+    defer grid.deinit();
+    // 'e' followed by U+0301 (combining acute) then 'x'. The mark is
+    // zero-width: it must NOT consume a cell or shift 'x'.
+    grid.feed("e\u{0301}x");
+
+    try std.testing.expectEqual(@as(u21, 'e'), grid.cells[0].codepoint);
+    try std.testing.expectEqual(@as(u21, 'x'), grid.cells[1].codepoint);
+    // Cursor advanced by 2 visible columns, not 3 — the mark added no column.
+    try std.testing.expectEqual(@as(usize, 2), grid.cursor_x);
+}
+
+test "emoji occupies two cells with a continuation" {
+    var grid = try Grid.init(std.testing.allocator, 8, 1);
+    defer grid.deinit();
+    // U+1F600 GRINNING FACE (astral plane). Wide: base + continuation.
+    grid.feed("a\u{1F600}b");
+
+    try std.testing.expectEqual(@as(u21, 'a'), grid.cells[0].codepoint);
+    try std.testing.expectEqual(@as(u21, 0x1F600), grid.cells[1].codepoint);
+    try std.testing.expectEqual(CellWidth.wide, grid.cells[1].width);
+    try std.testing.expectEqual(CellWidth.continuation, grid.cells[2].width);
+    try std.testing.expectEqual(@as(u21, 'b'), grid.cells[3].codepoint);
+    try std.testing.expectEqual(@as(usize, 4), grid.cursor_x);
+
+    const line = try grid.lineTextAlloc(std.testing.allocator, 0);
+    defer std.testing.allocator.free(line);
+    try std.testing.expectEqualStrings("a\u{1F600}b", line);
+}
+
+test "zero-width mark at column zero is dropped without corrupting layout" {
+    var grid = try Grid.init(std.testing.allocator, 4, 1);
+    defer grid.deinit();
+    // A leading combining mark has no base; it must be a no-op, not a crash
+    // or a stray cell. The following 'A' then lands at column 0.
+    grid.feed("\u{0301}A");
+
+    try std.testing.expectEqual(@as(u21, 'A'), grid.cells[0].codepoint);
+    try std.testing.expectEqual(@as(usize, 1), grid.cursor_x);
 }
 
 test "handles carriage return and clear line" {

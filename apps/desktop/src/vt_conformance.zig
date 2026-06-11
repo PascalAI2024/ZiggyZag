@@ -139,6 +139,36 @@ const corpus = [_]Case{
         .cursor_x = 3,
         .cursor_y = 0,
     },
+    .{
+        .name = "box-drawing glyphs render as narrow cells, not '?'",
+        .width = 8,
+        .height = 1,
+        .input = "\u{250c}\u{2500}\u{2510}",
+        .rows = &.{"\u{250c}\u{2500}\u{2510}"},
+        .cursor_x = 3,
+        .cursor_y = 0,
+    },
+    .{
+        // The combining mark takes no column and is not stored on the base
+        // cell yet (see putCodepoint), so the row text is "ex" — the important
+        // property is that 'x' is not shifted and the cursor advances by 2.
+        .name = "combining mark is zero-width and does not shift following text",
+        .width = 8,
+        .height = 1,
+        .input = "e\u{0301}x",
+        .rows = &.{"ex"},
+        .cursor_x = 2,
+        .cursor_y = 0,
+    },
+    .{
+        .name = "CJK wide pair advances two columns with a continuation cell",
+        .width = 8,
+        .height = 1,
+        .input = "a\u{4e2d}b",
+        .rows = &.{"a\u{4e2d}b"},
+        .cursor_x = 4,
+        .cursor_y = 0,
+    },
 };
 
 const Failure = struct {
