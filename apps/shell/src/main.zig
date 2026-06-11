@@ -5037,7 +5037,10 @@ const Shell = struct {
                     capped = true;
                     break;
                 }
-                try stdout.interface.writeAll(copy_buf[0..n]);
+                // In test builds the test runner speaks a binary protocol over
+                // stdout; writing pipeline output there corrupts it and hangs
+                // the process.  Tests only check last_status, not the output.
+                if (!builtin.is_test) try stdout.interface.writeAll(copy_buf[0..n]);
             }
             if (n < copy_buf.len) break; // short read => stream drained
         }
