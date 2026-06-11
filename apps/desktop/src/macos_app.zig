@@ -18,6 +18,7 @@ const builtin = @import("builtin");
 const posix_pty = @import("posix_pty.zig");
 const terminal = @import("terminal.zig");
 const theme_mod = @import("theme.zig");
+const integration = @import("integration.zig");
 
 comptime {
     if (builtin.os.tag != .macos) @compileError("macos_app.zig is macOS-only");
@@ -442,6 +443,26 @@ const AppState = struct {
     provider_model_len: usize = 0,
     // Set while an agent/run is in flight so the overlay can show a busy hint.
     agent_run_pending: bool = false,
+    // Semantic prompt zones (OSC 777 command.started/finished). Each entry is a
+    // prompt boundary in timeline coordinates, used by prompt-jump navigation.
+    zones: [MAX_ZONES]PromptZone = undefined,
+    zone_count: usize = 0,
+    integration: integration.Parser = undefined,
+    // Prompt-jump: index into zones of the last jump target (for prev/next
+    // stepping) and the timeline line to flash-highlight. -1 = none.
+    jump_index: i64 = -1,
+    jump_highlight_line: i64 = -1,
+};
+
+const MAX_ZONES = 256;
+
+// One command's semantic span, recorded from OSC 777 events. `prompt_line` is
+// the timeline line where the shell rendered the prompt (the jump target).
+// `status` is filled in on command.finished (-1 = still running / unknown).
+const PromptZone = struct {
+    id: i64 = 0,
+    prompt_line: usize = 0,
+    status: i32 = -1,
 };
 
 var g_state: ?*AppState = null;
@@ -720,6 +741,21 @@ fn viewDrawRect(_: ID, _: SEL, _: CGRect) callconv(.c) void {
             const w = cw * @as(f64, @floatFromInt(col_hi - col_lo));
             const y = H - @as(f64, @floatFromInt(i + 1)) * ch;
             CGContextFillRect(ctx, .{ .origin = .{ .x = x, .y = y }, .size = .{ .width = w, .height = ch } });
+        }
+    }
+
+    // Prompt-jump highlight: a left accent bar + faint row wash on the target
+    // prompt line, if it is currently visible. Marks where a Cmd+Up/Down jump
+    // landed so the eye can find the command boundary.
+    if (state.jump_highlight_line >= 0) {
+        const jl: i64 = state.jump_highlight_line;
+        const vis: i64 = jl - (@as(i64, @intCast(hist_len)) - @as(i64, scroll));
+        if (vis >= 0 and vis < @as(i64, @intCast(grid.height))) {
+            const y = H - @as(f64, @floatFromInt(@as(usize, @intCast(vis)) + 1)) * ch;
+            CGContextSetRGBFillColor(ctx, 0.95, 0.75, 0.25, 0.16);
+            CGContextFillRect(ctx, .{ .origin = .{ .x = 0, .y = y }, .size = .{ .width = W, .height = ch } });
+            CGContextSetRGBFillColor(ctx, 0.95, 0.75, 0.25, 0.9);
+            CGContextFillRect(ctx, .{ .origin = .{ .x = 0, .y = y }, .size = .{ .width = @max(cw * 0.25, 3.0), .height = ch } });
         }
     }
 
@@ -1200,6 +1236,15 @@ fn viewKeyDown(_: ID, _: SEL, event_obj: ID) callconv(.c) void {
     // Cmd+V → paste
     if (kc == kVK_V and cmd and !shift) {
         pasteFromPasteboard(state);
+        return;
+    }
+    // Cmd+Up / Cmd+Down → prompt-jump to the previous / next command.
+    if (kc == kVK_Up and cmd) {
+        jumpToPrompt(state, -1);
+        return;
+    }
+    if (kc == kVK_Down and cmd) {
+        jumpToPrompt(state, 1);
         return;
     }
 
@@ -2378,14 +2423,107 @@ fn readerLoop(state: *AppState) void {
         const n = posix_pty.readFd(state.session.master_fd, &buf) catch break :loop;
         if (n == 0) break :loop;
 
+        // Extract OSC 777 integration events (semantic prompt zones) before the
+        // grid sees the bytes; only the display remainder is rendered. On any
+        // allocation failure, fall back to feeding the raw bytes so the terminal
+        // never goes blank — the grid harmlessly ignores OSC payloads.
+        var extracted = state.integration.feed(buf[0..n]) catch {
+            state.mutex.lock();
+            state.grid.feed(buf[0..n]);
+            state.scroll_offset = 0;
+            state.mutex.unlock();
+            state.dirty.store(true, .monotonic);
+            continue;
+        };
+        defer extracted.deinit(state.allocator);
+
         state.mutex.lock();
-        state.grid.feed(buf[0..n]);
+        state.grid.feed(extracted.display);
+        for (extracted.events.items) |event| handleZoneEvent(state, event);
         state.scroll_offset = 0;
         state.mutex.unlock();
 
         state.dirty.store(true, .monotonic);
     }
     state.running.store(false, .monotonic);
+}
+
+// Record a semantic prompt boundary from an OSC 777 event. Caller holds the
+// mutex. command.started opens a new zone at the current bottom timeline line
+// (where the prompt + command live); command.finished stamps its exit status.
+fn handleZoneEvent(state: *AppState, event: integration.Event) void {
+    switch (event.kind) {
+        .command_started => {
+            const id = integration.jsonIntValue(i64, event.payload, "id") orelse 0;
+            // The prompt sits at the current bottom of the live grid: the
+            // timeline line is history length + the cursor's row.
+            const line = state.grid.historyLen() + state.grid.cursor_y;
+            recordZone(state, .{ .id = id, .prompt_line = line, .status = -1 });
+        },
+        .command_finished => {
+            const id = integration.jsonIntValue(i64, event.payload, "id") orelse 0;
+            const status = integration.jsonIntValue(i32, event.payload, "status") orelse -1;
+            // Stamp the status onto the matching open zone.
+            var i = state.zone_count;
+            while (i > 0) : (i -= 1) {
+                if (state.zones[i - 1].id == id) {
+                    state.zones[i - 1].status = status;
+                    break;
+                }
+            }
+        },
+        else => {},
+    }
+}
+
+fn recordZone(state: *AppState, zone: PromptZone) void {
+    if (state.zone_count < state.zones.len) {
+        state.zones[state.zone_count] = zone;
+        state.zone_count += 1;
+    } else {
+        // Ring is full: drop the oldest, keep the most recent MAX_ZONES.
+        std.mem.copyForwards(PromptZone, state.zones[0 .. state.zones.len - 1], state.zones[1..]);
+        state.zones[state.zones.len - 1] = zone;
+    }
+}
+
+// Prompt-jump navigation. `dir` is -1 (previous command) or +1 (next). Scrolls
+// the viewport so the target prompt sits near the top and flashes a highlight.
+// Locks state.mutex itself; must be called WITHOUT the lock held.
+fn jumpToPrompt(state: *AppState, dir: i64) void {
+    state.mutex.lock();
+    defer state.mutex.unlock();
+    if (state.zone_count == 0) return;
+
+    const idx = stepJumpIndex(state.jump_index, dir, state.zone_count);
+    state.jump_index = idx;
+
+    const zone = state.zones[@intCast(idx)];
+    const hist_len: i64 = @intCast(state.grid.historyLen());
+    state.scroll_offset = @intCast(promptScrollOffset(hist_len, zone.prompt_line));
+    state.jump_highlight_line = @intCast(zone.prompt_line);
+    state.dirty.store(true, .monotonic);
+}
+
+// Step the prompt-jump cursor. A fresh jump (current < 0) starts at the newest
+// zone when going up (dir < 0) or the oldest when going down; otherwise it
+// moves by dir. Always clamped into [0, count-1]. count must be > 0.
+fn stepJumpIndex(current: i64, dir: i64, count: usize) i64 {
+    const last: i64 = @intCast(count - 1);
+    var idx: i64 = if (current < 0)
+        (if (dir < 0) last else 0)
+    else
+        current + dir;
+    if (idx < 0) idx = 0;
+    if (idx > last) idx = last;
+    return idx;
+}
+
+// Scroll offset that places `prompt_line` (a timeline index) near the top of
+// the viewport: offset = hist_len - prompt_line, clamped to [0, hist_len].
+fn promptScrollOffset(hist_len: i64, prompt_line: usize) i64 {
+    const target = hist_len - @as(i64, @intCast(prompt_line));
+    return std.math.clamp(target, 0, hist_len);
 }
 
 // ── AgentD ────────────────────────────────────────────────────────────────
@@ -2774,6 +2912,7 @@ pub fn run(init_data: std.process.Init, shell_path: []const u8) !void {
         .grid = grid,
         .session = session,
         .smoke_mode = init_data.environ_map.get("ZIGGYZAG_SMOKE") != null,
+        .integration = integration.Parser.init(allocator),
     };
     g_state = state;
 
@@ -2823,6 +2962,41 @@ pub fn run(init_data: std.process.Init, shell_path: []const u8) !void {
     g_state = null;
     if (state.font) |f| CFRelease(f);
     if (state.font_italic) |f| CFRelease(f);
+    state.integration.deinit();
     state.grid.deinit();
     allocator.destroy(state);
+}
+
+const testing = std.testing;
+
+test "prompt zone events parse id and status from OSC 777 payloads" {
+    const started = "{\"type\":\"command.started\",\"id\":3,\"timestamp\":100,\"cwd\":\"/tmp\"}";
+    try testing.expectEqual(integration.EventKind.command_started, integration.eventKind(started));
+    try testing.expectEqual(@as(i64, 3), integration.jsonIntValue(i64, started, "id").?);
+
+    const finished = "{\"type\":\"command.finished\",\"id\":3,\"status\":2,\"duration_ms\":42,\"cwd\":\"/tmp\"}";
+    try testing.expectEqual(integration.EventKind.command_finished, integration.eventKind(finished));
+    try testing.expectEqual(@as(i64, 3), integration.jsonIntValue(i64, finished, "id").?);
+    try testing.expectEqual(@as(i32, 2), integration.jsonIntValue(i32, finished, "status").?);
+}
+
+test "prompt-jump index steps and clamps within the zone ring" {
+    // Fresh jump (current = -1): up targets the newest, down the oldest.
+    try testing.expectEqual(@as(i64, 4), stepJumpIndex(-1, -1, 5));
+    try testing.expectEqual(@as(i64, 0), stepJumpIndex(-1, 1, 5));
+    // Stepping moves by dir and clamps at the ends.
+    try testing.expectEqual(@as(i64, 1), stepJumpIndex(2, -1, 5));
+    try testing.expectEqual(@as(i64, 3), stepJumpIndex(2, 1, 5));
+    try testing.expectEqual(@as(i64, 0), stepJumpIndex(0, -1, 5));
+    try testing.expectEqual(@as(i64, 4), stepJumpIndex(4, 1, 5));
+}
+
+test "prompt scroll offset puts the target line near the viewport top" {
+    // 100 lines of history; jumping to prompt at line 80 scrolls back 20.
+    try testing.expectEqual(@as(i64, 20), promptScrollOffset(100, 80));
+    // A prompt in the live region (line >= hist_len) needs no scrollback.
+    try testing.expectEqual(@as(i64, 0), promptScrollOffset(100, 100));
+    try testing.expectEqual(@as(i64, 0), promptScrollOffset(100, 130));
+    // The oldest prompt clamps to the full history depth.
+    try testing.expectEqual(@as(i64, 100), promptScrollOffset(100, 0));
 }

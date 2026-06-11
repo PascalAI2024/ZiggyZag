@@ -151,6 +151,25 @@ Emitted after every command completes (including builtins).
 | `duration_ms` | integer | Wall-clock duration in milliseconds |
 | `cwd` | string | Working directory at completion time (may differ from start if the command used `cd`) |
 
+### Semantic prompt zones (prompt-jump navigation)
+
+The `command.started` / `command.finished` pair defines a **semantic zone** for
+each command — a region of scrollback bounded by where the shell rendered the
+prompt and where the command's output ended, tagged with the exit `status`. No
+new wire format is required: the existing events already carry the per-command
+`id` and `status`.
+
+The macOS host consumes these to record a prompt boundary (in scrollback
+timeline coordinates) for each `command.started`, stamping the exit status when
+the matching `command.finished` arrives. **Cmd+Up** / **Cmd+Down** then jump to
+the previous / next command boundary, scrolling that prompt near the top of the
+viewport and flashing a highlight so the eye can find the boundary. A host that
+wants the same behavior should:
+
+1. On `command.started`, push `{id, prompt_line = current bottom timeline line}`.
+2. On `command.finished`, find the zone with the matching `id` and record `status`.
+3. Bind keys that step through the recorded boundaries and scroll to each.
+
 ### Standard OSC companions
 
 The shell also emits standard sequences on every prompt render:
