@@ -191,6 +191,17 @@ fn handleRequest(
             try writer.writeAll(envelope);
             return;
         };
+        const config = agentd.provider.Config.fromEnv(env);
+        if (config.stream and agentd.provider.curlAvailable(allocator, io, env)) {
+            streamProviderAgentRun(allocator, io, env, request.id, prompt, writer) catch |err| {
+                const fallback_result = try localAgentRunJsonAlloc(allocator, env, prompt, providerFallbackStatus(err));
+                defer allocator.free(fallback_result);
+                const envelope = try agentd.protocol.writeOkEnvelope(allocator, request.id, fallback_result);
+                defer allocator.free(envelope);
+                try writer.writeAll(envelope);
+            };
+            return;
+        }
         const result = providerAgentRunJsonAlloc(allocator, io, env, prompt) catch |err|
             try localAgentRunJsonAlloc(allocator, env, prompt, providerFallbackStatus(err));
         defer allocator.free(result);
@@ -203,6 +214,191 @@ fn handleRequest(
     const envelope = try agentd.protocol.writeErrorEnvelope(allocator, request.id, "unknown_method", request.method);
     defer allocator.free(envelope);
     try writer.writeAll(envelope);
+}
+
+/// Stream an agent/run request to the provider, emitting one
+/// {"id":N,"event":"agent/stream","delta":"..."} line per content chunk, then
+/// a final ok-envelope with the assembled full response text.
+///
+/// Ollama chunks (stream:true): {"message":{"content":"..."}, "done":false}
+/// OpenAI chunks (stream:true): data: {"choices":[{"delta":{"content":"..."}}]}
+///
+/// Non-content lines (role-only chunks, [DONE] sentinel) are skipped silently.
+/// Secrets are redacted from every delta before it leaves the process.
+fn streamProviderAgentRun(
+    allocator: Allocator,
+    io: std.Io,
+    env: *std.process.Environ.Map,
+    request_id: []const u8,
+    prompt: []const u8,
+    writer: *std.Io.Writer,
+) !void {
+    const config = agentd.provider.Config.fromEnv(env);
+    const endpoint = try config.endpointAlloc(allocator);
+    defer allocator.free(endpoint);
+    const body = try config.requestBodyAlloc(allocator, prompt);
+    defer allocator.free(body);
+
+    if (config.kind == .openai_compatible and config.api_key == null) return error.MissingApiKey;
+
+    // Build curl argv for streaming (same as non-streaming but body via stdin).
+    var argv: std.ArrayList([]const u8) = .empty;
+    defer argv.deinit(allocator);
+    var auth_file: ?agentd.provider.AuthHeaderFile = null;
+    defer if (auth_file) |f| f.deinit(allocator, io);
+    var auth_arg: ?[]u8 = null;
+    defer if (auth_arg) |a| allocator.free(a);
+
+    try argv.appendSlice(allocator, &.{
+        "curl",
+        "-sS",
+        "-f",
+        "-N",
+        "--max-time",
+        "120",
+        "-H",
+        "Content-Type: application/json",
+    });
+    if (config.kind == .openai_compatible) {
+        const api_key = config.api_key orelse return error.MissingApiKey;
+        auth_file = try agentd.provider.writeAuthHeaderFile(allocator, io, env, api_key);
+        auth_arg = try std.fmt.allocPrint(allocator, "@{s}", .{auth_file.?.path});
+        try argv.appendSlice(allocator, &.{ "-H", auth_arg.? });
+    }
+    try argv.appendSlice(allocator, &.{ "-d", "@-", endpoint });
+
+    var child = try std.process.spawn(io, .{
+        .argv = argv.items,
+        .environ_map = env,
+        .stdin = .pipe,
+        .stdout = .pipe,
+        .stderr = .pipe,
+    });
+    errdefer child.kill(io);
+
+    // Feed the request body and close stdin so curl sends the request.
+    var stdin_file = child.stdin.?;
+    try stdin_file.writeStreamingAll(io, body);
+    stdin_file.close(io);
+    child.stdin = null;
+
+    // Drain stderr on a thread to prevent pipe-full deadlock.
+    var drain = StderrDrain{ .io = io, .file = child.stderr.?, .allocator = allocator };
+    const stderr_thread = try std.Thread.spawn(.{}, StderrDrain.run, .{&drain});
+
+    // Read stdout line by line, emit stream events for each content chunk.
+    var stdout_buf: [8192]u8 = undefined;
+    var stdout_reader = child.stdout.?.readerStreaming(io, &stdout_buf);
+
+    var full_text: std.ArrayList(u8) = .empty;
+    defer full_text.deinit(allocator);
+
+    // Read stdout line by line using the same takeDelimiter('\n') API used by
+    // runStdio. Each line is one streaming chunk from the provider.
+    while (true) {
+        const maybe_line = stdout_reader.interface.takeDelimiter('\n') catch break;
+        const raw_line = maybe_line orelse break;
+        const line = std.mem.trim(u8, raw_line, " \t\r");
+        if (line.len == 0) continue;
+
+        // OpenAI SSE lines are prefixed "data: "; strip the prefix.
+        const chunk = if (std.mem.startsWith(u8, line, "data: "))
+            line["data: ".len..]
+        else
+            line;
+
+        // Skip the SSE stream terminator.
+        if (std.mem.eql(u8, chunk, "[DONE]")) continue;
+
+        // Extract content delta. Skip chunks with no content (role-only, etc).
+        const delta_raw = extractContentDelta(config.kind, chunk) orelse continue;
+        if (delta_raw.len == 0) continue;
+
+        // Redact secrets from the delta before it leaves the process.
+        const redacted = try agentd.tools.redactSecretsAlloc(allocator, delta_raw);
+        defer redacted.deinit(allocator);
+        const delta = redacted.text;
+
+        // Accumulate into the full response text for the final envelope.
+        try full_text.appendSlice(allocator, delta);
+
+        // Emit the stream event line to the host.
+        var event_buf: std.ArrayList(u8) = .empty;
+        defer event_buf.deinit(allocator);
+        try event_buf.appendSlice(allocator, "{\"id\":");
+        try agentd.protocol.appendJsonString(allocator, &event_buf, request_id);
+        try event_buf.appendSlice(allocator, ",\"event\":\"agent/stream\",\"delta\":");
+        try agentd.protocol.appendJsonString(allocator, &event_buf, delta);
+        try event_buf.append(allocator, '}');
+        try event_buf.append(allocator, '\n');
+        try writer.writeAll(event_buf.items);
+        try writer.flush();
+    }
+
+    stderr_thread.join();
+    const term = try child.wait(io);
+    const exit_status = termStatus(term);
+
+    // Redact the assembled full text one final time for the envelope.
+    const full_redacted = try agentd.tools.redactSecretsAlloc(allocator, full_text.items);
+    defer full_redacted.deinit(allocator);
+    const stderr_redacted = try agentd.tools.redactSecretsAlloc(
+        allocator,
+        drain.out orelse "",
+    );
+    defer stderr_redacted.deinit(allocator);
+    if (drain.out) |buf| allocator.free(buf);
+
+    // Emit the final ok-envelope so the host knows the stream is complete.
+    var result: std.ArrayList(u8) = .empty;
+    defer result.deinit(allocator);
+    try result.appendSlice(allocator, "{\"provider\":");
+    try agentd.protocol.appendJsonString(allocator, &result, config.kind.name());
+    try result.appendSlice(allocator, ",\"model\":");
+    try agentd.protocol.appendJsonString(allocator, &result, config.model);
+    try result.appendSlice(allocator, ",\"endpoint\":");
+    try agentd.protocol.appendJsonString(allocator, &result, endpoint);
+    try result.appendSlice(allocator, ",\"status\":");
+    try agentd.protocol.appendJsonString(allocator, &result, if (exit_status == 0) "ok" else "provider_error");
+    try result.appendSlice(allocator, ",\"stream\":true,\"full_text\":");
+    try agentd.protocol.appendJsonString(allocator, &result, full_redacted.text);
+    try result.appendSlice(allocator, ",\"redacted\":");
+    try result.appendSlice(allocator, if (full_redacted.changed or stderr_redacted.changed) "true" else "false");
+    try result.append(allocator, '}');
+
+    const envelope = try agentd.protocol.writeOkEnvelope(allocator, request_id, result.items);
+    defer allocator.free(envelope);
+    try writer.writeAll(envelope);
+    try writer.flush();
+}
+
+/// Extract the content text from one streaming chunk line.
+/// Returns null for role-only or empty-delta chunks.
+fn extractContentDelta(kind: agentd.provider.Kind, chunk: []const u8) ?[]const u8 {
+    // Both providers use "content":"..." somewhere in the chunk.
+    // Find the key and extract the string value without allocation.
+    // The key to look for:
+    //   Ollama:  {"message":{"content":"DELTA",...},...}
+    //   OpenAI:  {"choices":[{"delta":{"content":"DELTA"},...}],...}
+    _ = kind; // same extraction logic works for both providers
+    const needle = "\"content\":\"";
+    const start_idx = std.mem.indexOf(u8, chunk, needle) orelse return null;
+    const val_start = start_idx + needle.len;
+    if (val_start >= chunk.len) return null;
+    // Scan forward handling basic JSON escape sequences to find the closing quote.
+    // We only unescape \n, \t, \\, \" — sufficient for prose content.
+    var end = val_start;
+    while (end < chunk.len) {
+        if (chunk[end] == '\\' and end + 1 < chunk.len) {
+            end += 2; // skip escape pair
+        } else if (chunk[end] == '"') {
+            break;
+        } else {
+            end += 1;
+        }
+    }
+    const raw = chunk[val_start..end];
+    return if (raw.len == 0) null else raw;
 }
 
 fn localAgentRunJsonAlloc(

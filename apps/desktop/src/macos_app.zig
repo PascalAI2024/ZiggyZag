@@ -324,6 +324,42 @@ const ToolEntry = struct {
     }
 };
 
+// Mouse text selection.
+//
+// Coordinates are in the unified scrollback *timeline*: `line` indexes
+// 0..(history.len + grid.height), matching the `ul` index the renderer uses,
+// so a selection stays attached to its text as the viewport scrolls. `col` is
+// a column in [0, grid.width]. `anchor` is where the drag started; `focus`
+// follows the cursor. The ordered span is min(anchor,focus)..max for rendering
+// and copy, so dragging up/leftwards selects correctly.
+const SelPoint = struct {
+    line: usize = 0,
+    col: usize = 0,
+
+    fn before(self: SelPoint, other: SelPoint) bool {
+        if (self.line != other.line) return self.line < other.line;
+        return self.col < other.col;
+    }
+};
+
+const Selection = struct {
+    active: bool = false,
+    dragging: bool = false,
+    anchor: SelPoint = .{},
+    focus: SelPoint = .{},
+
+    // Ordered endpoints (start <= end in timeline order).
+    fn start(self: Selection) SelPoint {
+        return if (self.focus.before(self.anchor)) self.focus else self.anchor;
+    }
+    fn end(self: Selection) SelPoint {
+        return if (self.focus.before(self.anchor)) self.anchor else self.focus;
+    }
+    fn isEmpty(self: Selection) bool {
+        return self.anchor.line == self.focus.line and self.anchor.col == self.focus.col;
+    }
+};
+
 const AppState = struct {
     allocator: Allocator,
     grid: terminal.Grid,
@@ -334,6 +370,9 @@ const AppState = struct {
     // Headless smoke mode (ZIGGYZAG_SMOKE=1): render a few frames, then exit 0.
     smoke_mode: bool = false,
     smoke_ticks: u32 = 0,
+    // Mouse selection, anchored in timeline coordinates so it stays pinned to
+    // the same text as the viewport scrolls. See the Selection block below.
+    sel: Selection = .{},
     view_obj: ID = null,
     font: ?CTFontRef = null,
     cell_w: f64 = 8,
@@ -540,6 +579,28 @@ fn viewDrawRect(_: ID, _: SEL, _: CGRect) callconv(.c) void {
             if (sr >= grid.height) continue;
             const cells = grid.cells[sr * grid.width .. (sr + 1) * grid.width];
             renderCells(ctx, font, cells, grid.width, i, cw, ch, asc, H);
+        }
+    }
+
+    // Selection highlight (a translucent wash over the glyphs so text stays
+    // readable). One rect per visible row the timeline span covers.
+    if (state.sel.active and !state.sel.isEmpty()) {
+        const sstart = state.sel.start();
+        const send = state.sel.end();
+        CGContextSetRGBFillColor(ctx, 0.30, 0.45, 0.75, 0.45);
+        for (0..grid.height) |i| {
+            const tl: i64 = @as(i64, @intCast(hist_len)) - @as(i64, scroll) + @as(i64, @intCast(i));
+            if (tl < 0) continue;
+            const ul: usize = @intCast(tl);
+            if (ul < sstart.line or ul > send.line) continue;
+            const col_lo: usize = if (ul == sstart.line) sstart.col else 0;
+            // End column is exclusive; a mid-span row extends to the full width.
+            const col_hi: usize = if (ul == send.line) send.col else grid.width;
+            if (col_hi <= col_lo) continue;
+            const x = cw * @as(f64, @floatFromInt(col_lo));
+            const w = cw * @as(f64, @floatFromInt(col_hi - col_lo));
+            const y = H - @as(f64, @floatFromInt(i + 1)) * ch;
+            CGContextFillRect(ctx, .{ .origin = .{ .x = x, .y = y }, .size = .{ .width = w, .height = ch } });
         }
     }
 
@@ -976,11 +1037,16 @@ fn viewKeyDown(_: ID, _: SEL, event_obj: ID) callconv(.c) void {
         state.dirty.store(true, .monotonic);
         return;
     }
-    // Cmd+Shift+C → copy visible text
+    // Cmd+C → copy the active selection if any, else fall back to visible.
+    // Cmd+Shift+C → copy visible text (kept for muscle memory).
+    // copySelectionOrVisible / copyVisibleToClipboard lock state.mutex
+    // internally, so we must NOT hold it here (SpinLock is non-reentrant).
+    if (kc == kVK_C and cmd and !shift) {
+        copySelectionOrVisible(state);
+        return;
+    }
     if (kc == kVK_C and cmd and shift) {
-        state.mutex.lock();
         copyVisibleToClipboard(state);
-        state.mutex.unlock();
         return;
     }
     // Cmd+V → paste
@@ -1343,6 +1409,197 @@ fn viewScrollWheel(_: ID, _: SEL, event_obj: ID) callconv(.c) void {
     state.scroll_offset = std.math.clamp(state.scroll_offset + lines, 0, hist);
     state.mutex.unlock();
     state.dirty.store(true, .monotonic);
+}
+
+// ── Mouse selection ─────────────────────────────────────────────────────────
+
+/// Map a mouse event's location to a timeline (line, col) point. Reads grid
+/// geometry, so the caller must hold state.mutex. The view's Y axis is
+/// bottom-up (Cocoa default), matching how viewDrawRect places row i.
+fn eventToTimeline(state: *AppState, view: ID, event_obj: ID) SelPoint {
+    const win_pt = msgPoint(event_obj, sel("locationInWindow"));
+    const pt = msgConvertPoint(view, sel("convertPoint:fromView:"), win_pt, null);
+
+    const cw = state.cell_w;
+    const ch = state.cell_h;
+    const H = state.win_h;
+    if (cw < 1.0 or ch < 1.0) return .{};
+
+    const col_f = pt.x / cw;
+    const col: usize = if (col_f < 0) 0 else @min(@as(usize, @intFromFloat(col_f)), state.grid.width);
+
+    // Visual row from the top: i = (H - y) / ch.
+    const row_f = (H - pt.y) / ch;
+    const i: i64 = if (row_f < 0) 0 else @intFromFloat(row_f);
+    const max_row: i64 = @as(i64, @intCast(state.grid.height)) - 1;
+    const vis_row: i64 = std.math.clamp(i, 0, max_row);
+
+    const hist_len: i64 = @intCast(state.grid.historyLen());
+    const tl = hist_len - @as(i64, state.scroll_offset) + vis_row;
+    const line: usize = if (tl < 0) 0 else @intCast(tl);
+    return .{ .line = line, .col = col };
+}
+
+/// Borrow the cells backing a timeline line (history or live grid). Returns an
+/// empty slice for an out-of-range line. Caller holds state.mutex.
+fn timelineLineCells(state: *AppState, line: usize) []const terminal.Cell {
+    const hist_len = state.grid.historyLen();
+    if (line < hist_len) return state.grid.history.items[line].cells;
+    const sr = line - hist_len;
+    if (sr >= state.grid.height) return &.{};
+    return state.grid.cells[sr * state.grid.width .. (sr + 1) * state.grid.width];
+}
+
+/// True for a "word" character under double-click selection (alnum, plus the
+/// punctuation that commonly appears inside paths/URLs so a double-click grabs
+/// a useful token rather than a fragment).
+fn isWordChar(cp: u21) bool {
+    if (cp > 0x7F) return true; // treat non-ASCII as word content
+    const c: u8 = @intCast(cp);
+    return std.ascii.isAlphanumeric(c) or c == '_' or c == '-' or
+        c == '.' or c == '/' or c == '~' or c == ':' or c == '+' or c == '@';
+}
+
+/// Expand the selection to the word under the click. Caller holds state.mutex.
+fn selectWordAt(state: *AppState, line: usize, col: usize) void {
+    const cells = timelineLineCells(state, line);
+    if (col >= cells.len or !isWordChar(cells[col].codepoint)) {
+        state.sel.anchor = .{ .line = line, .col = col };
+        state.sel.focus = .{ .line = line, .col = col + 1 };
+        return;
+    }
+    var lo = col;
+    while (lo > 0 and isWordChar(cells[lo - 1].codepoint)) lo -= 1;
+    var hi = col;
+    while (hi < cells.len and isWordChar(cells[hi].codepoint)) hi += 1;
+    state.sel.anchor = .{ .line = line, .col = lo };
+    state.sel.focus = .{ .line = line, .col = hi };
+}
+
+// mouseDown:(NSEvent*)
+fn viewMouseDown(self_obj: ID, _: SEL, event_obj: ID) callconv(.c) void {
+    const state = g_state orelse return;
+    // Selection is a primary-screen affordance; leave alt-screen apps (vim,
+    // less) to own the mouse.
+    if (state.grid.isAlternateScreen()) return;
+
+    const clicks = msgLong(event_obj, sel("clickCount"));
+
+    state.mutex.lock();
+    const p = eventToTimeline(state, self_obj, event_obj);
+    state.sel.active = true;
+    if (clicks >= 3) {
+        // Triple-click: select the whole line.
+        state.sel.dragging = false;
+        state.sel.anchor = .{ .line = p.line, .col = 0 };
+        state.sel.focus = .{ .line = p.line, .col = state.grid.width };
+    } else if (clicks == 2) {
+        // Double-click: select the word, no drag-extend.
+        state.sel.dragging = false;
+        selectWordAt(state, p.line, p.col);
+    } else {
+        state.sel.dragging = true;
+        state.sel.anchor = p;
+        state.sel.focus = p;
+    }
+    state.mutex.unlock();
+    state.dirty.store(true, .monotonic);
+}
+
+// mouseDragged:(NSEvent*)
+fn viewMouseDragged(self_obj: ID, _: SEL, event_obj: ID) callconv(.c) void {
+    const state = g_state orelse return;
+    if (!state.sel.active or !state.sel.dragging) return;
+
+    state.mutex.lock();
+    state.sel.focus = eventToTimeline(state, self_obj, event_obj);
+    state.mutex.unlock();
+    state.dirty.store(true, .monotonic);
+}
+
+// mouseUp:(NSEvent*)
+fn viewMouseUp(_: ID, _: SEL, _: ID) callconv(.c) void {
+    const state = g_state orelse return;
+    state.sel.dragging = false;
+    // Keep the highlight visible so the user can copy; cleared on next keypress
+    // or a fresh click. An empty span (a bare click) collapses to nothing.
+    if (state.sel.isEmpty()) state.sel.active = false;
+    state.dirty.store(true, .monotonic);
+}
+
+/// Clear any active selection. Caller need not hold the lock for the flags;
+/// they are only read/written from the main thread.
+fn clearSelection(state: *AppState) void {
+    if (!state.sel.active) return;
+    state.sel = .{};
+    state.dirty.store(true, .monotonic);
+}
+
+/// Build the selected text in timeline order. Caller holds state.mutex.
+/// Rows are joined with '\n'; trailing blanks on each row are trimmed.
+fn selectionTextAlloc(state: *AppState) ![]u8 {
+    const allocator = state.allocator;
+    const s = state.sel.start();
+    const e = state.sel.end();
+
+    var buf: std.ArrayList(u8) = .empty;
+    errdefer buf.deinit(allocator);
+
+    var line = s.line;
+    while (line <= e.line) : (line += 1) {
+        const cells = timelineLineCells(state, line);
+        const col_lo: usize = if (line == s.line) s.col else 0;
+        const col_hi: usize = if (line == e.line) @min(e.col, cells.len) else cells.len;
+        var row: std.ArrayList(u8) = .empty;
+        defer row.deinit(allocator);
+        var c = col_lo;
+        while (c < col_hi and c < cells.len) : (c += 1) {
+            const cell = cells[c];
+            if (cell.isContinuation()) continue;
+            const cp = if (cell.codepoint == 0) ' ' else cell.codepoint;
+            try appendUtf8(allocator, &row, cp);
+        }
+        // Trim trailing spaces so a full-width row doesn't carry padding.
+        var end = row.items.len;
+        while (end > 0 and row.items[end - 1] == ' ') end -= 1;
+        try buf.appendSlice(allocator, row.items[0..end]);
+        if (line != e.line) try buf.append(allocator, '\n');
+    }
+    return buf.toOwnedSlice(allocator);
+}
+
+fn appendUtf8(allocator: Allocator, buf: *std.ArrayList(u8), cp: u21) !void {
+    if (cp <= 0x7F) {
+        try buf.append(allocator, @intCast(cp));
+    } else if (cp <= 0x7FF) {
+        try buf.append(allocator, @intCast(0xC0 | (cp >> 6)));
+        try buf.append(allocator, @intCast(0x80 | (cp & 0x3F)));
+    } else if (cp <= 0xFFFF) {
+        try buf.append(allocator, @intCast(0xE0 | (cp >> 12)));
+        try buf.append(allocator, @intCast(0x80 | ((cp >> 6) & 0x3F)));
+        try buf.append(allocator, @intCast(0x80 | (cp & 0x3F)));
+    } else {
+        try buf.append(allocator, @intCast(0xF0 | (cp >> 18)));
+        try buf.append(allocator, @intCast(0x80 | ((cp >> 12) & 0x3F)));
+        try buf.append(allocator, @intCast(0x80 | ((cp >> 6) & 0x3F)));
+        try buf.append(allocator, @intCast(0x80 | (cp & 0x3F)));
+    }
+}
+
+/// Copy the active selection if present; otherwise fall back to copy-visible.
+fn copySelectionOrVisible(state: *AppState) void {
+    if (state.sel.active and !state.sel.isEmpty()) {
+        state.mutex.lock();
+        const text = selectionTextAlloc(state) catch {
+            state.mutex.unlock();
+            return;
+        };
+        state.mutex.unlock();
+        defer state.allocator.free(text);
+        if (text.len != 0) copyTextToClipboard(text);
+        return;
+    }
+    copyVisibleToClipboard(state);
 }
 
 // ── Overlay actions ───────────────────────────────────────────────────────
@@ -2128,6 +2385,16 @@ fn requestAgentRun(state: *AppState, prompt: []const u8) void {
 // only raise an approval request; the PTY write happens only when the user
 // explicitly confirms with Y in the overlay.
 fn processAgentResponse(state: *AppState, line: []const u8) void {
+    // Streaming delta events: {"id":...,"event":"agent/stream","delta":"..."}
+    // Append the delta text directly to the transcript so tokens appear as
+    // they arrive. No PTY write -- transcript is display-only.
+    if (jsonContains(line, "\"event\":\"agent/stream\"")) {
+        if (jsonStringField(line, "delta")) |delta| {
+            appendTranscript(state, delta);
+        }
+        return;
+    }
+
     // Error envelopes: {"id":...,"ok":false,"error":{"code":"...","message":"..."}}
     if (jsonContains(line, "\"ok\":false")) {
         const code = jsonStringField(line, "code") orelse "error";
