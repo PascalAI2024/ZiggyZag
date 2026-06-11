@@ -12,8 +12,8 @@ Companion documents: [`alpha-tasks.md`](alpha-tasks.md) is the line-by-line task
 | --- | --- | --- | --- | --- |
 | 1 | Dogfood | Pascal only | Pascal uses ZiggyZag every day | Complete |
 | 2 | Unified theme | Pascal + reviewer | One theme drives shell + desktop · brand · landing · ops | **Complete — tagged `v0.1.0-alpha.3`** |
-| 3 | Cross-platform | 3 friend testers | Native macOS & Linux desktop · AgentD universal input | **Active — macOS window shipped** |
-| 4 | Durable state | 6 friend testers | SQLite history · streaming pipelines | Planned |
+| 3 | Cross-platform | 3 friend testers | Native macOS & Linux desktop · AgentD universal input | **Active — macOS window shipped 2026-06-10; Linux native window + friend-tester cohort remaining** |
+| 4 | Durable state | 6 friend testers | SQLite history · streaming pipelines | Planned (streaming pipelines + durable history pulled forward into W3) |
 | 5 | Tabs & session | Public alpha | Tabs · session restore · keybindings · theme/prompt sync | Planned |
 | 6 | 1.0 | Public | Signed releases · 5 testers × 2 weeks · cross-platform parity | Planned |
 
@@ -69,17 +69,30 @@ Companion documents: [`alpha-tasks.md`](alpha-tasks.md) is the line-by-line task
 **Entry gate.** ✓ Wave 2 complete and tagged `v0.1.0-alpha.3`.
 
 **Exit gate.**
-- ✓ Native macOS desktop host launches a window, hosts a PTY, renders the grid. Cocoa NSWindow + NSView + CoreText/CoreGraphics with full overlay system (command palette, scrollback search, quick select, settings, theme cycle). AgentD universal input (`Ctrl+Space` — type natural language, preview command, insert into prompt). Same for Linux.
+- ✓ Native macOS desktop host launches a window, hosts a PTY, renders the grid. Cocoa NSWindow + NSView + CoreText/CoreGraphics with full overlay system (command palette, scrollback search, quick select, settings, theme cycle). AgentD universal input (`Ctrl+Space` — type natural language, preview command, insert into prompt).
 - The `Pty` abstraction in `apps/desktop/src/pty.zig` is no longer a stub; both Windows and POSIX hosts go through it.
 - ✓ AgentD universal input: `Ctrl+Space` opens an inline overlay above the prompt, inserts (not executes) the previewed command.
 - ✓ Copy visible text (`Cmd+Shift+C` on macOS) to system clipboard via NSPasteboard.
 - ✓ Live theme cycling (`Ctrl+Shift+T`) broadcasts OSC 7777 to the shell PTY.
 - ✓ `docs/SHELL_INTEGRATION.md` documents the OSC 777 / WezTerm-compatible event protocol.
 - ✓ The "no provider configured" inline state is shipped (per `MASTERPLAN.md` risk mitigation).
+- ✓ Unicode/grapheme cell model shipped (Wave 3 pull-forward, 2026-06-11): zero-width marks, astral glyphs, wide-cell pairs, UTF-8 decode with invalid-byte replacement.
+- ✓ SGR render attributes + 256/truecolor on macOS (2026-06-11): underline, italic, strikethrough, bold, double-underline, 256-color and RGB SGR sequences.
+- ✓ Semantic prompt zones + prompt-jump navigation (2026-06-11): OSC 7777-driven semantic zones, `Cmd+Up`/`Cmd+Down` jumps to previous/next prompt.
+- ✓ Mouse selection + double/triple-click word/line select + `Cmd+C` copy (2026-06-11).
+- ✓ VT conformance harness (2026-06-11): purpose-built binary + grid snapshot diff, 15/15 cases pass, wired into CI.
+- ✓ ZiggyZag.app bundle (2026-06-11): `zig build bundle` produces `.app` with `Info.plist` and bundle ID.
+- ✓ Streaming native pipelines (Wave 4 pull-forward, 2026-06-11): real OS pipe chain between stages, deadlock regression test in CI.
+- ✓ Durable history on by default (Wave 4 pull-forward, 2026-06-11): TSV backend, 16 secret-redaction patterns, import/export.
+- ✓ Cursor-aware completion v2 (2026-06-11): quoted and escaped path tokens, programmable completer output bounded and deduplicated.
+- ✓ Fish-grade syntax highlighting on the prompt (2026-06-11).
+- ✓ AgentD cancel protocol + Windows panel streaming/provider-absent parity (2026-06-11).
+- ✓ CI headless smoke test on macOS and Linux (2026-06-11): `zig build smoke-desktop` runs in the CI matrix.
+- Same for Linux native window: not yet shipped.
 - 3 friend testers have run ZiggyZag for at least 3 sessions each on their primary platform (one Windows, one macOS, one Linux).
 
-**Done this wave:** macOS native Cocoa window with full feature parity to Windows host.
-**Remaining:** Linux native window, friend tester cohort 1 onboarding, cross-platform PTY abstraction unification.
+**Done this wave:** macOS native Cocoa window with full feature parity to Windows host, plus significant Wave 4 pull-forwards (streaming pipelines, durable history, VT conformance, Unicode model, SGR truecolor, Fish-grade syntax highlighting).
+**Remaining:** Linux native window, friend-tester cohort 1 onboarding.
 
 **Audience.** 3 friend testers + Pascal.
 
@@ -204,4 +217,4 @@ What this plan deliberately does not do:
 
 ---
 
-*Last updated: 2026-05-17. Update this document when a wave exits or a gate changes. Do not rename waves once announced.*
+*Last updated: 2026-06-11. Update this document when a wave exits or a gate changes. Do not rename waves once announced.*

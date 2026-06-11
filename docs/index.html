@@ -910,7 +910,7 @@
         <tr><td>Tabs</td><td class="n">Wave 5</td><td class="y">Yes</td><td class="y">Yes</td><td class="y">Yes</td></tr>
         <tr><td>Account required</td><td class="y">Never</td><td class="y">Never</td><td class="y">Never</td><td class="m">For some features</td></tr>
         <tr><td>License</td><td>MIT</td><td>MIT</td><td>MIT</td><td>Closed-source</td></tr>
-        <tr><td>Lines of code</td><td>~18.8k</td><td>~150k</td><td>~210k</td><td>Not public</td></tr>
+        <tr><td>Lines of code</td><td>~25k</td><td>~150k</td><td>~210k</td><td>Not public</td></tr>
       </tbody>
     </table>
     <p style="color: var(--zz-fg-muted); font-size: 13.5px; margin-top: 16px;">
@@ -925,13 +925,13 @@
     <h2>Numbers that matter</h2>
     <p class="lede">The number that matters most is "lines of Zig you can read in a focused sitting." The rest is supporting evidence.</p>
     <div class="stats">
-      <div class="stat"><div class="n" style="color: var(--zz-accent);">18,850</div><div class="l">lines of Zig</div></div>
-      <div class="stat"><div class="n" style="color: var(--zz-info);">213</div><div class="l">unit tests (some skip off-target)</div></div>
+      <div class="stat"><div class="n" style="color: var(--zz-accent);">~25,100</div><div class="l">lines of Zig</div></div>
+      <div class="stat"><div class="n" style="color: var(--zz-info);">~220</div><div class="l">unit tests (some skip off-target)</div></div>
       <div class="stat"><div class="n" style="color: var(--zz-violet);">20</div><div class="l">built-in themes</div></div>
       <div class="stat"><div class="n" style="color: var(--zz-warn);">5</div><div class="l">cross-built targets</div></div>
       <div class="stat"><div class="n">4</div><div class="l">binaries, one workspace</div></div>
+      <div class="stat"><div class="n">15/15</div><div class="l">VT conformance cases</div></div>
       <div class="stat"><div class="n">0</div><div class="l">third-party deps</div></div>
-      <div class="stat"><div class="n">0</div><div class="l"><code class="inline">@panic</code> calls</div></div>
       <div class="stat"><div class="n">0</div><div class="l">accounts required</div></div>
     </div>
   </div>
@@ -944,8 +944,8 @@
     <p class="lede">ZiggyZag is alpha software. Windows and macOS both have native graphical hosts; Linux builds the shell and AgentD and runs a terminal-attached launcher while the native window matures.</p>
 
     <div style="background: var(--zz-bg-panel); border: 1px solid var(--zz-border); border-left: 3px solid var(--zz-accent); border-radius: var(--zz-radius-md); padding: 16px 20px; margin-bottom: 32px; font-size: 14px; color: var(--zz-fg-muted); line-height: 1.6;">
-      <strong style="color: var(--zz-fg);">Recent: macOS native window landed (2026-06-10).</strong>
-      The macOS Cocoa + CoreText native window is now feature-complete with the Windows host: command palette (<kbd>Ctrl+Shift+P</kbd>), scrollback search (<kbd>Ctrl+Shift+F</kbd>), quick select (<kbd>Ctrl+Shift+O</kbd>), settings overlay (<kbd>Ctrl+,</kbd>), theme cycling with live OSC 7777 broadcast (<kbd>Ctrl+Shift+T</kbd>), copy visible text (<kbd>Cmd+Shift+C</kbd>), and AgentD universal input (<kbd>Ctrl+Space</kbd> — type natural language, preview the suggested command).
+      <strong style="color: var(--zz-fg);">Just shipped (2026-06-11): macOS sprint 2 complete.</strong>
+      Unicode/grapheme cell model (wide pairs, zero-width marks, astral glyphs), SGR render attributes + 256/truecolor, semantic prompt zones + <kbd>Cmd+Up</kbd>/<kbd>Cmd+Down</kbd> prompt-jump, mouse selection with double/triple-click and <kbd>Cmd+C</kbd> copy, VT conformance harness (15/15), ZiggyZag.app bundle (<code class="inline">zig build bundle</code>), streaming OS pipe-chain pipelines with deadlock regression test, durable history on by default with 16-pattern secret redaction, Fish-grade syntax highlighting, and AgentD cancel protocol.
       Details: <a href="../CHANGELOG.md">CHANGELOG.md</a>.
     </div>
 
@@ -966,14 +966,19 @@
 
       <div class="platform ready">
         <h3>macOS <span class="status-badge">alpha</span></h3>
-        <div class="role">Native Cocoa + CoreText window. Activate with <code class="inline">ZIGGYZAG_NATIVE_WINDOW=1 ziggyzag-desktop</code>. Landed 2026-06-10.</div>
+        <div class="role">Native Cocoa + CoreText window. Activate with <code class="inline">ZIGGYZAG_NATIVE_WINDOW=1 ziggyzag-desktop</code> or open <code class="inline">ZiggyZag.app</code>.</div>
         <ul>
           <li>Cocoa NSWindow + NSView + CoreText grid renderer</li>
+          <li>Unicode/grapheme model — wide pairs, zero-width marks, astral glyphs</li>
+          <li>SGR render attributes + 256-color and RGB truecolor</li>
+          <li>Semantic prompt zones + Cmd+Up/Down prompt-jump</li>
+          <li>Mouse selection + double/triple-click word/line select + Cmd+C</li>
           <li>Command palette, search, quick select, settings overlay</li>
           <li>Theme cycling with live OSC 7777 broadcast</li>
           <li>AgentD universal input (type → preview → insert)</li>
           <li>Copy visible text, Cmd+V paste, mouse-wheel scrollback</li>
-          <li class="planned">Split panes — Wave 3</li>
+          <li>ZiggyZag.app bundle via <code class="inline">zig build bundle</code></li>
+          <li class="planned">Split panes — Wave 4</li>
           <li class="planned">Signed / notarised distribution — Wave 6</li>
         </ul>
       </div>
@@ -1023,7 +1028,7 @@
       <div class="wave">
         <div class="num">wave 4</div>
         <h4>Durable state</h4>
-        <p>SQLite history backend (Atuin-shaped), streaming pipelines, VT conformance suite. Public alpha announcement.</p>
+        <p>SQLite history backend (Atuin-shaped). Streaming pipelines, VT conformance, and durable history already pulled forward into Wave 3.</p>
       </div>
       <div class="wave">
         <div class="num">wave 5</div>
