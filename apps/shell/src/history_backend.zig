@@ -696,7 +696,10 @@ test "TsvBackend query filters by cwd_prefix and command_substring" {
     // Filter by cwd_prefix.
     const proj_results = try be.query(allocator, .{ .cwd_prefix = "/project" });
     defer {
-        for (proj_results) |r| { allocator.free(r.command); allocator.free(r.cwd); }
+        for (proj_results) |r| {
+            allocator.free(r.command);
+            allocator.free(r.cwd);
+        }
         allocator.free(proj_results);
     }
     try std.testing.expectEqual(@as(usize, 2), proj_results.len);
@@ -704,7 +707,10 @@ test "TsvBackend query filters by cwd_prefix and command_substring" {
     // Filter by command_substring.
     const git_results = try be.query(allocator, .{ .command_substring = "git" });
     defer {
-        for (git_results) |r| { allocator.free(r.command); allocator.free(r.cwd); }
+        for (git_results) |r| {
+            allocator.free(r.command);
+            allocator.free(r.cwd);
+        }
         allocator.free(git_results);
     }
     try std.testing.expectEqual(@as(usize, 2), git_results.len);
@@ -736,7 +742,10 @@ test "TsvBackend export_tsv writes last max_export_rows lines" {
     const dst_be = dst_tsv.backend();
     const results = try dst_be.query(allocator, .{});
     defer {
-        for (results) |r| { allocator.free(r.command); allocator.free(r.cwd); }
+        for (results) |r| {
+            allocator.free(r.command);
+            allocator.free(r.cwd);
+        }
         allocator.free(results);
     }
     try std.testing.expectEqual(@as(usize, 2), results.len);
