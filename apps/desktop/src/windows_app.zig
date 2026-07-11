@@ -2479,7 +2479,11 @@ const App = struct {
         var title: [512]u8 = undefined;
         const cwd = if (pane.status.cwd_len > 0) pane.status.cwdSlice() else "starting";
         const state = if (pane.startup_error_len > 0) "needs setup" else if (!pane.status.ready) "starting" else if (pane.status.last_status) |value| statusName(value) else "ready";
-        const text = std.fmt.bufPrint(&title, "ZiggyZag - {s} - {s}", .{ cwd, state }) catch "ZiggyZag";
+        const same_segment = std.mem.eql(u8, cwd, state);
+        const text = if (same_segment)
+            std.fmt.bufPrint(&title, "ZiggyZag - {s}", .{state}) catch "ZiggyZag"
+        else
+            std.fmt.bufPrint(&title, "ZiggyZag - {s} - {s}", .{ cwd, state }) catch "ZiggyZag";
         var wide: [512]WCHAR = undefined;
         const len = utf8ToWide(text, &wide);
         wide[len] = 0;
