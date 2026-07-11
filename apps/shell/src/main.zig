@@ -4615,16 +4615,18 @@ const Shell = struct {
             const result = self.runPipelineStage(&parsed, input) catch |err| switch (err) {
                 error.FileNotFound => {
                     try appendFmt(self.allocator, &stderr_output, "{s}: command not found\n", .{parsed.argv.items[0]});
+                    const next_input = try self.allocator.dupe(u8, "");
                     self.allocator.free(input);
-                    input = try self.allocator.dupe(u8, "");
+                    input = next_input;
                     status = 127;
                     continue;
                 },
                 error.UnsupportedPipelineStage => return false,
                 error.PipelineOutputTooLarge => {
                     try appendFmt(self.allocator, &stderr_output, "{s}: pipeline output exceeded {d} bytes\n", .{ parsed.argv.items[0], max_pipeline_capture_bytes });
+                    const next_input = try self.allocator.dupe(u8, "");
                     self.allocator.free(input);
-                    input = try self.allocator.dupe(u8, "");
+                    input = next_input;
                     status = 1;
                     continue;
                 },
@@ -4632,8 +4634,9 @@ const Shell = struct {
             };
             defer result.deinit(self.allocator);
 
+            const next_input = try self.allocator.dupe(u8, result.stdout);
             self.allocator.free(input);
-            input = try self.allocator.dupe(u8, result.stdout);
+            input = next_input;
             try stderr_output.appendSlice(self.allocator, result.stderr);
             status = result.status;
         }
