@@ -28,6 +28,7 @@ bin/
 .worktrees/
 .mavis/
 .trash/
+.pi-subagents/
 
 # IDE and editor metadata
 .idea/
