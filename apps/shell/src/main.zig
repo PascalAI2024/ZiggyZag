@@ -7171,8 +7171,16 @@ test "path completion quotes a filename with spaces" {
     const abs_dir = try std.Io.Dir.cwd().realPathFileAlloc(io, rel_dir, allocator);
     defer allocator.free(abs_dir);
 
-    // Type: `cat <abs_dir>/my ` and Tab — the unique match is "my report.txt".
-    const typed = try std.fmt.allocPrint(allocator, "cat {s}/my", .{abs_dir});
+    // The shell is POSIX-like by design: outside quotes `\X` is an escape that
+    // yields `X`, and completion treats only `/` as a path separator. A native
+    // Windows path would therefore have its separators eaten and never resolve,
+    // so normalise once here and use the same form for typed *and* expected.
+    const typed_dir = try allocator.dupe(u8, abs_dir);
+    defer allocator.free(typed_dir);
+    std.mem.replaceScalar(u8, typed_dir, '\\', '/');
+
+    // Type: `cat <typed_dir>/my ` and Tab — the unique match is "my report.txt".
+    const typed = try std.fmt.allocPrint(allocator, "cat {s}/my", .{typed_dir});
     defer allocator.free(typed);
 
     var line: std.ArrayList(u8) = .empty;
@@ -7183,7 +7191,7 @@ test "path completion quotes a filename with spaces" {
     try shell.completeCommand(&line, &cursor, sink);
 
     // The spaced path must be inserted quoted so it parses as one argument.
-    const expected = try std.fmt.allocPrint(allocator, "cat '{s}/my report.txt' ", .{abs_dir});
+    const expected = try std.fmt.allocPrint(allocator, "cat '{s}/my report.txt' ", .{typed_dir});
     defer allocator.free(expected);
     try std.testing.expectEqualStrings(expected, line.items);
 }
