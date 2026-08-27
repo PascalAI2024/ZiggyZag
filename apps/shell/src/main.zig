@@ -7775,6 +7775,40 @@ test "a missing non-first pipeline stage keeps the shell alive" {
     try std.testing.expectEqualStrings("second\n", written);
 }
 
+test "a missing middle pipeline stage still runs the stages after it" {
+    // The buffered path feeds downstream stages empty input after a missing one
+    // and lets the LAST stage set the status (docs/reference/pipelines.md); the
+    // streaming path has to match. So 127 must NOT leak out of a middle stage:
+    // `tee` still runs, on the empty stdin it is given, and still owns the
+    // status. Same POSIX-only restriction as the test above.
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var env = std.process.Environ.Map.init(allocator);
+    defer env.deinit();
+
+    var shell = Shell.init(allocator, io, &env);
+    defer shell.deinit();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const out_path = try std.fs.path.join(allocator, &.{ ".zig-cache", "tmp", &tmp.sub_path, "tail.txt" });
+    defer allocator.free(out_path);
+
+    const line = try std.fmt.allocPrint(allocator, "cat /dev/null | ziggyzag-no-such-command | tee {s}", .{out_path});
+    defer allocator.free(line);
+    try std.testing.expect(try shell.execute(line));
+
+    // The status is the last stage's exit code, not the missing stage's 127.
+    try std.testing.expectEqual(@as(u8, 0), shell.last_status);
+    // And `tee` genuinely ran: it created its output file from an empty stdin.
+    const written = try tmp.dir.readFileAlloc(io, "tail.txt", allocator, .unlimited);
+    defer allocator.free(written);
+    try std.testing.expectEqual(@as(usize, 0), written.len);
+}
+
 pub fn main(init_data: std.process.Init) !void {
     var shell = Shell.init(init_data.gpa, init_data.io, init_data.environ_map);
     defer shell.deinit();
