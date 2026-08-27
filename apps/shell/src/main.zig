@@ -4958,7 +4958,14 @@ const Shell = struct {
             for (children.items) |*child| child.kill(self.io);
             children.deinit(self.allocator);
         }
+        // Reserve up front so the post-spawn append below can never fail: an
+        // allocation failure there would leave a live child outside the list
+        // the defer reaps, i.e. an orphaned process.
+        try children.ensureTotalCapacity(self.allocator, segments.len);
 
+        // Set when the LAST stage was the missing command: there is then no
+        // tail to drain, and 127 is the pipeline's status.
+        var missing_last = false;
         var prev_stdout: ?std.Io.File = null;
         // If we bail mid-setup, make sure a dangling upstream pipe end is closed.
         errdefer if (prev_stdout) |f| f.close(self.io);
@@ -4996,10 +5003,32 @@ const Shell = struct {
                 // A missing command (or any spawn failure) on the FIRST stage
                 // can safely fall back to the buffered path, which reports the
                 // error in shell-consistent form. After the first stage has
-                // spawned we must not fall back (it would re-run stage 0), so we
-                // surface the error.
+                // spawned we must not fall back (it would re-run stage 0, and
+                // stage 0 may not be idempotent), so we report the failure here
+                // instead — propagating it would kill the interactive REPL,
+                // which runs `try self.execute(...)`.
                 if (index == 0) return error.StreamingPipelineUnsupported;
-                return err;
+                // Only a missing command is recoverable; every other spawn
+                // failure stays fatal, matching the buffered path's catch.
+                if (err != error.FileNotFound) return err;
+
+                // Close our copy of the upstream pipe BEFORE the fallible write
+                // below: we own it (it was detached from the child), so a failing
+                // write must not leave it for the errdefer to close a second
+                // time. Closing it also gives the upstream stage its EOF/EPIPE.
+                if (prev_stdout) |f| {
+                    f.close(self.io);
+                    prev_stdout = null;
+                }
+                var stderr = std.Io.File.stderr().writerStreaming(self.io, &.{});
+                try stderr.interface.print("{s}: command not found\n", .{parsed.argv.items[0]});
+
+                // Keep going with a null upstream, so the next stage spawns with
+                // `.ignore` (empty) stdin — exactly what the buffered path feeds
+                // downstream after a missing stage, and it keeps the documented
+                // "last stage determines status" contract intact.
+                if (is_last) missing_last = true;
+                continue;
             };
 
             // The parent no longer needs the previous stage's stdout: it now
@@ -5009,7 +5038,7 @@ const Shell = struct {
                 prev_stdout = null;
             }
 
-            try children.append(self.allocator, child);
+            children.appendAssumeCapacity(child);
             if (!is_last) {
                 prev_stdout = children.items[children.items.len - 1].stdout.?;
                 // Detach from the Child so its own bookkeeping doesn't double
@@ -5021,42 +5050,47 @@ const Shell = struct {
         // Drain the last stage's stdout incrementally, bounded. `readSliceShort`
         // returns whatever is available (a short count at EOF), so we stream the
         // tail in fixed-size chunks without ever holding the whole output.
-        const last = &children.items[children.items.len - 1];
-        const out_file = last.stdout.?;
-        var read_buf: [16 * 1024]u8 = undefined;
-        var copy_buf: [16 * 1024]u8 = undefined;
-        var reader = out_file.readerStreaming(self.io, &read_buf);
-        var stdout = std.Io.File.stdout().writerStreaming(self.io, &.{});
+        // Skipped when the last stage was the missing command: the newest child
+        // is then an upstream stage whose stdout we already detached and closed.
+        if (!missing_last) {
+            const last = &children.items[children.items.len - 1];
+            const out_file = last.stdout.?;
+            var read_buf: [16 * 1024]u8 = undefined;
+            var copy_buf: [16 * 1024]u8 = undefined;
+            var reader = out_file.readerStreaming(self.io, &read_buf);
+            var stdout = std.Io.File.stdout().writerStreaming(self.io, &.{});
 
-        var total: usize = 0;
-        var capped = false;
-        while (true) {
-            // readSliceShort signals EOF by returning fewer bytes than asked
-            // (including 0); it only *errors* on a read failure.
-            const n = try reader.interface.readSliceShort(&copy_buf);
-            if (n > 0) {
-                total += n;
-                if (total > max_pipeline_capture_bytes) {
-                    capped = true;
-                    break;
+            var total: usize = 0;
+            var capped = false;
+            while (true) {
+                // readSliceShort signals EOF by returning fewer bytes than asked
+                // (including 0); it only *errors* on a read failure.
+                const n = try reader.interface.readSliceShort(&copy_buf);
+                if (n > 0) {
+                    total += n;
+                    if (total > max_pipeline_capture_bytes) {
+                        capped = true;
+                        break;
+                    }
+                    // In test builds the test runner speaks a binary protocol over
+                    // stdout; writing pipeline output there corrupts it and hangs
+                    // the process.  Tests only check last_status, not the output.
+                    if (!builtin.is_test) try stdout.interface.writeAll(copy_buf[0..n]);
                 }
-                // In test builds the test runner speaks a binary protocol over
-                // stdout; writing pipeline output there corrupts it and hangs
-                // the process.  Tests only check last_status, not the output.
-                if (!builtin.is_test) try stdout.interface.writeAll(copy_buf[0..n]);
+                if (n < copy_buf.len) break; // short read => stream drained
             }
-            if (n < copy_buf.len) break; // short read => stream drained
-        }
-        if (capped) {
-            var stderr = std.Io.File.stderr().writerStreaming(self.io, &.{});
-            try stderr.interface.print("pipeline output exceeded {d} bytes\n", .{max_pipeline_capture_bytes});
+            if (capped) {
+                var stderr = std.Io.File.stderr().writerStreaming(self.io, &.{});
+                try stderr.interface.print("pipeline output exceeded {d} bytes\n", .{max_pipeline_capture_bytes});
+            }
         }
 
-        // Wait for every child; the pipeline's status is the last stage's.
-        var status: u8 = 0;
+        // Wait for every child; the pipeline's status is the last stage's — or
+        // 127 when that last stage was the command we couldn't find.
+        var status: u8 = if (missing_last) 127 else 0;
         for (children.items, 0..) |*child, i| {
             const term = child.wait(self.io) catch std.process.Child.Term{ .exited = 1 };
-            if (i == children.items.len - 1) status = termExitCode(term);
+            if (!missing_last and i == children.items.len - 1) status = termExitCode(term);
         }
         children.clearRetainingCapacity(); // all reaped; skip the defer kill
 
@@ -7694,6 +7728,51 @@ test "streaming pipeline does not deadlock on a fast producer + early-exit consu
     try std.testing.expect(ran);
     // `wc -c` exits 0 having counted exactly the bytes `head` emitted.
     try std.testing.expectEqual(@as(u8, 0), shell.last_status);
+}
+
+test "a missing non-first pipeline stage keeps the shell alive" {
+    // Regression guard: `<producer> | nosuchcmd` used to propagate the spawn
+    // error out of runStreamingPipeline, through `try self.execute(...)` in the
+    // REPL loop and out of `main`, printing a stack trace and killing the
+    // session. A missing command must be *reported*, not propagated — the very
+    // next command has to still run. Nothing else tests survival-after-error.
+    // POSIX-only, like the S13 deadlock guard above: on Windows the streaming
+    // chain never reaches the executable lookup at all — handing stage 0's
+    // stdout pipe to stage 1 as `.file` fails in processSpawnWindows with
+    // PIPE_NOT_AVAILABLE/error.NoDevice for *every* multi-stage pipeline, valid
+    // command or not. That is a separate, pre-existing defect; a missing
+    // command can't be distinguished until it is fixed.
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var env = std.process.Environ.Map.init(allocator);
+    defer env.deinit();
+
+    var shell = Shell.init(allocator, io, &env);
+    defer shell.deinit();
+
+    // Stage 0 must be a real external command so the all-external streaming
+    // path (not the buffered fallback) handles the line.
+    const keep_running = try shell.execute("cat /dev/null | ziggyzag-no-such-command");
+    try std.testing.expect(keep_running);
+    // The missing command IS the last stage here, so it owns the status.
+    try std.testing.expectEqual(@as(u8, 127), shell.last_status);
+
+    // Now the second command: it must still run and still produce output.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const out_path = try std.fs.path.join(allocator, &.{ ".zig-cache", "tmp", &tmp.sub_path, "after.txt" });
+    defer allocator.free(out_path);
+
+    const second_line = try std.fmt.allocPrint(allocator, "echo second > {s}", .{out_path});
+    defer allocator.free(second_line);
+    try std.testing.expect(try shell.execute(second_line));
+
+    const written = try tmp.dir.readFileAlloc(io, "after.txt", allocator, .unlimited);
+    defer allocator.free(written);
+    try std.testing.expectEqualStrings("second\n", written);
 }
 
 pub fn main(init_data: std.process.Init) !void {
