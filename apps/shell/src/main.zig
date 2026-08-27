@@ -4922,7 +4922,10 @@ const Shell = struct {
         }
 
         var stdout = std.Io.File.stdout().writerStreaming(self.io, &.{});
-        try stdout.interface.writeAll(input);
+        // Same reason the streaming path gates its stdout write: in test builds
+        // the test runner speaks a binary protocol over stdout, and pipeline
+        // output written there corrupts it. Tests check last_status, not output.
+        if (!builtin.is_test) try stdout.interface.writeAll(input);
         var stderr = std.Io.File.stderr().writerStreaming(self.io, &.{});
         try stderr.interface.writeAll(stderr_output.items);
         self.last_status = status;
@@ -4952,6 +4955,33 @@ const Shell = struct {
     /// pipeline (status set), or errors with `StreamingPipelineUnsupported` to
     /// request the caller's buffered fallback.
     fn runStreamingPipeline(self: *Shell, segments: []const []u8) !bool {
+        // Windows cannot run this design at all, so don't start: hand every
+        // multi-stage pipeline to the buffered fallback instead.
+        //
+        // The whole scheme rests on giving stage N+1 stage N's stdout pipe as
+        // `.file` stdin. On Windows, Zig 0.16.0 implements `.file` stdio by
+        // *reopening* the handle to get an inheritable duplicate —
+        // `OpenFile(&.{}, .{ .dir = file.handle, .creation = .OPEN, .sa =
+        // .{ .bInheritHandle = .TRUE } })` in `Threaded.processSpawnWindows`.
+        // That relative reopen is the documented trick for real files, but a
+        // Windows anonymous pipe is a *named* pipe created with
+        // `maximum_instances = 1` (`Threaded.windowsCreatePipe` ->
+        // `NtCreateNamedPipeFile`) whose one client slot is already taken by the
+        // producer's own end, so the reopen asks for an instance that does not
+        // exist and gets `STATUS_PIPE_NOT_AVAILABLE` -> `error.NoDevice`.
+        // Verified with a three-case probe: a real file as `.file` stdin spawns
+        // fine, a live pipe read end fails with NoDevice, and the parent can
+        // still read that very handle — so it is the handle *kind*, not
+        // inheritance, lifetime, or the child executable.
+        //
+        // `std.process.SpawnOptions.StdIo` has no raw-handle variant, so there
+        // is no supported way to hand a child a pipe end here; the real fix
+        // belongs upstream (duplicate the handle instead of reopening it).
+        // Until then Windows trades S13's constant-memory streaming for
+        // pipelines that work at all — the buffered path spawns stages one at a
+        // time with `.pipe` stdio, which Windows handles correctly.
+        if (builtin.os.tag == .windows) return error.StreamingPipelineUnsupported;
+
         var children: std.ArrayList(std.process.Child) = .empty;
         defer {
             // Reap/kill anything still tracked (errors after partial spawn).
@@ -7807,6 +7837,51 @@ test "a missing middle pipeline stage still runs the stages after it" {
     const written = try tmp.dir.readFileAlloc(io, "tail.txt", allocator, .unlimited);
     defer allocator.free(written);
     try std.testing.expectEqual(@as(usize, 0), written.len);
+}
+
+test "an all-external two-stage pipeline runs and the shell survives" {
+    // Runs everywhere, but over different machinery: the streaming chain on
+    // POSIX, the buffered fallback on Windows (see the gate in
+    // runStreamingPipeline). Either way bytes have to cross the junction and
+    // the shell has to stay alive.
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var env = std.process.Environ.Map.init(allocator);
+    defer env.deinit();
+
+    var shell = Shell.init(allocator, io, &env);
+    defer shell.deinit();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // The matcher's exit code is the only channel a test can observe (pipeline
+    // stdout is suppressed in test builds), and it is 0 only if the producer's
+    // bytes actually reached the matcher — so the pair of lines below tells
+    // "the junction carried data" apart from "the pipeline merely ran".
+    const needle = "ziggyzag-pipe-token";
+    const match_line, const miss_line = if (builtin.os.tag == .windows) .{
+        try allocator.dupe(u8, "cmd /c ver | findstr Windows"),
+        try allocator.dupe(u8, "cmd /c ver | findstr ZZZNOMATCHZZZ"),
+    } else blk: {
+        try tmp.dir.writeFile(io, .{ .sub_path = "token.txt", .data = needle ++ "\n" });
+        const path = try std.fs.path.join(allocator, &.{ ".zig-cache", "tmp", &tmp.sub_path, "token.txt" });
+        defer allocator.free(path);
+        break :blk .{
+            try std.fmt.allocPrint(allocator, "cat {s} | grep -q {s}", .{ path, needle }),
+            try std.fmt.allocPrint(allocator, "cat {s} | grep -q ZZZNOMATCHZZZ", .{path}),
+        };
+    };
+    defer allocator.free(match_line);
+    defer allocator.free(miss_line);
+
+    try std.testing.expect(try shell.execute(match_line));
+    try std.testing.expectEqual(@as(u8, 0), shell.last_status);
+
+    // Same pipeline, needle that cannot match: the matcher ran and reported it.
+    try std.testing.expect(try shell.execute(miss_line));
+    try std.testing.expectEqual(@as(u8, 1), shell.last_status);
 }
 
 pub fn main(init_data: std.process.Init) !void {
