@@ -214,8 +214,8 @@ The final captured boot trace (`%TEMP%\ziggyzag-startup.log` +
 
 ```
 --- DESKTOP startup log ---
-[resolveShellPath] returned: C:\Users\pasca\dev\ZiggyZag\zig-out\bin\ziggyzag.exe
-[startPtyForPane] CreateProcessW: shell='...\ziggyzag.exe' cwd='C:\Users\pasca\dev\ZiggyZag'
+[resolveShellPath] returned: C:\Users\pasca\dev\projects\ZiggyZag\zig-out\bin\ziggyzag.exe
+[startPtyForPane] CreateProcessW: shell='...\ziggyzag.exe' cwd='C:\Users\pasca\dev\projects\ZiggyZag'
 [startPtyForPane] CreateProcessW OK
 
 --- SHELL boot log ---
@@ -258,10 +258,10 @@ not in either process's logic.
 
 ### What's known to be correct
 - The resolver returns the right path:
-  `C:\Users\pasca\dev\ZiggyZag\zig-out\bin\ziggyzag.exe`. Verified via the
+  `C:\Users\pasca\dev\projects\ZiggyZag\zig-out\bin\ziggyzag.exe`. Verified via the
   removed startup log.
 - The cwd handed to `CreateProcessW` is sensible:
-  `C:\Users\pasca\dev\ZiggyZag`.
+  `C:\Users\pasca\dev\projects\ZiggyZag`.
 - On Windows, `TerminalMode.enable()` is a no-op stub (returns `null`), so
   the shell does not block on terminal-mode setup.
 - The shell's `init()` is trivial struct setup, no I/O. It's not stuck there.

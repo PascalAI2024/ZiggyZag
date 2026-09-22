@@ -7,7 +7,7 @@ Everything below is mechanical. Nothing in this checklist requires judgment unle
 ## 0. Pre-flight (30 seconds)
 
 ```powershell
-cd C:\Users\pasca\dev\ZiggyZag
+cd C:\Users\pasca\dev\projects\ZiggyZag
 git status
 git log --oneline -10
 ```
