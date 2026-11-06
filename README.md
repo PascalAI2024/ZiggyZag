@@ -134,7 +134,7 @@ These are the things a hiring engineer might want to look at.
 
 **Three-process architecture.** Shell, desktop, and agent are separate OS processes communicating via PTY bytes (shell ↔ desktop) and stdio JSON-lines (desktop ↔ agentd). Each component is independently testable, replaceable, and readable in a focused sitting.
 
-**VT conformance gate in CI.** A purpose-built conformance harness binary (`zig build vt-conformance`) runs 15 VT test cases covering CSI/SGR parsing, cursor state, scroll regions, alternate screen, and malformed escape recovery. All 15 pass. This gate runs in CI on every push.
+**VT conformance gate in CI.** A purpose-built conformance harness binary (`zig build vt-conformance`) runs 15 VT test cases covering CSI/SGR parsing, cursor state, scroll regions, alternate screen, and malformed escape recovery. This gate runs in CI on every push.
 
 **Approval-gated AI writes.** The agent process never writes to the terminal directly. Every `terminal.write` or `zig.build` action emits a structured intent payload; the desktop host renders a preview card, waits for explicit keyboard approval (`Y`/`N`), and only then performs the action. The approval policy is declared per-tool as data, not enforced by convention.
 
