@@ -30,6 +30,12 @@ zig build
 ./zig-out/bin/ziggyzag
 ```
 
+On 2026-11-05 this built clean on Windows with Zig 0.16.0 in about ten seconds, and the shell session below is the real output of those commands from that build, set in a terminal frame:
+
+<p align="center">
+  <img src="docs/assets/ziggyzag-session.png" alt="Output of the ziggyzag shell running about, declare, echo, prompt themes, theme tokyo-night, timeit and repeat" width="760">
+</p>
+
 Requires [Zig 0.16.0](https://ziglang.org/download/). Prebuilt zips for Windows, Linux, and macOS live on the [releases page](https://github.com/PascalAI2024/ZiggyZag/releases). Install scripts: [`scripts/install.sh`](scripts/install.sh) and [`scripts/install.ps1`](scripts/install.ps1).
 
 To open the macOS native window:
@@ -48,7 +54,7 @@ zig build bundle
 
 ZiggyZag is one workspace and four binaries that act like a single product:
 
-- **[`apps/shell`](apps/shell/)** — the shell itself. REPL, parser, completion, history, jobs, prompt themes, syntax highlighting. ~7,700 lines of Zig.
+- **[`apps/shell`](apps/shell/)** — the shell itself. REPL, parser, completion, history, jobs, prompt themes, syntax highlighting. About 8,600 lines of Zig (`wc -l` over `apps/shell`, 2026-11-05).
 - **[`apps/desktop`](apps/desktop/README.md)** — the native terminal host. Windows (Win32/ConPTY) and macOS (Cocoa/CoreText). Command palette, search, quick select, theme cycling, AgentD universal input, split panes (Windows), semantic prompt zones, mouse selection, scrollback.
 - **[`apps/agentd`](apps/agentd/README.md)** — a slim JSON-lines AI sidecar. Approval-aware for every mutation. Sandboxed file reads with realpath containment. Ollama and OpenAI-compatible providers.
 - **[`apps/launcher`](apps/launcher/)** — the cross-platform entry point used by release zips.
